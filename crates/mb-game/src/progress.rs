@@ -245,7 +245,9 @@ impl std::fmt::Display for LoadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             LoadError::NotASave => write!(f, "not a save file"),
-            LoadError::UnsupportedVersion(v) => write!(f, "save version {v} is newer than supported"),
+            LoadError::UnsupportedVersion(v) => {
+                write!(f, "save version {v} is newer than supported")
+            }
             LoadError::Corrupt => write!(f, "save file is damaged"),
         }
     }
@@ -311,7 +313,8 @@ impl Profile {
         if crc_at != 0 && text.as_bytes()[crc_at - 1] != b'\n' {
             return Err(LoadError::Corrupt);
         }
-        let want = u32::from_str_radix(text[crc_at + 4..].trim(), 16).map_err(|_| LoadError::Corrupt)?;
+        let want =
+            u32::from_str_radix(text[crc_at + 4..].trim(), 16).map_err(|_| LoadError::Corrupt)?;
         if fnv1a(&text.as_bytes()[..crc_at]) != want {
             return Err(LoadError::Corrupt);
         }
@@ -346,7 +349,10 @@ impl Profile {
                         CourseProgress {
                             cleared: f[1] == "1",
                             cleared_clean: f[2] == "1",
-                            best_score: f[3].parse::<u64>().map_err(|_| LoadError::Corrupt)?.min(MAX_SCORE),
+                            best_score: f[3]
+                                .parse::<u64>()
+                                .map_err(|_| LoadError::Corrupt)?
+                                .min(MAX_SCORE),
                             reached,
                         },
                     );
@@ -447,7 +453,10 @@ mod tests {
             assert!(Profile::decode(&bytes[..cut]).is_err(), "cut {cut}");
         }
         assert_eq!(Profile::decode(b"hello"), Err(LoadError::NotASave));
-        assert_eq!(Profile::decode(&[0xff, 0xfe, 0x00]), Err(LoadError::NotASave));
+        assert_eq!(
+            Profile::decode(&[0xff, 0xfe, 0x00]),
+            Err(LoadError::NotASave)
+        );
         assert_eq!(Profile::decode(b"MBSAVE 1\n"), Err(LoadError::Corrupt));
     }
 
@@ -484,8 +493,11 @@ mod tests {
         assert_eq!(p, sample());
         assert!(warn.is_none());
 
-        s.write(PROFILE_KEY, b"MBSAVE 1\nsetting music_volume 1\ncrc 12345678\n")
-            .unwrap();
+        s.write(
+            PROFILE_KEY,
+            b"MBSAVE 1\nsetting music_volume 1\ncrc 12345678\n",
+        )
+        .unwrap();
         let (p, warn) = Profile::load(&mut s);
         assert_eq!(p, Profile::default());
         assert!(warn.unwrap().contains("reset"));
@@ -499,7 +511,10 @@ mod tests {
         assert!(!pr.is_course_unlocked(Difficulty::BeginnerExtra, false));
         assert!(pr.is_course_unlocked(Difficulty::BeginnerExtra, true));
         pr.record_course_clear(Difficulty::Beginner, false);
-        assert!(!pr.is_course_unlocked(Difficulty::BeginnerExtra, false), "needs a clean clear");
+        assert!(
+            !pr.is_course_unlocked(Difficulty::BeginnerExtra, false),
+            "needs a clean clear"
+        );
         pr.record_course_clear(Difficulty::Beginner, true);
         assert!(pr.is_course_unlocked(Difficulty::BeginnerExtra, false));
         assert!(!pr.is_course_unlocked(Difficulty::Master, false));
@@ -530,7 +545,13 @@ mod tests {
         assert!(pr.record_stage_clear(5, 2000));
         assert!(!pr.record_stage_clear(5, 2500));
         assert!(pr.record_stage_clear(5, 1800));
-        assert_eq!(pr.stage_best(5), StageBest { best_frames: 1800, clears: 3 });
+        assert_eq!(
+            pr.stage_best(5),
+            StageBest {
+                best_frames: 1800,
+                clears: 3
+            }
+        );
         assert_eq!(pr.stage_best(6), StageBest::default());
     }
 

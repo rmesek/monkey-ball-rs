@@ -337,7 +337,7 @@ impl Course {
     /// Stage ids that can follow the current one (`getNextStageIds`, used for prefetching).
     pub fn next_stage_ids(&self) -> Vec<u32> {
         let mut ids = Vec::new();
-        let mut add = |ids: &mut Vec<u32>, i: Option<usize>| {
+        let add = |ids: &mut Vec<u32>, i: Option<usize>| {
             if let Some(Op::Floor(n)) = i.map(|i| self.script[i]) {
                 let id = stage_id_from_name(n);
                 if !ids.contains(&id) {
@@ -346,7 +346,7 @@ impl Course {
             }
         };
         add(&mut ids, self.nth_floor_from(self.script_index, 1));
-        for goal in [b'B', b'G', b'R'] {
+        for goal in *b"BGR" {
             for timer in [0, DEFAULT_STAGE_TIME] {
                 let info = AdvanceInfo {
                     flags: INFO_GOAL,
