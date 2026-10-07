@@ -1,0 +1,21 @@
+# Manual-only on purpose: pushes and PRs must not consume paid Actions minutes.
+# Run the same checks locally with scripts/check.ps1 (or scripts/check.sh).
+name: ci
+on:
+  workflow_dispatch:
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Forbidden tracked files (game data)
+        run: |
+          if git ls-files | grep -E '\.(iso|gcm|rvz|wia|ciso|gcz|gma|tpl|lz|ogg|wav)$|^(content|smb[12]_content|mb2ws_content|audio)/'; then
+            echo "Game content must not be tracked"; exit 1
+          fi
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace

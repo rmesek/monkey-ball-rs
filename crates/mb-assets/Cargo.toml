@@ -1,0 +1,21 @@
+[package]
+name = "mb-assets"
+description = "Content-root layout, pack loading and file-format parsers (no GPU deps)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+default = ["disc"]
+# Read RVZ/ISO/etc. directly. Uses the `nod` crate (MIT/Apache-2.0); wasm32 support to be verified.
+disc = ["dep:nod"]
+
+[dependencies]
+# No default features: they pull vendored C libs (bzip2/lzma/zlib/zstd) and worker threads, which do not build or run
+# on wasm32. Native targets re-enable them below. Without them nod still reads ISO/GCM, CISO, WBFS and
+# RVZ/WIA with compression "none" (what retail dumps made by Dolphin with compression off use).
+nod = { version = "2.0.0-alpha.9", optional = true, default-features = false }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+nod = { version = "2.0.0-alpha.9", optional = true, default-features = true }

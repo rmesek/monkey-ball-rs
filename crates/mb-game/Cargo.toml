@@ -1,0 +1,9 @@
+[package]
+name = "mb-game"
+description = "Course progression, lives, scores, unlocks, settings and local persistence (std only, offline)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]

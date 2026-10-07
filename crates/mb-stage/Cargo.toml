@@ -1,0 +1,13 @@
+[package]
+name = "mb-stage"
+description = "Stagedef parser (collision triangles, grid, goals, bumpers, bananas, animations)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[dev-dependencies]
+# Tests only: decompress STAGENNN.lz from a local disc image. The library itself stays std-only.
+mb-assets = { path = "../mb-assets" }

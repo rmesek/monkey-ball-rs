@@ -1,0 +1,22 @@
+[package]
+name = "mb-render"
+description = "Renderer: GX-material emulation on wgpu (no windowing)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+mb-gma = { path = "../mb-gma" }
+mb-tpl = { path = "../mb-tpl" }
+# GPU API for desktop, Android and browser (decision recorded in docs/PLAN.md). The caller owns the
+# Device/Queue/Surface; this crate never creates windows. Default features keep all native backends.
+wgpu = "30"
+# Plain-old-data casts for uniform/vertex buffers (tiny, no deps beyond derive).
+bytemuck = { version = "1", features = ["derive"] }
+# Mat4/Vec3 maths for transforms and cameras (no deps, wasm-friendly).
+glam = { version = "0.30", features = ["bytemuck"] }
+
+[dev-dependencies]
+# GPU-gated tests create their own adapter; blocking on the async wgpu calls needs a tiny executor.
+pollster = "0.4"

@@ -1,0 +1,26 @@
+# Rust
+target/
+Cargo.lock.bak
+
+# Game content is never committed. The content root is filled by the user/operator.
+content/
+smb1_content/
+smb2_content/
+mb2ws_content/
+audio/
+assets/
+*.iso
+*.gcm
+*.rvz
+*.wia
+*.ciso
+*.gcz
+*.gma
+*.tpl
+*.lz
+
+# Local
+.env
+.idea/
+.vscode/
+*.log

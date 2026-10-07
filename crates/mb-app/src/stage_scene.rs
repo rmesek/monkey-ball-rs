@@ -1,0 +1,494 @@
+//! Assembling a stage (stagedef + stage GMA/TPL + common + background) into renderer objects.
+//! Mirrors `loadRenderStage` in the reference `main.ts` and the model lookup order of `ModelCache`
+//! (stage GMA first, then the background GMA, then the stage NaomiLib archive).
+
+use std::collections::HashMap;
+use std::fmt;
+use std::io;
+
+use glam::{Mat4, Vec3};
+use mb_render::{Layer, ModelId, ObjectId, Renderer, TextureSet};
+use mb_stage::{S16Vec, Stage};
+
+use crate::anim::world_from_group;
+use crate::content::Content;
+use crate::stage_info::{bg_for_stage_or_nearest, BgInfo};
+
+pub const S16_TO_RADIANS: f32 = std::f32::consts::PI / 32768.0;
+
+/// Stages whose geometry lives in a NaomiLib archive (`stNNN_p.lz`) instead of a GMA.
+pub const NAOMI_STAGE_IDS: [u32; 22] = [
+    10, 19, 20, 30, 49, 50, 60, 70, 80, 92, 96, 97, 98, 99, 100, 114, 115, 116, 117, 118, 119, 120,
+];
+
+pub fn is_naomi_stage(id: u32) -> bool {
+    NAOMI_STAGE_IDS.contains(&id)
+}
+
+#[derive(Debug)]
+pub enum LoadError {
+    Io(String, io::Error),
+    Parse(String),
+}
+
+impl fmt::Display for LoadError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            LoadError::Io(what, e) => write!(f, "{what}: {e}"),
+            LoadError::Parse(m) => write!(f, "{m}"),
+        }
+    }
+}
+
+impl std::error::Error for LoadError {}
+
+/// NaomiLib stage geometry plus its texture container.
+pub struct NaomiStage {
+    pub obj: mb_gma::NlObj,
+    pub tpl: mb_tpl::Tpl,
+}
+
+/// Every parsed file a stage needs. Pure CPU data, no GPU.
+pub struct StageAssets {
+    pub id: u32,
+    pub bg: BgInfo,
+    pub stagedef: Stage,
+    /// Absent for pure-NaomiLib stages.
+    pub stage_gma: Option<(mb_gma::Gma, mb_tpl::Tpl)>,
+    pub naomi: Option<NaomiStage>,
+    pub common_gma: mb_gma::Gma,
+    pub common_tpl: mb_tpl::Tpl,
+    pub bg_gma: mb_gma::Gma,
+    pub bg_tpl: mb_tpl::Tpl,
+}
+
+fn io_err(what: &str, e: io::Error) -> LoadError {
+    LoadError::Io(what.to_string(), e)
+}
+
+impl StageAssets {
+    /// `bg` overrides the background normally chosen from the stage id.
+    pub fn load(content: &Content, stage_id: u32, bg: Option<BgInfo>) -> Result<Self, LoadError> {
+        let bg = bg.unwrap_or(*bg_for_stage_or_nearest(stage_id));
+        let base = "smb1_content/test";
+        let id = format!("{stage_id:03}");
+        let get = |path: &str| -> Result<Vec<u8>, LoadError> {
+            content.read_maybe_lz(path).map_err(|e| io_err(path, e))
+        };
+        let get_lz = |path: &str| -> Result<Vec<u8>, LoadError> {
+            content.read_lz(path).map_err(|e| io_err(path, e))
+        };
+        let stagedef_bytes = get_lz(&format!("{base}/st{id}/STAGE{id}.lz"))?;
+        let stagedef = mb_stage::parse_stagedef_smb1(&stagedef_bytes)
+            .map_err(|e| LoadError::Parse(format!("stagedef: {e:?}")))?;
+
+        let parse_gma = |path: &str| -> Result<mb_gma::Gma, LoadError> {
+            mb_gma::parse_gma(&get(path)?).map_err(|e| LoadError::Parse(format!("{path}: {e}")))
+        };
+        let parse_tpl = |bytes: Vec<u8>, path: &str| -> Result<mb_tpl::Tpl, LoadError> {
+            mb_tpl::parse(&bytes).map_err(|e| LoadError::Parse(format!("{path}: {e}")))
+        };
+        let tpl = |path: &str| -> Result<mb_tpl::Tpl, LoadError> { parse_tpl(get(path)?, path) };
+
+        let gma_path = format!("{base}/st{id}/st{id}.gma");
+        let stage_gma = match content.read_maybe_lz(&gma_path) {
+            Ok(_) => Some((
+                parse_gma(&gma_path)?,
+                tpl(&format!("{base}/st{id}/st{id}.tpl"))?,
+            )),
+            Err(e) if e.kind() == io::ErrorKind::NotFound && is_naomi_stage(stage_id) => None,
+            Err(e) => return Err(io_err(&gma_path, e)),
+        };
+        let naomi = if is_naomi_stage(stage_id) {
+            let obj_path = format!("{base}/st{id}/st{id}_p.lz");
+            let tpl_path = format!("{base}/st{id}/st{id}.lz");
+            let obj = mb_gma::parse_naomi_obj(&get_lz(&obj_path)?)
+                .map_err(|e| LoadError::Parse(format!("{obj_path}: {e}")))?;
+            Some(NaomiStage {
+                obj,
+                tpl: parse_tpl(get_lz(&tpl_path)?, &tpl_path)?,
+            })
+        } else {
+            None
+        };
+        Ok(Self {
+            id: stage_id,
+            bg,
+            stagedef,
+            stage_gma,
+            naomi,
+            common_gma: parse_gma(&format!("{base}/init/common.gma"))?,
+            common_tpl: tpl(&format!("{base}/init/common.tpl"))?,
+            bg_gma: parse_gma(&format!("{base}/bg/{}.gma", bg.file_name))?,
+            bg_tpl: tpl(&format!("{base}/bg/{}.tpl", bg.file_name))?,
+        })
+    }
+}
+
+/// `T * Rz * Ry * Rx * S` with S16 angles, the composition order the reference uses everywhere.
+pub fn trs_s16(pos: Vec3, rot: S16Vec, scale: Vec3) -> Mat4 {
+    Mat4::from_translation(pos)
+        * Mat4::from_rotation_z(rot.z as f32 * S16_TO_RADIANS)
+        * Mat4::from_rotation_y(rot.y as f32 * S16_TO_RADIANS)
+        * Mat4::from_rotation_x(rot.x as f32 * S16_TO_RADIANS)
+        * Mat4::from_scale(scale)
+}
+
+fn v3(v: mb_stage::Vec3) -> Vec3 {
+    Vec3::new(v.x, v.y, v.z)
+}
+
+/// Renderer objects created for a stage.
+pub struct StageScene {
+    /// Everything parented to an anim group (its models, goals, bumpers, bananas, jamabars).
+    pub items: Vec<Item>,
+    pub bg_objects: Vec<ObjectId>,
+    pub fg_objects: Vec<ObjectId>,
+    pub start: Vec3,
+    /// Model names that could not be found in any source.
+    pub missing_models: Vec<String>,
+    /// Texture count before this stage was uploaded, for `Renderer::truncate_textures`.
+    pub texture_base: usize,
+}
+
+/// How an item moves relative to its anim group.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Motion {
+    Static,
+    /// Spins about its own Y axis (bumpers), S16 units per 60 Hz frame.
+    LocalSpinY(f32),
+    /// Keeps world orientation and spins about world Y at the group-transformed position (bananas).
+    WorldSpinY(f32),
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct Item {
+    pub object: ObjectId,
+    pub group: usize,
+    pub local: Mat4,
+    pub motion: Motion,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum Src {
+    Stage,
+    Bg,
+    Common,
+}
+
+struct ModelLoader<'a> {
+    assets: &'a StageAssets,
+    stage_set: TextureSet,
+    bg_set: TextureSet,
+    nl_set: TextureSet,
+    common_set: TextureSet,
+    cache: HashMap<(Src, String), Option<ModelId>>,
+    nl_cache: HashMap<String, Option<ModelId>>,
+}
+
+impl ModelLoader<'_> {
+    fn get(&mut self, r: &mut Renderer, src: Src, name: &str) -> Option<ModelId> {
+        if let Some(hit) = self.cache.get(&(src, name.to_string())) {
+            return *hit;
+        }
+        let (gma, set) = match src {
+            Src::Stage => (
+                self.assets.stage_gma.as_ref().map(|s| &s.0),
+                &self.stage_set,
+            ),
+            Src::Bg => (Some(&self.assets.bg_gma), &self.bg_set),
+            Src::Common => (Some(&self.assets.common_gma), &self.common_set),
+        };
+        let id = gma
+            .and_then(|g| g.model(name))
+            .and_then(|m| r.upload_model(m, set).ok());
+        self.cache.insert((src, name.to_string()), id);
+        id
+    }
+
+    /// NaomiLib lookup like the reference's `resolveStageModel`: exact name, `NAME_MAP`, then the longest
+    /// name that starts with `name`.
+    fn get_naomi(&mut self, r: &mut Renderer, name: &str) -> Option<ModelId> {
+        if let Some(hit) = self.nl_cache.get(name) {
+            return *hit;
+        }
+        let id = self.assets.naomi.as_ref().and_then(|n| {
+            let names = &n.obj.names;
+            let idx = names
+                .get(name)
+                .or_else(|| names.get(&format!("{name}_MAP")))
+                .or_else(|| {
+                    names
+                        .iter()
+                        .filter(|(k, _)| k.starts_with(name))
+                        .max_by_key(|(k, _)| k.len())
+                        .map(|(_, v)| v)
+                })
+                .copied()?;
+            let model = n.obj.model(idx)?;
+            Some(r.upload_nl_model(model, &self.nl_set))
+        });
+        self.nl_cache.insert(name.to_string(), id);
+        id
+    }
+
+    /// Background-specific model (`JUN_GOAL`, `SUN_BUMPER_L1`, ...): first model whose name minus its 4 character
+    /// prefix equals `postfix`, searching stage, background, then common (`findBgSpecificModel`).
+    fn find_bg_specific(&mut self, r: &mut Renderer, postfix: &str) -> Option<ModelId> {
+        for src in [Src::Stage, Src::Bg, Src::Common] {
+            let gma = match src {
+                Src::Stage => self.assets.stage_gma.as_ref().map(|s| &s.0),
+                Src::Bg => Some(&self.assets.bg_gma),
+                Src::Common => Some(&self.assets.common_gma),
+            };
+            let name = gma.and_then(|g| {
+                g.names()
+                    .find(|n| n.get(4..) == Some(postfix))
+                    .map(str::to_string)
+            });
+            if let Some(name) = name {
+                return self.get(r, src, &name);
+            }
+        }
+        None
+    }
+
+    fn find_substring(&mut self, r: &mut Renderer, needle: &str) -> Option<ModelId> {
+        for src in [Src::Stage, Src::Bg, Src::Common] {
+            let gma = match src {
+                Src::Stage => self.assets.stage_gma.as_ref().map(|s| &s.0),
+                Src::Bg => Some(&self.assets.bg_gma),
+                Src::Common => Some(&self.assets.common_gma),
+            };
+            let name = gma.and_then(|g| {
+                g.names()
+                    .find(|n| n.to_ascii_uppercase().contains(needle))
+                    .map(str::to_string)
+            });
+            if let Some(name) = name {
+                return self.get(r, src, &name);
+            }
+        }
+        None
+    }
+
+    /// Stage GMA, then background GMA, then the stage NaomiLib archive.
+    fn resolve(&mut self, r: &mut Renderer, name: &str) -> Option<ModelId> {
+        self.get(r, Src::Stage, name)
+            .or_else(|| self.get(r, Src::Bg, name))
+            .or_else(|| self.get_naomi(r, name))
+    }
+}
+
+fn place_bg_objects(
+    r: &mut Renderer,
+    loader: &mut ModelLoader,
+    list: &[mb_stage::BgObject],
+    layer: Layer,
+    missing: &mut Vec<String>,
+) -> Vec<ObjectId> {
+    let mut out = Vec::new();
+    for o in list {
+        if o.flags & 1 == 0 {
+            continue;
+        }
+        match loader.resolve(r, &o.name) {
+            Some(id) => {
+                let obj = r.add_object(id, layer, trs_s16(v3(o.pos), o.rot, v3(o.scale)));
+                r.set_alpha(obj, 1.0 - o.translucency);
+                out.push(obj);
+            }
+            None => missing.push(o.name.clone()),
+        }
+    }
+    out
+}
+
+impl StageScene {
+    pub fn build(r: &mut Renderer, a: &StageAssets) -> Self {
+        let texture_base = r.texture_count();
+        r.lighting = a.bg.lighting();
+        r.clear_color = a.bg.clear_color.map(|c| c as f64);
+        let mut loader = ModelLoader {
+            assets: a,
+            stage_set: a
+                .stage_gma
+                .as_ref()
+                .map(|s| r.upload_tpl(&s.1))
+                .unwrap_or_default(),
+            bg_set: r.upload_tpl(&a.bg_tpl),
+            common_set: r.upload_tpl(&a.common_tpl),
+            nl_set: a
+                .naomi
+                .as_ref()
+                .map(|n| r.upload_tpl(&n.tpl))
+                .unwrap_or_default(),
+            cache: HashMap::new(),
+            nl_cache: HashMap::new(),
+        };
+        let mut missing = Vec::new();
+
+        let mut items = Vec::new();
+        let goal_blue = loader
+            .find_bg_specific(r, "GOAL")
+            .or_else(|| loader.find_bg_specific(r, "GOAL_B"));
+        let goal_green = loader.find_bg_specific(r, "GOAL_G");
+        let goal_red = loader.find_bg_specific(r, "GOAL_R");
+        let bumper = loader.find_bg_specific(r, "BUMPER_L1");
+        let jamabar = loader.find_substring(r, "JAMABAR");
+        let banana_single = loader.get(r, Src::Common, "OBJ_BANANA_01_LOD150");
+        let banana_bunch = loader.get(r, Src::Common, "OBJ_BANANA_02_LOD100");
+        let mut add = |r: &mut Renderer, model: Option<ModelId>, group, local, motion| {
+            if let Some(m) = model {
+                let object = r.add_object(m, Layer::World, Mat4::IDENTITY);
+                items.push(Item {
+                    object,
+                    group,
+                    local,
+                    motion,
+                });
+            }
+        };
+        for (gi, g) in a.stagedef.anim_groups.iter().enumerate() {
+            for m in &g.models {
+                match loader.resolve(r, &m.name) {
+                    Some(id) => add(r, Some(id), gi, Mat4::IDENTITY, Motion::Static),
+                    None if m.name.starts_with("null") => {}
+                    None => missing.push(m.name.clone()),
+                }
+            }
+            for goal in &g.goals {
+                let model = match goal.kind {
+                    mb_stage::GoalType::Blue => goal_blue,
+                    mb_stage::GoalType::Green => goal_green,
+                    mb_stage::GoalType::Red => goal_red,
+                };
+                let local = trs_s16(v3(goal.pos), goal.rot, Vec3::ONE);
+                add(r, model, gi, local, Motion::Static);
+            }
+            for b in &g.bumpers {
+                let local = trs_s16(v3(b.pos), b.rot, v3(b.scale));
+                add(r, bumper, gi, local, Motion::LocalSpinY(0x100 as f32));
+            }
+            for j in &g.jamabars {
+                let local = trs_s16(v3(j.pos), j.rot, v3(j.scale));
+                add(r, jamabar, gi, local, Motion::Static);
+            }
+            for b in &g.bananas {
+                let (model, rate) = if b.kind == 0 {
+                    (banana_single, 1024.0)
+                } else {
+                    (banana_bunch, 768.0)
+                };
+                let local = Mat4::from_translation(v3(b.pos));
+                add(r, model, gi, local, Motion::WorldSpinY(rate));
+            }
+        }
+
+        let bg_objects = place_bg_objects(
+            r,
+            &mut loader,
+            &a.stagedef.bg_objects,
+            Layer::Background,
+            &mut missing,
+        );
+        let fg_objects = place_bg_objects(
+            r,
+            &mut loader,
+            &a.stagedef.fg_objects,
+            Layer::World,
+            &mut missing,
+        );
+
+        let start = a
+            .stagedef
+            .start_positions
+            .first()
+            .map(|s| v3(s.pos))
+            .unwrap_or(Vec3::ZERO);
+        let scene = Self {
+            items,
+            bg_objects,
+            fg_objects,
+            start,
+            missing_models: missing,
+            texture_base,
+        };
+        scene.set_time(r, &a.stagedef, 0.0);
+        scene
+    }
+
+    /// Pose every item at `time` seconds via `Renderer::set_transform`: anim groups follow their keyframes,
+    /// bumpers and bananas spin at the reference's per-frame rates.
+    pub fn set_time(&self, r: &mut Renderer, stage: &Stage, time: f32) {
+        let range = (stage.loop_start_seconds, stage.loop_end_seconds);
+        let groups: Vec<Mat4> = stage
+            .anim_groups
+            .iter()
+            .enumerate()
+            .map(|(i, g)| world_from_group(g, i, time, range))
+            .collect();
+        let frames = time * 60.0;
+        for it in &self.items {
+            let world = groups.get(it.group).copied().unwrap_or(Mat4::IDENTITY);
+            let m = match it.motion {
+                Motion::Static => world * it.local,
+                Motion::LocalSpinY(rate) => {
+                    world * it.local * Mat4::from_rotation_y(spin_angle(rate, frames))
+                }
+                Motion::WorldSpinY(rate) => {
+                    let pos = world.transform_point3(it.local.w_axis.truncate());
+                    Mat4::from_translation(pos) * Mat4::from_rotation_y(spin_angle(rate, frames))
+                }
+            };
+            r.set_transform(it.object, m);
+        }
+    }
+}
+
+/// Spin angle in radians after `frames` 60 Hz frames at `rate` S16 units per frame (wrapped like the reference).
+fn spin_angle(rate: f32, frames: f32) -> f32 {
+    (rate * S16_TO_RADIANS * frames) % (2.0 * std::f32::consts::PI)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn trs_applies_translation_after_rotation() {
+        let m = trs_s16(
+            Vec3::new(1.0, 2.0, 3.0),
+            S16Vec {
+                x: 0,
+                y: 0x4000,
+                z: 0,
+            },
+            Vec3::ONE,
+        );
+        // +X rotated a quarter turn about Y points down -Z.
+        let p = m.transform_point3(Vec3::X);
+        assert!((p - Vec3::new(1.0, 2.0, 2.0)).length() < 1e-5, "{p:?}");
+    }
+
+    #[test]
+    fn scale_applies_before_rotation() {
+        let m = trs_s16(
+            Vec3::ZERO,
+            S16Vec {
+                x: 0,
+                y: 0x4000,
+                z: 0,
+            },
+            Vec3::new(2.0, 1.0, 1.0),
+        );
+        let p = m.transform_point3(Vec3::X);
+        assert!((p - Vec3::new(0.0, 0.0, -2.0)).length() < 1e-5, "{p:?}");
+    }
+
+    #[test]
+    fn naomi_stage_list_matches_reference() {
+        assert!(is_naomi_stage(10) && is_naomi_stage(120));
+        assert!(!is_naomi_stage(1) && !is_naomi_stage(2));
+    }
+}

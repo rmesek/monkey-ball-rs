@@ -1,0 +1,29 @@
+[package]
+name = "mb-app"
+description = "Application shell: windowing, input, game flow, platform glue"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "mb-app"
+path = "src/main.rs"
+
+[dependencies]
+mb-assets = { path = "../mb-assets" }
+mb-gma = { path = "../mb-gma" }
+mb-tpl = { path = "../mb-tpl" }
+mb-stage = { path = "../mb-stage" }
+mb-render = { path = "../mb-render" }
+# Window + input event loop (decision recorded in docs/PLAN.md); Android/web backends come with it.
+# 0.30 is the latest stable release (0.31 is still beta).
+winit = "0.30"
+# Same wgpu version as mb-render so Device/Queue/Surface types are shared.
+wgpu = "30"
+# Blocks on the async wgpu adapter/device requests on native (wasm will use wasm-bindgen-futures later).
+pollster = "0.4"
+# Camera/transform maths shared with mb-render's public API.
+glam = "0.30"
+# std::time::Instant panics on wasm32; web-time is a drop-in that re-exports std off the web. Used by `shell`.
+web-time = "1"

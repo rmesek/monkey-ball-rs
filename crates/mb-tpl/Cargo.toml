@@ -1,0 +1,13 @@
+[package]
+name = "mb-tpl"
+description = "TPL/texture container parser and GX texture format decoders"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[dev-dependencies]
+# Tests only: read the disc image and LZSS-decompress .tpl.lz files. The library itself stays std-only.
+mb-assets = { path = "../mb-assets" }

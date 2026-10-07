@@ -1,0 +1,68 @@
+# Plan
+
+Goal: a Rust parser and engine mirroring WebMonkeyBall, fully offline. SMB1 first. Two stages.
+
+## Stage 1 (current goal): complete playable game on desktop and web browser (WASM)
+The full offline Super Monkey Ball loop, running on native desktop and in modern browsers through
+WebAssembly with WebGPU or the WebGL2 fallback.
+
+- **Single-file user entry.** The game accepts `Super Monkey Ball (USA).rvz` directly: file picker or
+  drag-and-drop in the browser, CLI argument or file dialog on desktop. Stages, collision, models and textures
+  are extracted on demand from that image. No copyrighted assets are distributed, bundled or written out.
+- **Complete gameplay.** Level/course select, deterministic 60 Hz physics (stage tilt, sphere rolling,
+  collision, camera tracking, goal triggers, fall-out resets), lives/score/timer HUD, next-floor progression.
+- **Decoupled input.** Desktop keyboard/gamepad and web controls map to normalized tilt/action values in
+  `InputState`; nothing above the shells sees a device. Stage 2 injects gyro and touch through the same seam.
+- **Low-power, web-friendly graphics.** Cached GPU buffers and textures, shared pipelines, per-frame uniform
+  updates only; nothing beyond WebGL2 downlevel limits.
+
+### Workstreams
+| # | Workstream | Crates | Done when |
+|---|---|---|---|
+| 1 | Disc ingestion | `mb-assets` | `STAGE*.lz`, stage/background models and textures stream from the RVZ on native and `wasm32-unknown-unknown` (in-memory file buffer from picker/drag-and-drop) |
+| 2 | Rendering | `mb-render` | stage, background, ball, goals, bananas and HUD sprites draw on a desktop window and an HTML `<canvas>` (WebGPU, WebGL2 fallback) |
+| 3 | Simulation + game flow | `mb-engine`, `mb-game`, `mb-app` | 60 Hz tick drives tilt, ball, collision, camera; Level Select -> Active Play -> Goal / Fall-out -> next floor or retry |
+| 4 | Desktop runner | `mb-app` | native window, takes the RVZ by argument or dialog, stable 60 FPS |
+| 5 | Web shell | `mb-web`, `web/`, `scripts/` | one build command; page with RVZ drop zone/picker, level select, smooth play |
+| 6 | Validation | all | gates in `AGENTS.md` green; a stage is played start to goal on both platforms |
+
+### Stage 1 done when
+`cargo test --workspace` and `cargo clippy --workspace --all-targets -- -D warnings` are clean; the desktop
+binary and the browser build both open the RVZ, show the level select, play a stage to the goal, handle a
+fall-out with a retry, and advance to the next floor.
+
+### Status
+- Done: workspace scaffold; pack trait with dir/memory/cache/disc backends; LZSS (byte-identical to the
+  reference); stagedef, GMA/GX display list, TPL and NaomiLib parsers; ADP and MusyX decoding to PCM;
+  deterministic engine (bit-identical to the reference on USA stages 1..200 for scripted runs); wgpu renderer
+  with GX material emulation; desktop stage viewer with headless capture; shared window driver for web/mobile.
+- In progress: course/lives state machine (`mb-game::run`), gameplay and menu states, desktop file dialog, web
+  page and build script.
+- Not in Stage 1: SMB2 content, minigames, replays, audio output (PCM decoding exists; a device backend is
+  chosen with Stage 2 unless it lands early), Android packaging.
+
+## Stage 2 (next target): standalone Android APK
+Native Android packaging with `android-activity`, gyro tilt through `SensorManager` feeding the tilt axes of
+`InputState`, on-screen touch controls (the layout maths already lives in `mb-app::ui`), disc import through the
+Storage Access Framework, safe-area insets, suspend/resume surface handling.
+
+## Asset policy
+Code only. The engine reads the user's own disc image through a pack-provider trait (disc, directory, memory
+backends). The repo never contains or fetches original game files.
+
+## Decisions (recorded)
+- Graphics: `wgpu` (Vulkan/Metal/DX12/GL + WebGPU/WebGL2): one API for desktop, browser and Android.
+- Windowing/input: `winit` (desktop, web canvas, Android via android-activity).
+- Disc reading: `nod` (feature `disc`). On wasm32 it is built without the C codecs; RVZ images stored with
+  compression "none" (what the supported dump uses) read fine. Other codecs on wasm are tracked under workstream 1.
+- Web: `wasm-bindgen` + `web-sys`, built with `wasm-bindgen-cli`; the disc image is held in the tab's wasm memory.
+- Parsers (`mb-tpl`, `mb-gma`, `mb-stage`) are std-only.
+- Audio: `mb-audio` produces PCM and has no output dependency; device backend undecided.
+
+## Scope rule: strictly offline
+No networking of any kind: no multiplayer, lobbies, netplay, rollback netcode, WebRTC, telemetry, update checks or
+online leaderboards. Do not add networking crates. Deterministic simulation and state hashing stay (replays, tests).
+
+## UI direction
+Mobile- and browser-first layout: large tap targets, safe-area insets, portrait and landscape, scalable HUD,
+menus usable with touch, keyboard and gamepad. Keep the original game flow.
