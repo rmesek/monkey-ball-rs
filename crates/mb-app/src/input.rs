@@ -31,6 +31,8 @@ pub enum Action {
     Confirm,
     Cancel,
     Pause,
+    /// Take the pose the device is held in now as level (on-screen button while steering by tilt).
+    Recenter,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -62,6 +64,8 @@ pub struct InputState {
     touch_stick: Option<TouchStick>,
     /// Requested by the running state each frame; read by `ui::TouchControls` when a touch starts.
     virtual_controls: Cell<bool>,
+    /// Requested with it: the device's tilt steers, so the on-screen stick is replaced by a recentre button.
+    tilt_steering: Cell<bool>,
     nav_axis_prev: (i8, i8),
 }
 
@@ -252,6 +256,15 @@ impl InputState {
     /// (gameplay), `false` when touches should only act as a pointer (menus, pause).
     pub fn request_virtual_controls(&self, on: bool) {
         self.virtual_controls.set(on);
+    }
+
+    /// Running state: steering is by device tilt this frame (no on-screen stick, a recentre button instead).
+    pub fn request_tilt_steering(&self, on: bool) {
+        self.tilt_steering.set(on);
+    }
+
+    pub fn tilt_steering(&self) -> bool {
+        self.tilt_steering.get()
     }
 
     pub fn virtual_controls(&self) -> bool {

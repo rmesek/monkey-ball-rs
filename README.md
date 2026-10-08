@@ -105,7 +105,8 @@ moment; an interrupted import leaves nothing behind.
 | Fullscreen | F11 or Alt+Enter (desktop) | | Options -> Fullscreen (browser) |
 
 The mouse works in menus (click rows, wheel scrolls). On a phone, Options -> Controls switches to steering by
-tilting the device.
+tilting the device; the on-screen stick then gives way to a recentre button (the crosshair above pause)
+that makes the way you hold the phone now the level position.
 
 ## Tests
 

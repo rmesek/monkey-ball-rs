@@ -122,12 +122,17 @@ impl Layout {
     }
 
     /// On-screen action buttons, bottom-right, stacked in a column from the bottom. Each is at least the
-    /// minimum tap size. Gameplay only needs pause; the stick does the rest.
-    pub fn buttons(&self) -> Vec<(Action, Rect)> {
+    /// minimum tap size. Gameplay only needs pause; the stick does the rest. While the device's tilt steers
+    /// (`tilt`) there is no stick, and a second button takes the current pose as level.
+    pub fn buttons(&self, tilt: bool) -> Vec<(Action, Rect)> {
         let s = self.safe_rect();
         let size = self.button_size();
         let gap = size * 0.2;
-        let actions = [Action::Pause];
+        let actions: &[Action] = if tilt {
+            &[Action::Pause, Action::Recenter]
+        } else {
+            &[Action::Pause]
+        };
         actions
             .iter()
             .enumerate()
@@ -264,12 +269,15 @@ impl TouchControls {
                     self.active.insert(id, Role::Pointer);
                     return;
                 }
-                let role = if let Some((a, _)) =
-                    layout.buttons().into_iter().find(|(_, r)| r.contains(pos))
+                let role = if let Some((a, _)) = layout
+                    .buttons(input.tilt_steering())
+                    .into_iter()
+                    .find(|(_, r)| r.contains(pos))
                 {
                     input.set_action(a, true);
                     Role::Button(a)
-                } else if layout.stick_zone().contains(pos)
+                } else if !input.tilt_steering()
+                    && layout.stick_zone().contains(pos)
                     && !self
                         .active
                         .values()
@@ -361,7 +369,7 @@ mod tests {
             ),
         ] {
             let safe = l.safe_rect();
-            for (_, r) in l.buttons() {
+            for (_, r) in l.buttons(true) {
                 assert!(r.w >= l.min_tap() && r.h >= l.min_tap());
                 assert!(r.x >= safe.x && r.y >= safe.y);
                 assert!(r.x + r.w <= safe.x + safe.w && r.y + r.h <= safe.y + safe.h);
@@ -411,7 +419,7 @@ mod tests {
         input.request_virtual_controls(true);
         let mut t = TouchControls::new();
         let z = l.stick_zone().center();
-        let (pause, button) = l.buttons()[0];
+        let (pause, button) = l.buttons(false)[0];
         // Stick held by touch 1, then touch 1 "starts" again on the pause button.
         t.touch(1, TouchPhase::Started, z, &l, &mut input);
         t.touch(1, TouchPhase::Moved, (z.0 + 1000.0, z.1), &l, &mut input);
@@ -451,7 +459,7 @@ mod tests {
         input.request_virtual_controls(true);
         let mut t = TouchControls::new();
         let z = l.stick_zone().center();
-        let (pause, button) = l.buttons()[0];
+        let (pause, button) = l.buttons(false)[0];
         t.touch(1, TouchPhase::Started, z, &l, &mut input);
         t.touch(1, TouchPhase::Moved, (z.0 - 1000.0, z.1), &l, &mut input);
         t.touch(2, TouchPhase::Started, button.center(), &l, &mut input);
@@ -476,7 +484,7 @@ mod tests {
         let mut input = InputState::new();
         input.request_virtual_controls(true);
         let mut t = TouchControls::new();
-        let (a, r) = l.buttons()[0];
+        let (a, r) = l.buttons(false)[0];
         t.touch(7, TouchPhase::Started, r.center(), &l, &mut input);
         assert!(input.pressed(a) && input.held(a));
         t.touch(7, TouchPhase::Ended, r.center(), &l, &mut input);
@@ -488,7 +496,7 @@ mod tests {
         let l = landscape();
         let mut input = InputState::new();
         let mut t = TouchControls::new();
-        let (a, r) = l.buttons()[0];
+        let (a, r) = l.buttons(false)[0];
         t.touch(1, TouchPhase::Started, r.center(), &l, &mut input);
         assert!(!input.held(a) && input.touch_active());
         assert!(input.pointer_pressed() && input.pointer() == Some(r.center()));
@@ -514,5 +522,33 @@ mod tests {
         assert!(input.touch_stick().is_none() && input.pointer() == Some((910.0, 95.0)));
         t.touch(2, TouchPhase::Ended, (910.0, 95.0), &l, &mut input);
         assert!(!input.pointer_held());
+    }
+
+    #[test]
+    fn tilt_steering_replaces_the_stick_with_a_recentre_button() {
+        let l = landscape();
+        let mut input = InputState::new();
+        input.request_virtual_controls(true);
+        input.request_tilt_steering(true);
+        let mut t = TouchControls::new();
+        // A touch in the stick zone is no stick now.
+        let z = l.stick_zone().center();
+        t.touch(1, TouchPhase::Started, z, &l, &mut input);
+        t.touch(1, TouchPhase::Moved, (z.0 + 500.0, z.1), &l, &mut input);
+        assert!(input.touch_stick().is_none());
+        assert_eq!(input.axis(Axis::MoveX), 0.0);
+        t.touch(1, TouchPhase::Ended, z, &l, &mut input);
+        // Pause is still there, and the second button recentres.
+        let buttons = l.buttons(true);
+        assert_eq!(buttons[0].0, Action::Pause);
+        let (a, r) = buttons[1];
+        assert_eq!(a, Action::Recenter);
+        assert!(!r.contains(buttons[0].1.center()));
+        t.touch(2, TouchPhase::Started, r.center(), &l, &mut input);
+        assert!(input.pressed(Action::Recenter));
+        t.touch(2, TouchPhase::Ended, r.center(), &l, &mut input);
+        assert!(!input.held(Action::Recenter));
+        // Without tilt there is no such button.
+        assert_eq!(l.buttons(false).len(), 1);
     }
 }

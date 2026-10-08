@@ -66,7 +66,9 @@ horizontal view of 4:3 is kept instead (portrait phones).
 
 Mouse: hover and click rows, wheel scrolls lists. The on-screen stick and pause button are drawn only while
 touch is the device in use (any key or button press hides them). Device tilt (browser, Options -> Controls)
-steers by holding the phone; see `docs/WEB.md`.
+steers by holding the phone; see `docs/WEB.md`. While tilt steers there is no on-screen stick: the pause
+button stays, always visible, and a second button above it (a crosshair) takes the pose the phone is held in
+now as level. The pose is also taken as level at the start of every stage.
 
 ## Options and sound
 | Option | Values | Effect |

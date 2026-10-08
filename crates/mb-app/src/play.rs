@@ -15,6 +15,7 @@ use std::rc::Rc;
 use glam::{Mat4, Vec3};
 use mb_engine::determinism::quantize_input;
 use mb_engine::{Outcome, Phase, Sim, SimConfig};
+use mb_game::progress::ControlMode;
 use mb_game::{GoalType, PlayMode, PlayRequest, PlayResult, StageOutcome};
 use mb_render::Camera;
 
@@ -363,21 +364,29 @@ impl PlayState {
         Transition::Pop
     }
 
+    /// Steering is by the device's tilt: the player chose it and the device reports its orientation.
+    fn tilt_steering(&self) -> bool {
+        self.request.settings.control_mode == ControlMode::Tilt && crate::host::caps().tilt
+    }
+
     fn draw_touch_controls(p: &mut Painter, layout: &Layout, input: &InputState) {
         let disc = p.ui.disc;
-        let radius = layout.stick_radius();
-        let (origin, knob) = match input.touch_stick() {
-            Some(s) => (s.origin, s.pos),
-            None => {
-                let rest = layout.stick_rest();
-                (rest, rest)
-            }
-        };
-        let base = radius * 2.0 * 1.25 / disc.w;
-        p.image(disc, origin.0, origin.1, base, base, [1.0, 1.0, 1.0, 0.22]);
-        let top = radius * 2.0 * 0.55 / disc.w;
-        p.image(disc, knob.0, knob.1, top, top, [1.0, 1.0, 1.0, 0.5]);
-        for (action, rect) in layout.buttons() {
+        let tilt = input.tilt_steering();
+        if !tilt {
+            let radius = layout.stick_radius();
+            let (origin, knob) = match input.touch_stick() {
+                Some(s) => (s.origin, s.pos),
+                None => {
+                    let rest = layout.stick_rest();
+                    (rest, rest)
+                }
+            };
+            let base = radius * 2.0 * 1.25 / disc.w;
+            p.image(disc, origin.0, origin.1, base, base, [1.0, 1.0, 1.0, 0.22]);
+            let top = radius * 2.0 * 0.55 / disc.w;
+            p.image(disc, knob.0, knob.1, top, top, [1.0, 1.0, 1.0, 0.5]);
+        }
+        for (action, rect) in layout.buttons(tilt) {
             let (cx, cy) = rect.center();
             let s = rect.w / disc.w;
             p.image(disc, cx, cy, s, s, [1.0, 1.0, 1.0, 0.28]);
@@ -390,6 +399,21 @@ impl PlayState {
                             y: cy - bh / 2.0,
                             w: bw,
                             h: bh,
+                        },
+                        [1.0, 1.0, 1.0, 0.8],
+                    );
+                }
+            }
+            if action == Action::Recenter {
+                // A crosshair: "this pose is level".
+                let (long, thin) = (rect.w * 0.44, rect.w * 0.07);
+                for (w, h) in [(long, thin), (thin, long)] {
+                    p.rect(
+                        Rect {
+                            x: cx - w / 2.0,
+                            y: cy - h / 2.0,
+                            w,
+                            h,
                         },
                         [1.0, 1.0, 1.0, 0.8],
                     );
@@ -462,6 +486,11 @@ impl Game for PlayState {
             }
         }
         ctx.input.request_virtual_controls(self.pause.is_none());
+        let tilt = self.tilt_steering();
+        ctx.input.request_tilt_steering(tilt);
+        if tilt && self.pause.is_none() && ctx.input.pressed(Action::Recenter) {
+            crate::host::post(crate::host::Command::CalibrateTilt);
+        }
         let retry_available = self.retry_available();
 
         if let (Some(confirm), true) = (&mut self.quit_confirm, self.pause.is_some()) {
@@ -652,7 +681,8 @@ impl Game for PlayState {
                 );
             }
             draw_back_button(&mut p, back_button_rect(&ctx.layout), self.back.down());
-        } else if ctx.input.touch_active() {
+        } else if ctx.input.touch_active() || tilt {
+            // With tilt the buttons are always shown: the player may never touch the screen otherwise.
             Self::draw_touch_controls(&mut p, &ctx.layout, ctx.input);
         }
         self.audio.flush();
