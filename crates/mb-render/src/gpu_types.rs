@@ -35,10 +35,12 @@ impl Vertex {
 
 /// Group 0: per-pass scene constants.
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Default, Pod, Zeroable)]
+#[derive(Clone, Copy, Debug, Default, Pod, Zeroable, PartialEq)]
 pub struct SceneUniform {
     pub view: [[f32; 4]; 4],
     pub proj: [[f32; 4]; 4],
+    /// World-space stage tilt for objects that ask for it (`ObjectUniform::params.y`).
+    pub tilt: [[f32; 4]; 4],
     pub light_dir: [f32; 4],
     pub light_color: [f32; 4],
     pub ambient: [f32; 4],
@@ -54,6 +56,7 @@ pub struct ObjectUniform {
     pub model: [[f32; 4]; 4],
     pub normal_mat: [[f32; 4]; 4],
     pub color_mul: [f32; 4],
+    /// x: object alpha, y: 1 when the scene's stage tilt applies.
     pub params: [f32; 4],
 }
 
@@ -92,7 +95,7 @@ mod tests {
     #[test]
     fn layouts_match_wgsl() {
         // WGSL uniform structs: mat4 = 64, vec4 = 16.
-        assert_eq!(size_of::<SceneUniform>(), 64 * 2 + 16 * 6);
+        assert_eq!(size_of::<SceneUniform>(), 64 * 3 + 16 * 6);
         assert_eq!(size_of::<ObjectUniform>(), 64 * 2 + 32);
         assert_eq!(size_of::<MaterialUniform>(), 16 * 6);
         assert_eq!(size_of::<Vertex>(), 12 + 12 + 4 + 8 * 3);

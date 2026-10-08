@@ -28,12 +28,6 @@ pub const BANK_NAMES: [&str; 9] = [
 /// Macro opcode: start playing a sample (id in `arg`).
 pub const OP_START_SAMPLE: u8 = 0x10;
 
-/// The game's sound-request ids carry flags above bit 9; the MusyX SFX index is the low 10 bits.
-/// (Inferred: every id in the reference's `SMB1_SFX_IDS` maps into a populated index range this way.)
-pub fn sfx_index_from_game_id(id: u32) -> u16 {
-    (id & 0x3ff) as u16
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SfxEntry {
     pub sfx_id: u16,
@@ -283,11 +277,6 @@ impl SfxLibrary {
             Some(&b) => self.banks[b].render_sfx(sfx_id),
             None => Ok(None),
         }
-    }
-
-    /// Render by the game's sound-request id (see [`sfx_index_from_game_id`]).
-    pub fn render_game_id(&self, id: u32) -> Result<Option<RenderedSfx>> {
-        self.render(sfx_index_from_game_id(id))
     }
 
     /// Decode into mixer-ready sounds keyed by SFX index (silent macros omitted).
@@ -573,7 +562,6 @@ mod tests {
         assert!((r.volume - 1.0).abs() < 1e-6);
         assert_eq!(r.pan, 0.0);
         assert!(lib.render(6).unwrap().is_none());
-        assert!(lib.render_game_id(0x2805).unwrap().is_some()); // flags above bit 9 ignored
         let sounds = lib.to_sounds().unwrap();
         assert_eq!(sounds.len(), 1);
     }
@@ -585,12 +573,5 @@ mod tests {
         assert!(b.decode_sample(3).is_err());
         assert!(MusyxBank::parse(&proj()[..30], &pool(), &sdir(), vec![]).is_err());
         assert!(b.decode_sample(77).is_err());
-    }
-
-    #[test]
-    fn sfx_index_masks_flags() {
-        assert_eq!(sfx_index_from_game_id(0x281b), 0x1b);
-        assert_eq!(sfx_index_from_game_id(0x3b1f4), 0x1f4);
-        assert_eq!(sfx_index_from_game_id(0x0240), 0x240);
     }
 }

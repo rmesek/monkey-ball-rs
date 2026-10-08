@@ -19,6 +19,7 @@ use mb_game::{
 };
 use mb_render::Camera;
 
+use crate::audio::{Audio, Sfx};
 use crate::game::{Game, GameCtx, Transition};
 use crate::input::Action;
 use crate::play::PlayState;
@@ -96,6 +97,24 @@ fn format_time(frames: u32) -> String {
     format!("{}.{:02}", frames / 60, (frames % 60) * 100 / 60)
 }
 
+/// A volume setting as shown in the options.
+fn volume_label(percent: u8) -> String {
+    if percent == 0 {
+        "OFF".into()
+    } else {
+        format!("{percent}")
+    }
+}
+
+/// Selecting a volume row steps it by ten and wraps from 100 to off.
+fn next_volume(percent: u8) -> u8 {
+    if percent >= 100 {
+        0
+    } else {
+        (percent / 10 + 1) * 10
+    }
+}
+
 const MAIN_COURSES: [Difficulty; 7] = Difficulty::ALL;
 
 pub struct Menu {
@@ -111,6 +130,7 @@ pub struct Menu {
     allow_quit: bool,
     /// Texture count before the UI textures were uploaded (to free them when the menu itself is left).
     texture_base: usize,
+    audio: Audio,
 }
 
 impl Menu {
@@ -128,7 +148,21 @@ impl Menu {
             // A page or an Android activity is left through the system, not from a menu entry.
             allow_quit: cfg!(not(any(target_arch = "wasm32", target_os = "android"))),
             texture_base: 0,
+            audio: Audio::silent(),
         }
+    }
+
+    /// Give the game a voice (the default is silence). The platform driver keeps a clone for
+    /// suspend / resume.
+    pub fn with_audio(mut self, audio: Audio) -> Self {
+        self.audio = audio;
+        self
+    }
+
+    fn apply_volumes(&self) {
+        let s = &self.profile.settings;
+        self.audio
+            .set_volumes(s.music_volume, s.sfx_volume, s.announcer_volume);
     }
 
     pub fn with_autostart(mut self, autostart: Option<Autostart>) -> Self {
@@ -310,6 +344,9 @@ impl Menu {
                         format!("{}.{:02}", s.input_falloff / 100, s.input_falloff % 100),
                         true,
                     ),
+                    row_with("MUSIC VOLUME", volume_label(s.music_volume), true),
+                    row_with("SOUND VOLUME", volume_label(s.sfx_volume), true),
+                    row_with("ANNOUNCER VOLUME", volume_label(s.announcer_volume), true),
                     row("BACK"),
                 ]
             }
@@ -349,7 +386,11 @@ impl Menu {
 
     fn push_play(&mut self, request: PlayRequest) -> Transition {
         match &self.ui {
-            Some(ui) => Transition::Push(Box::new(PlayState::new(request, ui.clone()))),
+            Some(ui) => Transition::Push(Box::new(PlayState::new(
+                request,
+                ui.clone(),
+                self.audio.clone(),
+            ))),
             None => Transition::None,
         }
     }
@@ -532,6 +573,9 @@ impl Menu {
                             s.input_falloff + 25
                         }
                     }
+                    2 => s.music_volume = next_volume(s.music_volume),
+                    3 => s.sfx_volume = next_volume(s.sfx_volume),
+                    4 => s.announcer_volume = next_volume(s.announcer_volume),
                     _ => {
                         self.go(Screen::Title, 2);
                         return Transition::None;
@@ -539,6 +583,13 @@ impl Menu {
                 }
                 s.clamp();
                 self.save();
+                // Applied at once; a sample of the changed category lets the level be heard.
+                self.apply_volumes();
+                match index {
+                    3 => self.audio.play(Sfx::Banana),
+                    4 => self.audio.play(Sfx::Ready),
+                    _ => {}
+                }
             }
             Screen::GameOver { .. } => {
                 if index == 0 {
@@ -712,6 +763,13 @@ impl Game for Menu {
         let (profile, message) = Profile::load(self.storage.as_mut());
         self.profile = profile;
         self.notice = message.map(|m| m.to_uppercase());
+        // Sound effects are read and decoded here, once, before anything is played.
+        let dol = ctx.content.main_dol();
+        self.audio.ensure_sfx(
+            &mut |path| ctx.content.read(path),
+            dol.as_ref().map(|d| d.as_slice()),
+        );
+        self.apply_volumes();
         Ok(())
     }
 
@@ -735,16 +793,23 @@ impl Game for Menu {
         if !matches!(transition, Transition::None) {
             return transition;
         }
+        // A menu screen is showing (no stage follows this frame): stage music ends here.
+        self.audio.stop_music();
 
         let rows = self.rows();
         let title_h = 0.24 + self.info().len() as f32 * 0.055;
         let layout = ListLayout::column(&ctx.layout, rows.len(), title_h);
         let enabled = |i: usize| rows.get(i).is_some_and(|r| r.enabled);
+        let before = self.list.selected;
         if let Some(i) = self.list.update(ctx.input, &layout, &enabled) {
             self.notice = None;
+            self.audio.play(Sfx::MenuConfirm);
             transition = self.activate(i);
         } else if ctx.input.pressed(Action::Cancel) {
+            self.audio.play(Sfx::MenuCancel);
             transition = self.back();
+        } else if self.list.selected != before {
+            self.audio.play(Sfx::MenuMove);
         }
         if !matches!(transition, Transition::None) {
             return transition;
@@ -756,6 +821,7 @@ impl Game for Menu {
         self.list.selected = self.list.selected.min(rows.len().saturating_sub(1));
         self.list.reveal(&layout);
         self.draw(ctx, &layout, &rows, title_h);
+        self.audio.flush();
         Transition::None
     }
 
@@ -825,7 +891,22 @@ mod tests {
         assert_eq!(m.profile.settings.input_falloff, 125);
         let (saved, _) = Profile::load(m.storage.as_mut());
         assert!(saved.settings.unlock_all && saved.settings.input_falloff == 125);
+        // Volumes step by ten and wrap to off; the defaults are the reference's 50 / 30 / 30.
         m.activate(2);
+        m.activate(3);
+        for _ in 0..8 {
+            m.activate(4);
+        }
+        let s = &m.profile.settings;
+        assert_eq!(
+            (s.music_volume, s.sfx_volume, s.announcer_volume),
+            (60, 40, 0)
+        );
+        let (saved, _) = Profile::load(m.storage.as_mut());
+        assert_eq!(saved.settings.announcer_volume, 0);
+        assert_eq!(volume_label(0), "OFF");
+        assert_eq!(next_volume(95), 100);
+        m.activate(5);
         assert_eq!(m.screen_name(), "title");
     }
 

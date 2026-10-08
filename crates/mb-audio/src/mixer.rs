@@ -3,11 +3,10 @@
 //!
 //! Playback resamples with linear interpolation from each sound's rate to the mixer's output rate.
 //! Pan is a balance law (centre = unity on both sides, like a gain-only Web Audio path); it attenuates the
-//! far side only. A voice is a queue of segments; when a non-looping segment ends the next one starts on
+//! far side only. A voice is up to two segments; when a non-looping segment ends the next one starts on
 //! the exact output frame (sub-sample accurate), which is how `*_int` + `*_lp` music is chained.
 
 use crate::adp::AdpAudio;
-use std::collections::VecDeque;
 use std::sync::Arc;
 
 /// Immutable PCM buffer shared between voices.
@@ -48,6 +47,16 @@ impl Sound {
 
     pub fn from_adp(adp: &AdpAudio) -> Self {
         Self::stereo(adp.sample_rate, adp.samples.clone(), None)
+    }
+
+    /// Like [`Sound::from_adp`] without copying the samples.
+    pub fn from_adp_owned(adp: AdpAudio) -> Self {
+        Self::stereo(adp.sample_rate, adp.samples, None)
+    }
+
+    /// Bytes of PCM held.
+    pub fn byte_len(&self) -> usize {
+        self.data.len() * 2
     }
 
     pub fn frames(&self) -> usize {
@@ -110,22 +119,40 @@ struct Segment {
     looping: bool,
 }
 
+/// At most an intro and a body.
+const MAX_SEGS: usize = 2;
+
 struct Voice {
     id: VoiceId,
     bus: Bus,
+    /// Current gain; moves towards `vol_target` by `vol_step` per output frame.
     volume: f32,
+    vol_target: f32,
+    vol_step: f32,
+    /// Remove the voice once a fade reaches zero.
+    stop_at_zero: bool,
     pan: f32,
     rate: f32,
     delay: u32,
-    segs: VecDeque<Segment>,
-    /// Position in source frames within the front segment.
+    segs: [Option<Segment>; MAX_SEGS],
+    /// Index of the segment being played; `MAX_SEGS` when finished.
+    cur: usize,
+    /// Position in source frames within the current segment.
     pos: f64,
 }
 
 impl Voice {
-    /// Source frames advanced per output frame for the front segment.
+    fn front(&self) -> Option<&Segment> {
+        self.segs.get(self.cur).and_then(Option::as_ref)
+    }
+
+    fn finished(&self) -> bool {
+        self.front().is_none() || (self.stop_at_zero && self.volume <= 0.0)
+    }
+
+    /// Source frames advanced per output frame for the current segment.
     fn step(&self, out_rate: u32) -> f64 {
-        match self.segs.front() {
+        match self.front() {
             Some(s) => f64::from(s.sound.sample_rate) / f64::from(out_rate) * f64::from(self.rate),
             None => 0.0,
         }
@@ -133,7 +160,7 @@ impl Voice {
 
     /// Interpolated stereo sample at the current position, or `None` if finished.
     fn sample(&self) -> Option<(f32, f32)> {
-        let seg = self.segs.front()?;
+        let seg = self.front()?;
         let snd = &seg.sound;
         let frames = snd.frames();
         if frames == 0 {
@@ -147,7 +174,7 @@ impl Voice {
             snd.frame(ls)
         } else if i + 1 < frames {
             snd.frame(i + 1)
-        } else if let Some(next) = self.segs.get(1) {
+        } else if let Some(next) = self.segs.get(self.cur + 1).and_then(Option::as_ref) {
             if next.sound.frames() > 0 {
                 next.sound.frame(0)
             } else {
@@ -163,7 +190,7 @@ impl Voice {
         let step = self.step(out_rate);
         self.pos += step;
         loop {
-            let Some(seg) = self.segs.front() else { return };
+            let Some(seg) = self.front() else { return };
             let frames = seg.sound.frames();
             if seg.looping {
                 let (ls, le) = loop_bounds(seg);
@@ -181,12 +208,26 @@ impl Voice {
             } else {
                 0.0
             };
-            self.segs.pop_front();
-            if self.segs.is_empty() {
+            self.cur += 1;
+            if self.front().is_none() {
                 return;
             }
             self.pos = over_out * self.step(out_rate);
         }
+    }
+
+    /// Move the gain one frame along its ramp; true when it changed.
+    fn ramp(&mut self) -> bool {
+        if self.volume == self.vol_target {
+            return false;
+        }
+        let d = self.vol_target - self.volume;
+        if d.abs() <= self.vol_step || self.vol_step <= 0.0 {
+            self.volume = self.vol_target;
+        } else {
+            self.volume += self.vol_step.copysign(d);
+        }
+        true
     }
 }
 
@@ -198,7 +239,15 @@ fn loop_bounds(seg: &Segment) -> (usize, usize) {
     }
 }
 
-/// The mixer. Not thread-safe by itself; wrap in a mutex if the output callback runs on another thread.
+/// Default voice limit; the voice list is allocated once for this many.
+pub const DEFAULT_MAX_VOICES: usize = 64;
+
+/// The mixer. Not thread-safe by itself; the output thread owns it and is fed through a queue.
+///
+/// [`Mixer::mix`] and every method that starts, stops or changes a voice are allocation-free: the voice list
+/// is reserved up front and a voice holds its (at most two) segments inline. Removing a voice drops its
+/// `Arc<Sound>`s, so whoever queued a sound must keep its own reference if freeing the buffer on the
+/// output thread is to be avoided.
 pub struct Mixer {
     out_rate: u32,
     master: f32,
@@ -206,22 +255,30 @@ pub struct Mixer {
     max_voices: usize,
     voices: Vec<Voice>,
     next_id: u64,
+    paused: bool,
 }
 
 impl Mixer {
     pub fn new(out_rate: u32) -> Self {
         Self {
-            out_rate,
+            out_rate: out_rate.max(1),
             master: 1.0,
             bus_gain: [1.0; 3],
-            max_voices: 64,
-            voices: Vec::new(),
+            max_voices: DEFAULT_MAX_VOICES,
+            voices: Vec::with_capacity(DEFAULT_MAX_VOICES),
             next_id: 1,
+            paused: false,
         }
     }
 
     pub fn sample_rate(&self) -> u32 {
         self.out_rate
+    }
+
+    /// Change the output rate (the device was reopened). Voices keep their place: positions are kept in
+    /// source frames.
+    pub fn set_sample_rate(&mut self, out_rate: u32) {
+        self.out_rate = out_rate.max(1);
     }
 
     pub fn set_master_volume(&mut self, v: f32) {
@@ -232,21 +289,41 @@ impl Mixer {
         self.bus_gain[bus as usize] = v.max(0.0);
     }
 
+    pub fn bus_volume(&self, bus: Bus) -> f32 {
+        self.bus_gain[bus as usize]
+    }
+
+    /// Voice limit. Raising it above the current capacity reallocates, so do that before playback starts.
     pub fn set_max_voices(&mut self, n: usize) {
         self.max_voices = n.max(1);
+        if self.voices.capacity() < self.max_voices {
+            self.voices.reserve(self.max_voices - self.voices.len());
+        }
     }
 
     pub fn active_voices(&self) -> usize {
         self.voices.len()
     }
 
+    /// While paused [`Mixer::mix`] writes silence and nothing advances.
+    pub fn set_paused(&mut self, paused: bool) {
+        self.paused = paused;
+    }
+
+    pub fn is_paused(&self) -> bool {
+        self.paused
+    }
+
     /// Play one sound.
     pub fn play(&mut self, sound: Arc<Sound>, p: PlayParams) -> VoiceId {
         self.spawn(
-            vec![Segment {
-                sound,
-                looping: p.looping,
-            }],
+            [
+                Some(Segment {
+                    sound,
+                    looping: p.looping,
+                }),
+                None,
+            ],
             p,
         )
     }
@@ -258,17 +335,20 @@ impl Mixer {
         body: Arc<Sound>,
         volume: f32,
     ) -> VoiceId {
-        let mut segs = Vec::new();
-        if let Some(i) = intro {
-            segs.push(Segment {
-                sound: i,
-                looping: false,
-            });
-        }
-        segs.push(Segment {
+        let body = Some(Segment {
             sound: body,
             looping: true,
         });
+        let segs = match intro {
+            Some(i) => [
+                Some(Segment {
+                    sound: i,
+                    looping: false,
+                }),
+                body,
+            ],
+            None => [body, None],
+        };
         self.spawn(
             segs,
             PlayParams {
@@ -279,7 +359,7 @@ impl Mixer {
         )
     }
 
-    fn spawn(&mut self, segs: Vec<Segment>, p: PlayParams) -> VoiceId {
+    fn spawn(&mut self, segs: [Option<Segment>; MAX_SEGS], p: PlayParams) -> VoiceId {
         if self.voices.len() >= self.max_voices {
             // Steal the oldest non-music voice.
             if let Some(i) = self.voices.iter().position(|v| v.bus != Bus::Music) {
@@ -288,14 +368,19 @@ impl Mixer {
         }
         let id = VoiceId(self.next_id);
         self.next_id += 1;
+        let volume = p.volume.max(0.0);
         self.voices.push(Voice {
             id,
             bus: p.bus,
-            volume: p.volume.max(0.0),
+            volume,
+            vol_target: volume,
+            vol_step: 0.0,
+            stop_at_zero: false,
             pan: p.pan.clamp(-1.0, 1.0),
             rate: p.rate.max(0.0),
             delay: p.delay_frames,
-            segs: segs.into(),
+            segs,
+            cur: 0,
             pos: 0.0,
         });
         id
@@ -321,9 +406,28 @@ impl Mixer {
         self.voices.clear();
     }
 
+    /// Set the gain at once.
     pub fn set_volume(&mut self, id: VoiceId, volume: f32) {
         if let Some(v) = self.voice_mut(id) {
             v.volume = volume.max(0.0);
+            v.vol_target = v.volume;
+        }
+    }
+
+    /// Glide the gain to `volume` over `seconds` (no zipper noise on live updates).
+    pub fn ramp_volume(&mut self, id: VoiceId, volume: f32, seconds: f32) {
+        let frames = (seconds.max(0.0) * self.out_rate as f32).max(1.0);
+        if let Some(v) = self.voice_mut(id) {
+            v.vol_target = volume.max(0.0);
+            v.vol_step = (v.vol_target - v.volume).abs() / frames;
+        }
+    }
+
+    /// Fade a voice out over `seconds` and remove it.
+    pub fn fade_out(&mut self, id: VoiceId, seconds: f32) {
+        self.ramp_volume(id, 0.0, seconds);
+        if let Some(v) = self.voice_mut(id) {
+            v.stop_at_zero = true;
         }
     }
 
@@ -342,28 +446,41 @@ impl Mixer {
     /// Render `out.len() / 2` stereo frames (interleaved L,R), overwriting `out`. Output is not clamped.
     pub fn mix(&mut self, out: &mut [f32]) {
         out.fill(0.0);
+        if self.paused {
+            return;
+        }
         let out_rate = self.out_rate;
         let master = self.master;
         let bus_gain = self.bus_gain;
         for v in &mut self.voices {
-            let gain = v.volume * bus_gain[v.bus as usize] * master / 32768.0;
-            let gl = (1.0 - v.pan.max(0.0)) * gain;
-            let gr = (1.0 + v.pan.min(0.0)) * gain;
+            let bus = bus_gain[v.bus as usize] * master / 32768.0;
+            let pan_l = 1.0 - v.pan.max(0.0);
+            let pan_r = 1.0 + v.pan.min(0.0);
+            let mut gl = pan_l * v.volume * bus;
+            let mut gr = pan_r * v.volume * bus;
+            // A muted bus only keeps time: no sample is read or interpolated.
+            let silent = bus == 0.0;
             for frame in out.as_chunks_mut::<2>().0 {
                 if v.delay > 0 {
                     v.delay -= 1;
                     continue;
                 }
-                let Some((l, r)) = v.sample() else { break };
-                frame[0] += l * gl;
-                frame[1] += r * gr;
+                if v.ramp() {
+                    gl = pan_l * v.volume * bus;
+                    gr = pan_r * v.volume * bus;
+                }
+                if !silent {
+                    let Some((l, r)) = v.sample() else { break };
+                    frame[0] += l * gl;
+                    frame[1] += r * gr;
+                }
                 v.advance(out_rate);
-                if v.segs.is_empty() {
+                if v.finished() {
                     break;
                 }
             }
         }
-        self.voices.retain(|v| !v.segs.is_empty());
+        self.voices.retain(|v| !v.finished());
     }
 }
 
@@ -526,5 +643,72 @@ mod tests {
         let b = m.play(st.clone(), PlayParams::default());
         let c = m.play(st, PlayParams::default());
         assert!(!m.is_playing(a) && m.is_playing(b) && m.is_playing(c));
+    }
+
+    #[test]
+    fn ramps_fades_pause_and_muted_bus_keep_time() {
+        let mut m = Mixer::new(1000);
+        let s = Arc::new(Sound::mono(1000, vec![16384; 1000], None));
+        let id = m.play(
+            s.clone(),
+            PlayParams {
+                looping: true,
+                ..Default::default()
+            },
+        );
+        // 10 ms ramp to zero gain = 10 frames of equal steps.
+        m.ramp_volume(id, 0.0, 0.01);
+        let out = run(&mut m, 12);
+        let l: Vec<f32> = out.iter().step_by(2).copied().collect();
+        assert!((l[0] - 0.45).abs() < 1e-6 && (l[4] - 0.25).abs() < 1e-6);
+        assert_eq!(&l[9..], &[0.0, 0.0, 0.0]);
+        assert!(m.is_playing(id), "a ramp alone does not stop the voice");
+        m.set_volume(id, 1.0);
+        m.fade_out(id, 0.004);
+        let out = run(&mut m, 6);
+        assert!(out[0] > 0.0 && out[10] == 0.0);
+        assert!(!m.is_playing(id), "a fade removes the voice at zero");
+
+        // Paused: silence, nothing advances.
+        let ramp = Arc::new(Sound::mono(1000, (0..100).map(|i| i * 300).collect(), None));
+        let id = m.play(ramp, PlayParams::default());
+        run(&mut m, 2);
+        m.set_paused(true);
+        assert!(run(&mut m, 50).iter().all(|&x| x == 0.0));
+        m.set_paused(false);
+        let out = run(&mut m, 1);
+        assert!((out[0] - 600.0 / 32768.0).abs() < 1e-6);
+        // Muted bus: silent, but the voice keeps its place in time.
+        m.set_bus_volume(Bus::Sfx, 0.0);
+        assert!(run(&mut m, 10).iter().all(|&x| x == 0.0));
+        m.set_bus_volume(Bus::Sfx, 1.0);
+        let out = run(&mut m, 1);
+        assert!((out[0] - 13.0 * 300.0 / 32768.0).abs() < 1e-6);
+        run(&mut m, 200);
+        assert!(!m.is_playing(id));
+    }
+
+    #[test]
+    fn output_rate_can_change_mid_voice() {
+        let mut m = Mixer::new(1000);
+        let s = Arc::new(Sound::mono(1000, (0..100).map(|i| i * 100).collect(), None));
+        m.play(s, PlayParams::default());
+        run(&mut m, 10);
+        m.set_sample_rate(2000);
+        let out = run(&mut m, 2);
+        assert!((out[0] - 1000.0 / 32768.0).abs() < 1e-6);
+        assert!((out[2] - 1050.0 / 32768.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn voice_list_never_reallocates() {
+        let mut m = Mixer::new(1000);
+        let cap = m.voices.capacity();
+        let s = Arc::new(Sound::mono(1000, vec![1; 4], None));
+        for _ in 0..(DEFAULT_MAX_VOICES * 3) {
+            m.play(s.clone(), PlayParams::default());
+        }
+        assert_eq!(m.active_voices(), DEFAULT_MAX_VOICES);
+        assert_eq!(m.voices.capacity(), cap);
     }
 }

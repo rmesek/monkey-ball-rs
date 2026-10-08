@@ -22,11 +22,11 @@ pub mod stage_runtime;
 pub mod tables;
 pub mod world;
 
-pub use ball::{Ball, GoalHit};
+pub use ball::{Ball, BallAudio, GoalHit};
 pub use camera::GameplayCamera;
 pub use determinism::QuantizedInput;
 pub use hash::hash_sim_state;
-pub use sim::{Outcome, Phase, Sim, SimConfig};
+pub use sim::{Outcome, Phase, Sim, SimConfig, SimEvent};
 pub use stage_runtime::StageRuntime;
 pub use tables::{install_tables, Tables};
 pub use world::World;

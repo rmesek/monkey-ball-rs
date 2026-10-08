@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 use glam::Vec3;
 use mb_app::app::WindowOptions;
+use mb_app::audio::Audio;
 use mb_app::content::{source_from_path, Content};
 use mb_app::game::Game;
 use mb_app::headless::{autoplay, AutoplayOptions};
@@ -30,7 +31,8 @@ A stage number starts practice on that stage directly.
       --screenshot-dir <dir>  write PNGs of the menu, intro, play and goal there
   --size WxH               size for --screenshot / --autoplay (default 1280x720)
   --software               use the software adapter for headless runs
-  --exit-after <seconds>   close the window after that long and print frame pacing";
+  --mute                   do not open an audio device
+  --exit-after <seconds>   close the window after that long and print frame pacing and audio output";
 
 /// Storage key of the remembered disc image path.
 const LAST_DISC_KEY: &str = "last_disc";
@@ -51,6 +53,7 @@ struct Args {
     autoplay: Option<u32>,
     screenshot_dir: Option<PathBuf>,
     exit_after: Option<f32>,
+    mute: bool,
 }
 
 fn parse_args(args: impl Iterator<Item = String>) -> Result<Args, String> {
@@ -71,6 +74,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Args, String> {
         autoplay: None,
         screenshot_dir: None,
         exit_after: None,
+        mute: false,
     };
     let mut it = args;
     while let Some(a) = it.next() {
@@ -99,6 +103,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Args, String> {
                 );
             }
             "--software" => out.software = true,
+            "--mute" => out.mute = true,
             "--viewer" => out.viewer = true,
             "--pick" => out.pick = true,
             "--fullscreen" => out.fullscreen = true,
@@ -314,6 +319,9 @@ fn run() -> Result<(), String> {
         return Ok(());
     }
 
+    // The device stream opens here; without a device the game simply runs silent.
+    let audio = (!args.viewer && !args.mute)
+        .then(|| Audio::new(Box::new(mb_app::audio_cpal::CpalBackend::new())));
     let initial: Box<dyn Game> = if args.viewer {
         viewer()?
     } else {
@@ -321,15 +329,23 @@ fn run() -> Result<(), String> {
             .course
             .map(Autostart::Course)
             .or(args.stage.map(Autostart::Stage));
-        Box::new(Menu::new(storage).with_autostart(autostart))
+        let menu = Menu::new(storage).with_autostart(autostart);
+        Box::new(match &audio {
+            Some(audio) => menu.with_audio(audio.clone()),
+            None => menu,
+        })
     };
     let options = WindowOptions {
         exit_after: args.exit_after,
         fullscreen: args.fullscreen,
+        audio: audio.clone(),
     };
     let stats = mb_app::app::run_windowed(content, initial, options)?;
     if args.exit_after.is_some() {
         println!("{}", stats.summary());
+        if let Some(audio) = &audio {
+            println!("{}", audio.summary());
+        }
     }
     Ok(())
 }

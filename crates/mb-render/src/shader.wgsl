@@ -1,10 +1,15 @@
 // GX-style material shader for SMB1 models. One uber-shader: the per-material differences (lighting channel,
 // vertex colours, up to three texture layers of diffuse / alpha-blend / view-specular kind) are plain
-// uniforms, so a pipeline only differs by blend factors and cull mode.
+// uniforms, so a pipeline only differs by blend factors, cull mode and which textures it samples.
+
+// Texture fetches the pipeline needs: bits 0..2 = layers 0..2 through their own UVs, bits 3..5 = layers 0..2
+// through the sphere map. Set per pipeline, so a one-texture material pays for one fetch, not six.
+override SAMPLE_MASK: u32 = 63u;
 
 struct Scene {
     view: mat4x4<f32>,
     proj: mat4x4<f32>,
+    tilt: mat4x4<f32>,      // stage tilt (a rotation about the ball), for objects with params.y set
     light_dir: vec4<f32>,   // world-space unit vector pointing towards the light
     light_color: vec4<f32>,
     ambient: vec4<f32>,
@@ -18,7 +23,7 @@ struct Object {
     model: mat4x4<f32>,
     normal_mat: mat4x4<f32>,
     color_mul: vec4<f32>,
-    // x: object alpha
+    // x: object alpha, y: 1 = apply scene.tilt
     params: vec4<f32>,
 };
 
@@ -67,12 +72,16 @@ struct VsOut {
 @vertex
 fn vs_main(in: VsIn) -> VsOut {
     var out: VsOut;
-    let world = object.model * vec4<f32>(in.position, 1.0);
+    var world = object.model * vec4<f32>(in.position, 1.0);
+    var n = (object.normal_mat * vec4<f32>(in.normal, 0.0)).xyz;
+    if (object.params.y > 0.5) {
+        world = scene.tilt * world;
+        n = (scene.tilt * vec4<f32>(n, 0.0)).xyz;
+    }
     let view_pos = scene.view * world;
     out.clip = scene.proj * view_pos;
     out.view_depth = -view_pos.z;
 
-    var n = (object.normal_mat * vec4<f32>(in.normal, 0.0)).xyz;
     let nl = length(n);
     if (nl > 1e-6) {
         n = n / nl;
@@ -137,13 +146,23 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let count = material.flags.z;
     let naomi = material.flags.w;
 
-    // Textures are sampled up front (uniform control flow); the kinds then pick what to use.
-    let s0 = textureSample(tex0, samp0, in.uv0);
-    let s1 = textureSample(tex1, samp1, in.uv1);
-    let s2 = textureSample(tex2, samp2, in.uv2);
-    let m0 = textureSample(tex0, samp0, matcap_uv(in.view_normal));
-    let m1 = textureSample(tex1, samp1, matcap_uv(in.view_normal));
-    let m2 = textureSample(tex2, samp2, matcap_uv(in.view_normal));
+    // Textures are sampled up front (uniform control flow: the mask is a pipeline constant); the kinds then
+    // pick what to use.
+    var s0 = vec4<f32>(1.0);
+    var s1 = vec4<f32>(1.0);
+    var s2 = vec4<f32>(1.0);
+    var m0 = vec4<f32>(1.0);
+    var m1 = vec4<f32>(1.0);
+    var m2 = vec4<f32>(1.0);
+    if ((SAMPLE_MASK & 1u) != 0u) { s0 = textureSample(tex0, samp0, in.uv0); }
+    if ((SAMPLE_MASK & 2u) != 0u) { s1 = textureSample(tex1, samp1, in.uv1); }
+    if ((SAMPLE_MASK & 4u) != 0u) { s2 = textureSample(tex2, samp2, in.uv2); }
+    if ((SAMPLE_MASK & 56u) != 0u) {
+        let muv = matcap_uv(in.view_normal);
+        if ((SAMPLE_MASK & 8u) != 0u) { m0 = textureSample(tex0, samp0, muv); }
+        if ((SAMPLE_MASK & 16u) != 0u) { m1 = textureSample(tex1, samp1, muv); }
+        if ((SAMPLE_MASK & 32u) != 0u) { m2 = textureSample(tex2, samp2, muv); }
+    }
 
     if (naomi != 0u) {
         // NaomiLib: single texture, combine mode picked from the mesh flags.

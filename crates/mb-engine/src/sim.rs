@@ -114,6 +114,26 @@ pub fn compute_goal_score(goal: GoalType, frames_remaining: i32, time_limit_fram
     score * jump
 }
 
+/// Something that happened during one [`Sim::step`] that the presentation layer reacts to (sounds,
+/// effects). The reference triggers these inline from `game.ts`; here they are collected instead.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SimEvent {
+    /// A banana (or a bunch) was picked up (`playBananaCollect`).
+    BananaCollected { bunch: bool },
+    /// The ball touched a bumper (`ball.audio.bumperHit`).
+    BumperHit,
+    /// The ball entered a goal and broke its tape (`playGoal`).
+    GoalEntered(GoalType),
+    /// The ball starts flying away after the goal float (`ball_woosh`).
+    GoalLaunch,
+    /// The ring-out sequence began (`playFallout`).
+    FallOut,
+    /// Time ran out (`playAnnouncerTimeOver`).
+    TimeOver,
+    /// Every banana of a bonus stage is collected (`playAnnouncerPerfect`).
+    BonusClear,
+}
+
 #[derive(Debug, Clone)]
 pub struct Sim {
     pub cfg: SimConfig,
@@ -138,6 +158,10 @@ pub struct Sim {
     pub bananas_left: i32,
     pub score: i64,
     bonus_clear_pending: bool,
+    /// What happened in the last [`Sim::step`], in order. Cleared at the start of every step; output only
+    /// (never read by the simulation, not part of [`Sim::hash`]).
+    pub events: Vec<SimEvent>,
+    goal_launch_reported: bool,
 }
 
 impl Sim {
@@ -195,6 +219,8 @@ impl Sim {
             bananas_left,
             score: 0,
             bonus_clear_pending: false,
+            events: Vec::with_capacity(8),
+            goal_launch_reported: false,
         }
     }
 
@@ -330,6 +356,8 @@ impl Sim {
             if self.bananas_left > 0 {
                 self.bananas_left -= 1;
             }
+            self.events
+                .push(SimEvent::BananaCollected { bunch: is_bunch });
             self.ball.bananas += if is_bunch { 10 } else { 1 };
             self.score += if is_bunch { 1000 } else { 100 };
         }
@@ -364,6 +392,7 @@ impl Sim {
         self.ball.start_goal();
         self.camera.set_goal_main();
         self.break_goal_tape(&hit);
+        self.events.push(SimEvent::GoalEntered(hit.goal_type));
         self.phase = Phase::GoalSequence;
     }
 
@@ -377,6 +406,7 @@ impl Sim {
             RINGOUT_TOTAL_FRAMES
         };
         self.camera.set_fallout_main(&self.ball);
+        self.events.push(SimEvent::FallOut);
         self.phase = Phase::FallOut;
     }
 
@@ -390,6 +420,7 @@ impl Sim {
         self.ball.vel = Vec3::ZERO;
         self.ball.prev_pos = self.ball.pos;
         self.ball.speed = 0.0;
+        self.events.push(SimEvent::TimeOver);
         self.phase = Phase::TimeOver;
     }
 
@@ -400,15 +431,29 @@ impl Sim {
         self.bonus_clear_pending = true;
         self.goal_timer = BONUS_CLEAR_SEQUENCE_FRAMES;
         self.ball.start_goal();
+        self.events.push(SimEvent::BonusClear);
         self.phase = Phase::GoalSequence;
     }
 
     /// Advance exactly one fixed 60 Hz tick with this frame's quantized stick input.
     pub fn step(&mut self, input: QuantizedInput) {
+        self.events.clear();
         if self.is_finished() {
             return;
         }
+        self.ball.audio.bumper_hits = 0;
         self.step_inner(input);
+        if self.ball.audio.bumper_hits > 0 {
+            self.events.push(SimEvent::BumperHit);
+        }
+        // `goalWooshPlayed`: once per goal sequence, when the float ends.
+        if self.goal_timer > 0
+            && !self.goal_launch_reported
+            && self.ball.goal_timer >= GOAL_FLOAT_FRAMES
+        {
+            self.goal_launch_reported = true;
+            self.events.push(SimEvent::GoalLaunch);
+        }
         self.tick += 1;
     }
 

@@ -6,9 +6,12 @@
 //! (`noclip/SuperMonkeyBall/World.ts`, `AnimGroup.ts`) fed by `Game.get*RenderState` (`game.ts`):
 //! * The stage tilt is purely visual: everything that belongs to the stage is rotated about the ball by
 //!   `world.xrot/zrot * 0.6` (`getTiltedViewMatrix`); the backdrop is not. The reference folds that rotation
-//!   into the view matrix, here it is folded into each object's model matrix, which is the same product.
-//! * Models, textures and objects are created once in [`PlayScene::load`]; [`PlayScene::sync`] only updates
-//!   transforms, visibility and the 28 vertices of each goal tape.
+//!   into the view matrix; here it goes into the scene uniform (`Renderer::set_tilt`) and objects only say
+//!   whether it applies to them, so tilting the stage re-uploads no object.
+//! * Models, textures and objects are created once in [`PlayScene::load`]. [`PlayScene::sync`] records the
+//!   pose of one simulation tick; [`PlayScene::apply`] blends the last two poses for the frame being drawn
+//!   (the reference's `get*RenderState(alpha)` getters) and only then touches the renderer. Rendering never
+//!   feeds back into the simulation.
 
 use glam::{Mat4, Quat, Vec3};
 use mb_engine::constants::ball_flags;
@@ -16,11 +19,12 @@ use mb_engine::math::Mtx;
 use mb_engine::stage_runtime::BoundSphere;
 use mb_engine::Sim;
 use mb_render::{Layer, ModelId, ObjectId, Renderer};
+use web_time::Instant;
 
 use crate::anim::{interpolate, loop_wrap};
 use crate::content::Content;
 use crate::stage_info::BgInfo;
-use crate::stage_scene::{ItemKind, StageAssets, StageScene, S16_TO_RADIANS};
+use crate::stage_scene::{ItemKind, LoadTimings, StageAssets, StageScene, S16_TO_RADIANS};
 
 /// `STAGE_TILT_SCALE`: how much of the simulated tilt is shown.
 const STAGE_TILT_SCALE: f32 = 0.6;
@@ -77,8 +81,13 @@ fn trs_yxz(pos: Vec3, rot: [i32; 3]) -> Mat4 {
 
 /// World-space rotation of the stage about `pivot` for a tilt of `xrot`, `zrot` (S16) shown at `factor`.
 pub fn tilt_matrix(pivot: Vec3, xrot: i32, zrot: i32, factor: f32) -> Mat4 {
-    let rx = s16(xrot) * STAGE_TILT_SCALE * factor;
-    let rz = s16(zrot) * STAGE_TILT_SCALE * factor;
+    tilt_matrix_units(pivot, xrot as f32, zrot as f32, factor)
+}
+
+/// [`tilt_matrix`] for fractional S16 angles (a tilt blended between two ticks).
+pub fn tilt_matrix_units(pivot: Vec3, xrot: f32, zrot: f32, factor: f32) -> Mat4 {
+    let rx = xrot * S16_TO_RADIANS * STAGE_TILT_SCALE * factor;
+    let rz = zrot * S16_TO_RADIANS * STAGE_TILT_SCALE * factor;
     if rx == 0.0 && rz == 0.0 {
         return Mat4::IDENTITY;
     }
@@ -97,7 +106,92 @@ struct Bag {
 struct Tape {
     model: ModelId,
     object: ObjectId,
+    /// What the vertex buffer holds.
     vertices: mb_gma::Vertices,
+    /// Vertices of the last two ticks (`[previous, current]`).
+    ticks: [mb_gma::Vertices; 2],
+}
+
+/// Pose of one renderer object at a tick.
+#[derive(Clone, Copy)]
+struct Slot {
+    /// `None`: this tick did not pose the object (it keeps whatever it has).
+    object: Option<ObjectId>,
+    visible: bool,
+    /// The stage tilt applies on top of `m`.
+    tilted: bool,
+    /// Opacity, for the objects whose animation drives it.
+    alpha: Option<f32>,
+    m: Mat4,
+}
+
+const EMPTY_SLOT: Slot = Slot {
+    object: None,
+    visible: false,
+    tilted: true,
+    alpha: None,
+    m: Mat4::IDENTITY,
+};
+
+/// Everything [`PlayScene::apply`] needs from one simulation tick.
+#[derive(Clone, Default)]
+struct Pose {
+    /// Indexed by `ObjectId::index`.
+    slots: Vec<Slot>,
+    pivot: Vec3,
+    xrot: i32,
+    zrot: i32,
+    ball_rot: Quat,
+    ball_scale: f32,
+    ball_visible: bool,
+}
+
+impl Pose {
+    fn begin(&mut self, objects: usize) {
+        self.slots.clear();
+        self.slots.resize(objects, EMPTY_SLOT);
+    }
+
+    fn slot(&mut self, o: ObjectId) -> &mut Slot {
+        let slot = &mut self.slots[o.index()];
+        slot.object = Some(o);
+        slot
+    }
+
+    /// Show `o` at `m` (tilting with the stage).
+    fn set(&mut self, o: ObjectId, m: Mat4) {
+        let slot = self.slot(o);
+        slot.visible = true;
+        slot.m = m;
+    }
+
+    fn hide(&mut self, o: ObjectId) {
+        self.slot(o).visible = false;
+    }
+}
+
+/// A ball that moves further than this in one tick was placed, not rolled: do not blend across it.
+const TELEPORT_DISTANCE: f32 = 3.0;
+
+fn lerp_mat(a: &Mat4, b: &Mat4, t: f32) -> Mat4 {
+    Mat4::from_cols(
+        a.x_axis.lerp(b.x_axis, t),
+        a.y_axis.lerp(b.y_axis, t),
+        a.z_axis.lerp(b.z_axis, t),
+        a.w_axis.lerp(b.w_axis, t),
+    )
+}
+
+/// The reference's `lerpS16`: blend two S16 angles along the shorter way round.
+pub fn lerp_s16(a: i32, b: i32, t: f32) -> f32 {
+    let delta = b.wrapping_sub(a) as i16;
+    a as f32 + delta as f32 * t
+}
+
+/// The parsed files a stage keeps while it is played. Models and textures live on the GPU after loading; the
+/// parsed archives (several megabytes of vertex and texel data) are dropped.
+pub struct PlayAssets {
+    pub stagedef: mb_stage::Stage,
 }
 
 /// The five-digit clock above a goal: for each slot, one object per digit.
@@ -107,9 +201,15 @@ struct Clock {
 }
 
 pub struct PlayScene {
-    pub assets: StageAssets,
+    pub assets: PlayAssets,
     pub scene: StageScene,
-    fg_base: Vec<Mat4>,
+    /// Poses of the last two simulation ticks (`[previous, current]`).
+    poses: [Pose; 2],
+    /// False until a tick has been recorded since the last reset: there is nothing to blend from.
+    blend: bool,
+    objects: usize,
+    /// Scratch: anim group transforms of the tick being recorded.
+    groups: Vec<Mat4>,
     ball: Vec<ObjectId>,
     bags: Vec<Bag>,
     tapes: Vec<Tape>,
@@ -180,10 +280,13 @@ impl PlayScene {
         stage_id: u32,
         bg: Option<BgInfo>,
     ) -> Result<Self, String> {
-        let assets = StageAssets::load(content, stage_id, bg)
+        let mut timings = LoadTimings::default();
+        let started = Instant::now();
+        let assets = StageAssets::load_timed(content, stage_id, bg, &mut timings)
             .map_err(|e| format!("stage {stage_id}: {e}"))?;
+        let loaded = Instant::now();
+        r.load_stats = Default::default();
         let scene = StageScene::build(r, &assets);
-        let fg_base = scene.fg_objects.iter().map(|o| r.transform(*o)).collect();
 
         let common = |r: &mut Renderer, name: &str| -> Option<ModelId> {
             let model = assets.common_gma.model(name)?;
@@ -240,10 +343,12 @@ impl PlayScene {
                 if let Some(model) = tape_model(template, segments) {
                     for _ in 0..goal_count {
                         let id = r.upload_nl_model(&model, &set);
+                        let vertices = model.meshes[0].vertices.clone();
                         tapes.push(Tape {
                             model: id,
                             object: r.add_object(id, Layer::World, Mat4::IDENTITY),
-                            vertices: model.meshes[0].vertices.clone(),
+                            ticks: [vertices.clone(), vertices.clone()],
+                            vertices,
                         });
                     }
                 }
@@ -283,10 +388,48 @@ impl PlayScene {
             .stage_gma
             .as_ref()
             .and_then(|(gma, _)| stage_bound_sphere(gma));
+        // Everything that belongs to the stage tilts with it; the backdrop does not.
+        let tilting = (scene.items.iter().map(|it| it.object))
+            .chain(scene.fg_objects.iter().copied())
+            .chain(ball.iter().copied())
+            .chain(
+                bags.iter()
+                    .flat_map(|b| [b.closed, b.open_a, b.open_b])
+                    .flatten(),
+            )
+            .chain(tapes.iter().map(|t| t.object))
+            .chain(
+                (clocks.iter())
+                    .flat_map(|c| c.slots.iter())
+                    .flat_map(|(_, digits)| digits.iter().copied().flatten()),
+            );
+        for object in tilting {
+            r.set_tilted(object, true);
+        }
+        let objects = r.object_count();
+
+        let stats = r.load_stats;
+        timings.texture_decode_ms = stats.texture_decode_ms;
+        timings.texture_upload_ms = stats.texture_upload_ms;
+        timings.texture_bytes = stats.texture_bytes;
+        timings.textures = stats.textures;
+        timings.mesh_ms = stats.mesh_ms;
+        timings.gpu_total_ms = (Instant::now() - loaded).as_secs_f64() * 1000.0;
+        timings.total_ms = (Instant::now() - started).as_secs_f64() * 1000.0;
+        timings.stage_id = stage_id;
+        crate::perf::set_last_load(timings);
+
+        // The parsed archives are on the GPU now; only the stagedef is needed from here on.
+        let assets = PlayAssets {
+            stagedef: assets.stagedef,
+        };
         Ok(Self {
             assets,
             scene,
-            fg_base,
+            poses: [Pose::default(), Pose::default()],
+            blend: false,
+            objects,
+            groups: Vec::new(),
             ball,
             bags,
             tapes,
@@ -294,6 +437,12 @@ impl PlayScene {
             goal_tape_anchor_y,
             bound_sphere,
         })
+    }
+
+    /// Forget the recorded ticks: the next [`PlayScene::sync`] starts a new motion (stage start, retry), so
+    /// nothing is blended across the jump.
+    pub fn reset_pose(&mut self) {
+        self.blend = false;
     }
 
     fn load_common_nl(content: &Content) -> Option<(mb_gma::NlObj, mb_tpl::Tpl)> {
@@ -311,24 +460,37 @@ impl PlayScene {
         r.truncate_textures(self.scene.texture_base);
     }
 
-    /// Pose every object from the simulation state.
-    pub fn sync(&mut self, r: &mut Renderer, sim: &Sim) {
+    /// Record the pose of the simulation's current tick: once for the initial state and once after every
+    /// `Sim::step`. Does not touch the renderer; [`PlayScene::apply`] does, once per drawn frame.
+    pub fn sync(&mut self, sim: &Sim) {
+        let Self {
+            assets,
+            scene,
+            poses,
+            blend,
+            objects,
+            groups,
+            ball: _,
+            bags,
+            tapes,
+            clocks,
+            ..
+        } = self;
+        poses.swap(0, 1);
+        let (prev, pose) = poses.split_at_mut(1);
+        let (prev, pose) = (&mut prev[0], &mut pose[0]);
+        pose.begin(*objects);
+
         let rt = &sim.runtime;
         let pivot = vec3(sim.ball.pos);
-        let tilt = tilt_matrix(pivot, sim.world.xrot, sim.world.zrot, 1.0);
-        let groups: Vec<Mat4> = rt
-            .anim_groups
-            .iter()
-            .map(|g| mat4_from_mtx(&g.transform))
-            .collect();
+        groups.clear();
+        groups.extend(rt.anim_groups.iter().map(|g| mat4_from_mtx(&g.transform)));
         let group = |i: usize| groups.get(i).copied().unwrap_or(Mat4::IDENTITY);
 
-        for it in &self.scene.items {
+        for it in &scene.items {
             let g = group(it.group);
             match it.kind {
-                ItemKind::Model | ItemKind::Goal(_) => {
-                    r.set_transform(it.object, tilt * g * it.local)
-                }
+                ItemKind::Model | ItemKind::Goal(_) => pose.set(it.object, g * it.local),
                 ItemKind::Bumper(i) => {
                     let m = match rt.bumpers.get(it.group).and_then(|b| b.get(i)) {
                         // The simulation's own pose: spin plus the squash when the ball hits it.
@@ -343,44 +505,46 @@ impl PlayScene {
                         }
                         None => it.local,
                     };
-                    r.set_transform(it.object, tilt * g * m);
+                    pose.set(it.object, g * m);
                 }
                 ItemKind::Jamabar(i) => {
                     let m = match rt.jamabars.get(it.group).and_then(|j| j.get(i)) {
                         Some(j) => trs_zyx(vec3(j.pos), j.rot) * Mat4::from_scale(vec3(j.scale)),
                         None => it.local,
                     };
-                    r.set_transform(it.object, tilt * g * m);
+                    pose.set(it.object, g * m);
                 }
                 ItemKind::Banana(i) => {
                     let Some(b) = rt.bananas.get(i) else {
                         continue;
                     };
-                    r.set_visible(it.object, b.state != 0);
                     if b.state == 0 {
+                        pose.hide(it.object);
                         continue;
                     }
-                    // A collected banana leaves the tilting stage over half a second (`bananaTiltFactor`).
+                    let local = group(b.anim_group_id)
+                        * trs_yxz(vec3(b.local_pos), [b.rot_x, b.rot_y, b.rot_z])
+                        * Mat4::from_scale(Vec3::splat(b.scale as f32));
+                    // A collected banana leaves the tilting stage over half a second (`bananaTiltFactor`):
+                    // it then carries its own, weaker tilt instead of the stage's.
                     let factor = if b.state < 7 && !b.collected {
                         1.0
                     } else {
                         (b.tilt_timer.max(0) as f32 / 30.0).min(1.0)
                     };
-                    let stage = if factor >= 1.0 {
-                        tilt
+                    if factor >= 1.0 {
+                        pose.set(it.object, local);
                     } else {
-                        tilt_matrix(pivot, sim.world.xrot, sim.world.zrot, factor)
-                    };
-                    let local = trs_yxz(vec3(b.local_pos), [b.rot_x, b.rot_y, b.rot_z])
-                        * Mat4::from_scale(Vec3::splat(b.scale as f32));
-                    r.set_transform(it.object, stage * group(b.anim_group_id) * local);
+                        let own = tilt_matrix(pivot, sim.world.xrot, sim.world.zrot, factor);
+                        pose.set(it.object, own * local);
+                        pose.slot(it.object).tilted = false;
+                    }
                 }
             }
         }
 
-        for (bag, state) in self.bags.iter().zip(&rt.goal_bags) {
-            let base = tilt
-                * group(state.anim_group_id)
+        for (bag, state) in bags.iter().zip(&rt.goal_bags) {
+            let base = group(state.anim_group_id)
                 * trs_yxz(
                     vec3(state.u_some_pos),
                     [state.rot_x, state.rot_y, state.rot_z],
@@ -388,24 +552,33 @@ impl PlayScene {
             let openness = state.openness as f32;
             let open = openness > 0.0 && bag.open_a.is_some() && bag.open_b.is_some();
             if let Some(o) = bag.closed {
-                r.set_visible(o, !open);
-                r.set_transform(o, base);
+                if open {
+                    pose.hide(o);
+                } else {
+                    pose.set(o, base);
+                }
             }
             let halves = base * Mat4::from_translation(Vec3::new(0.0, -0.5 * openness, 0.0));
             let swing = s16(9102) * openness;
             for (object, angle) in [(bag.open_a, -swing), (bag.open_b, swing)] {
                 if let Some(o) = object {
-                    r.set_visible(o, open);
-                    r.set_transform(o, halves * Mat4::from_rotation_z(angle));
+                    if open {
+                        pose.set(o, halves * Mat4::from_rotation_z(angle));
+                    } else {
+                        pose.hide(o);
+                    }
                 }
             }
         }
 
-        for (tape, state) in self.tapes.iter_mut().zip(&rt.goal_tapes) {
-            let base =
-                tilt * group(state.anim_group_id) * trs_zyx(vec3(state.goal_pos), state.goal_rot);
-            r.set_transform(tape.object, base);
-            let mut v = tape.vertices.clone();
+        for (tape, state) in tapes.iter_mut().zip(&rt.goal_tapes) {
+            let base = group(state.anim_group_id) * trs_zyx(vec3(state.goal_pos), state.goal_rot);
+            pose.set(tape.object, base);
+            tape.ticks.swap(0, 1);
+            let (before, v) = tape.ticks.split_at_mut(1);
+            let v = &mut v[0];
+            // Segments past the end of the strip keep their last shape.
+            v.clone_from(&before[0]);
             for s in 0..v.positions.len() / 4 {
                 let (Some(a), Some(b)) = (state.points.get(s), state.points.get(s + 1)) else {
                     break;
@@ -434,63 +607,53 @@ impl PlayScene {
                     v.uv2[i] = uv;
                 }
             }
-            // The tape only moves while it settles or flutters: upload on change.
-            if v != tape.vertices && r.write_vertices(tape.model, 0, &v) {
-                tape.vertices = v;
-            }
         }
 
         // Goal clocks show the time left in hundredths of a second.
         let hundredths =
             ((sim.cfg.time_limit_frames - sim.stage_timer_frames).max(0) as i64) * 100 / 60;
-        for clock in &self.clocks {
+        for clock in clocks.iter() {
             let Some(goal) = rt.goals.get(clock.goal) else {
                 continue;
             };
-            let base = tilt * group(goal.anim_group_id) * trs_zyx(vec3(goal.pos), goal.rot);
+            let base = group(goal.anim_group_id) * trs_zyx(vec3(goal.pos), goal.rot);
             let mut value = hundredths;
-            for (x, objects) in &clock.slots {
+            for (x, digits) in &clock.slots {
                 let digit = (value % 10) as usize;
                 value /= 10;
-                for (d, o) in objects.iter().enumerate() {
-                    if let Some(o) = o {
-                        r.set_visible(*o, d == digit);
-                        if d == digit {
-                            r.set_transform(
-                                *o,
-                                base * Mat4::from_translation(Vec3::new(*x, 0.0, 0.0)),
-                            );
-                        }
+                for (d, o) in digits.iter().enumerate() {
+                    let Some(o) = o else {
+                        continue;
+                    };
+                    if d == digit {
+                        pose.set(*o, base * Mat4::from_translation(Vec3::new(*x, 0.0, 0.0)));
+                    } else {
+                        pose.hide(*o);
                     }
                 }
             }
         }
 
+        // Keyframed decoration. Objects without animation keep the transform they were created with.
         let seconds = rt.timer_frames as f32 / 60.0;
-        let stagedef = &self.assets.stagedef;
-        for ((object, source), base) in self
-            .scene
-            .fg_objects
-            .iter()
-            .zip(&self.scene.fg_sources)
-            .zip(&self.fg_base)
-        {
-            let local = match stagedef.fg_objects.get(*source) {
-                Some(o) if o.anim.is_some() => match bg_object_pose(o, seconds) {
-                    Some((m, alpha)) => {
-                        r.set_alpha(*object, alpha);
-                        Some(m)
-                    }
-                    None => None,
-                },
-                _ => Some(*base),
+        let stagedef = &assets.stagedef;
+        for (object, source) in scene.fg_objects.iter().zip(&scene.fg_sources) {
+            let Some(o) = stagedef
+                .fg_objects
+                .get(*source)
+                .filter(|o| o.anim.is_some())
+            else {
+                continue;
             };
-            r.set_visible(*object, local.is_some());
-            if let Some(m) = local {
-                r.set_transform(*object, tilt * m);
+            match bg_object_pose(o, seconds) {
+                Some((m, alpha)) => {
+                    pose.set(*object, m);
+                    pose.slot(*object).alpha = Some(alpha);
+                }
+                None => pose.hide(*object),
             }
         }
-        for (object, source) in self.scene.bg_objects.iter().zip(&self.scene.bg_sources) {
+        for (object, source) in scene.bg_objects.iter().zip(&scene.bg_sources) {
             let Some(o) = stagedef
                 .bg_objects
                 .get(*source)
@@ -498,27 +661,116 @@ impl PlayScene {
             else {
                 continue;
             };
-            let pose = bg_object_pose(o, seconds);
-            r.set_visible(*object, pose.is_some());
-            if let Some((m, alpha)) = pose {
-                r.set_transform(*object, m);
-                r.set_alpha(*object, alpha);
+            match bg_object_pose(o, seconds) {
+                Some((m, alpha)) => {
+                    pose.set(*object, m);
+                    pose.slot(*object).alpha = Some(alpha);
+                }
+                None => pose.hide(*object),
             }
+            pose.slot(*object).tilted = false;
         }
 
-        let visible = sim.ball.flags & ball_flags::INVISIBLE == 0;
         let o = sim.ball.orientation;
         let rotation = Quat::from_xyzw(o.x as f32, o.y as f32, o.z as f32, o.w as f32);
-        let rotation = if rotation.length_squared() > 1e-12 {
+        pose.ball_rot = if rotation.length_squared() > 1e-12 {
             rotation.normalize()
         } else {
             Quat::IDENTITY
         };
-        let scale = Vec3::splat(sim.ball.curr_radius as f32 / BALL_BASE_RADIUS);
-        let m = tilt * Mat4::from_scale_rotation_translation(scale, rotation, pivot);
+        pose.ball_scale = sim.ball.curr_radius as f32 / BALL_BASE_RADIUS;
+        pose.ball_visible = sim.ball.flags & ball_flags::INVISIBLE == 0;
+        pose.pivot = pivot;
+        pose.xrot = sim.world.xrot;
+        pose.zrot = sim.world.zrot;
+
+        // Nothing to blend from at the start of a motion, and nothing sensible across a teleport.
+        if !*blend || (pose.pivot - prev.pivot).length() > TELEPORT_DISTANCE {
+            prev.clone_from(pose);
+            for tape in tapes.iter_mut() {
+                let (before, now) = tape.ticks.split_at_mut(1);
+                before[0].clone_from(&now[0]);
+            }
+        }
+        *blend = true;
+    }
+
+    /// Pose the renderer for a frame that lies `alpha` (0..=1) of the way from the previous tick to the
+    /// current one. Only what actually changed reaches the GPU.
+    pub fn apply(&mut self, r: &mut Renderer, alpha: f32) {
+        let t = alpha.clamp(0.0, 1.0);
+        let [prev, curr] = &self.poses;
+        if curr.slots.is_empty() {
+            return;
+        }
+        for (c, p) in curr.slots.iter().zip(&prev.slots) {
+            let Some(o) = c.object else {
+                continue;
+            };
+            r.set_visible(o, c.visible);
+            if !c.visible {
+                continue;
+            }
+            r.set_tilted(o, c.tilted);
+            // An object that just appeared or changed space has no previous pose to come from.
+            let blend = p.object.is_some() && p.visible && p.tilted == c.tilted;
+            if blend && p.m != c.m {
+                r.set_transform(o, lerp_mat(&p.m, &c.m, t));
+            } else {
+                r.set_transform(o, c.m);
+            }
+            if let Some(alpha) = c.alpha {
+                let from = if blend { p.alpha } else { None }.unwrap_or(alpha);
+                r.set_alpha(o, from + (alpha - from) * t);
+            }
+        }
+
+        let pivot = prev.pivot.lerp(curr.pivot, t);
+        r.set_tilt(tilt_matrix_units(
+            pivot,
+            lerp_s16(prev.xrot, curr.xrot, t),
+            lerp_s16(prev.zrot, curr.zrot, t),
+            1.0,
+        ));
+        // The ball spins too fast per tick for a matrix blend: blend position, rotation and size apart.
+        let scale = prev.ball_scale + (curr.ball_scale - prev.ball_scale) * t;
+        let m = Mat4::from_scale_rotation_translation(
+            Vec3::splat(scale),
+            prev.ball_rot.lerp(curr.ball_rot, t),
+            pivot,
+        );
         for object in &self.ball {
-            r.set_visible(*object, visible);
+            r.set_visible(*object, curr.ball_visible);
             r.set_transform(*object, m);
+        }
+
+        for tape in &mut self.tapes {
+            let [before, now] = &tape.ticks;
+            let shown = &mut tape.vertices;
+            let mut changed = false;
+            if shown.normals != now.normals || shown.uv0 != now.uv0 {
+                shown.normals.clone_from(&now.normals);
+                shown.uv0.clone_from(&now.uv0);
+                shown.uv1.clone_from(&now.uv1);
+                shown.uv2.clone_from(&now.uv2);
+                changed = true;
+            }
+            for ((out, a), b) in shown
+                .positions
+                .iter_mut()
+                .zip(&before.positions)
+                .zip(&now.positions)
+            {
+                let p = Vec3::from(*a).lerp(Vec3::from(*b), t).to_array();
+                if *out != p {
+                    *out = p;
+                    changed = true;
+                }
+            }
+            // The tape only moves while it settles or flutters: upload on change.
+            if changed {
+                r.write_vertices(tape.model, 0, shown);
+            }
         }
     }
 }
@@ -583,6 +835,33 @@ mod tests {
         let shown = tilt_matrix(Vec3::ZERO, 0x1000, 0, 1.0).transform_vector3(Vec3::Y);
         let expect = (0x1000 as f32 * S16_TO_RADIANS * 0.6).cos();
         assert!((shown.y - expect).abs() < 1e-5);
+    }
+
+    #[test]
+    fn s16_angles_blend_the_short_way_round() {
+        assert_eq!(lerp_s16(0, 0x1000, 0.5), 0x800 as f32);
+        assert_eq!(lerp_s16(0x7ff0, -0x7ff0, 0.5), 0x8000 as f32);
+        assert_eq!(lerp_s16(-0x100, 0x100, 0.25), -0x80 as f32);
+        // Angles that are not reduced to 16 bits still take the short way.
+        assert_eq!(lerp_s16(0x10000, 0x100, 1.0), 0x10100 as f32);
+    }
+
+    #[test]
+    fn poses_blend_and_snap() {
+        let a = Mat4::from_translation(Vec3::new(1.0, 0.0, 0.0));
+        let b = Mat4::from_translation(Vec3::new(3.0, 0.0, 0.0));
+        assert_eq!(
+            lerp_mat(&a, &b, 0.5).w_axis.truncate(),
+            Vec3::new(2.0, 0.0, 0.0)
+        );
+        assert_eq!(lerp_mat(&a, &b, 0.0), a);
+        assert_eq!(lerp_mat(&a, &b, 1.0), b);
+        // The fractional tilt agrees with the integer one at whole angles.
+        let pivot = Vec3::new(1.0, 2.0, 3.0);
+        assert_eq!(
+            tilt_matrix_units(pivot, 0x400 as f32, -0x200 as f32, 1.0),
+            tilt_matrix(pivot, 0x400, -0x200, 1.0)
+        );
     }
 
     #[test]

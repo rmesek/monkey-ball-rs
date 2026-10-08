@@ -326,12 +326,16 @@ pub fn bonus_wave_surface_at(x: f64, z: f64, timer_frames: f64) -> Option<Plane>
 #[derive(Debug, Clone, Default)]
 pub struct Collider {
     pub stack: MatrixStack,
+    /// Bumper hits resolved so far (wrapping). Output only, for sound triggers: nothing in the simulation
+    /// reads it and it is not part of the state hash.
+    pub bumper_hits: u32,
 }
 
 impl Collider {
     pub fn new() -> Collider {
         Collider {
             stack: MatrixStack::new(),
+            bumper_hits: 0,
         }
     }
 
@@ -1263,6 +1267,7 @@ impl Collider {
     }
 
     fn collide_ball_with_bumper(&mut self, ball: &mut PhysBall, bumper: &mut BumperState) {
+        self.bumper_hits = self.bumper_hits.wrapping_add(1);
         bumper.state = 1;
         let resolve_radius = bumper.model_radius;
         let mut temp_pos = bumper.pos;

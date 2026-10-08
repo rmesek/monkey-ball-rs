@@ -5,15 +5,20 @@
 //! * [`musyx`]: MusyX `.proj/.pool/.sdir/.samp` bank reader (`test/snd/mkb/*`).
 //! * [`music`]: groups the ADP files into intro/loop tracks and mono variants.
 //! * [`mixer`]: voices with volume/pan/pitch/loop and intro-to-loop handoff, producing `f32` PCM.
+//! * [`driver`]: the mixer behind a non-blocking message queue, with output telemetry.
+//! * [`sound_table`]: the game's sound-request table from `main.dol` (request id -> MusyX id, velocity).
 //!
-//! Nothing here touches an audio device; callers pull interleaved stereo `f32` from [`mixer::Mixer::mix`].
+//! Nothing here touches an audio device; an output backend pulls interleaved stereo `f32` from
+//! [`driver::MixDriver::process`] (or [`mixer::Mixer::mix`] directly).
 //! See `docs/AUDIO.md` for the byte-level formats.
 
 pub mod adp;
+pub mod driver;
 pub mod dsp;
 pub mod mixer;
 pub mod music;
 pub mod musyx;
+pub mod sound_table;
 pub mod wav;
 
 use std::fmt;

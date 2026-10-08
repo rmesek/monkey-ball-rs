@@ -7,7 +7,8 @@
 
 use std::collections::HashMap;
 
-use glam::{Mat3, Mat4, Vec3};
+use glam::{Mat3, Mat4, Vec3, Vec4};
+use web_time::Instant;
 use wgpu::util::DeviceExt;
 
 use crate::camera::Camera;
@@ -37,6 +38,25 @@ pub struct ModelId(usize);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ObjectId(usize);
 
+impl ObjectId {
+    /// Position in creation order since the last [`Renderer::clear_scene`] (dense, for side tables).
+    pub fn index(self) -> usize {
+        self.0
+    }
+}
+
+/// Where the time of uploads went since the caller last reset it (stage loading).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct LoadStats {
+    pub textures: usize,
+    /// Decoded RGBA bytes handed to the GPU, all mip levels.
+    pub texture_bytes: usize,
+    pub texture_decode_ms: f64,
+    pub texture_upload_ms: f64,
+    /// Display-list decoding, vertex packing, buffer and pipeline creation.
+    pub mesh_ms: f64,
+}
+
 /// Which pass an object is drawn in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Layer {
@@ -58,6 +78,8 @@ pub struct GpuTexture {
     pub view: wgpu::TextureView,
     pub width: u32,
     pub height: u32,
+    /// Some texel of the top level is not fully opaque.
+    pub alpha: bool,
 }
 
 struct GpuMesh {
@@ -65,14 +87,24 @@ struct GpuMesh {
     vertex_count: u32,
     index: wgpu::Buffer,
     index_count: u32,
-    key: PipelineKey,
-    material: wgpu::BindGroup,
+    /// Index into `Renderer::pipelines` for the opaque pass (no blending when `solid`).
+    pipeline: usize,
+    /// The material's own blending pipeline, for the sorted pass.
+    pipeline_blend: usize,
+    /// Alpha is one everywhere (material, vertex colours, textures): blending would be a no-op.
+    solid: bool,
+    /// Index into `Renderer::materials`.
+    material: usize,
     translucent: bool,
     origin: Vec3,
 }
 
 struct GpuModel {
     meshes: Vec<GpuMesh>,
+    has_translucent: bool,
+    /// Bounding sphere of all vertices in model space, for frustum culling.
+    center: Vec3,
+    radius: f32,
 }
 
 struct Object {
@@ -83,23 +115,74 @@ struct Object {
     color_mul: [f32; 4],
     visible: bool,
     sort_bias: Option<f32>,
+    /// The stage tilt of the scene uniform is applied on top of `transform`.
+    tilted: bool,
     dirty: bool,
-    buffer: wgpu::Buffer,
-    bind_group: wgpu::BindGroup,
+    /// Bounding sphere in world space before the tilt (refreshed with the uniform).
+    center: Vec3,
+    radius: f32,
+    /// Outside the view frustum this frame.
+    culled: bool,
 }
 
+#[derive(Clone, Copy)]
 struct DrawItem {
-    object: usize,
-    mesh: usize,
+    object: u32,
+    mesh: u32,
+    /// Opaque: state sort key (pipeline, material). Translucent: unused.
+    key: u64,
     dist: f32,
 }
 
-/// Statistics of the last frame (useful in tests and the debug HUD).
+/// Statistics of the last frame (the `?fps=1` overlay, tests).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct FrameStats {
+    /// Model draw calls issued (after culling).
     pub draws: usize,
     pub translucent_draws: usize,
     pub objects: usize,
+    /// Visible objects skipped because they are outside the view frustum.
+    pub culled_objects: usize,
+    /// Sprite batches (one draw each).
+    pub sprite_draws: usize,
+    /// Pipeline, bind-group and vertex-buffer switches issued.
+    pub state_changes: usize,
+    /// Bytes written to uniform and vertex buffers.
+    pub upload_bytes: usize,
+}
+
+/// Key of a material bind group: uniform bytes plus the three (texture, sampler) pairs. Meshes with equal
+/// materials share one bind group, so sorted draws can skip the rebind.
+type MaterialKey = (
+    [u8; std::mem::size_of::<MaterialUniform>()],
+    [(usize, SamplerKey); 3],
+);
+
+/// All per-object uniforms live in one buffer, bound with a dynamic offset: a frame uploads the changed range
+/// in a single `write_buffer` instead of one call per object (each of those is a JS call in the browser).
+struct ObjectBuffer {
+    buffer: wgpu::Buffer,
+    group: wgpu::BindGroup,
+    capacity: usize,
+}
+
+/// What a render pass has bound, to skip redundant state calls.
+struct Bound {
+    pipeline: usize,
+    material: usize,
+    object: u32,
+    mesh: (usize, u32),
+}
+
+impl Default for Bound {
+    fn default() -> Self {
+        Self {
+            pipeline: usize::MAX,
+            material: usize::MAX,
+            object: u32::MAX,
+            mesh: (usize::MAX, u32::MAX),
+        }
+    }
 }
 
 pub struct Renderer {
@@ -110,21 +193,49 @@ pub struct Renderer {
     object_layout: wgpu::BindGroupLayout,
     material_layout: wgpu::BindGroupLayout,
     pipeline_layout: wgpu::PipelineLayout,
-    pipelines: HashMap<PipelineKey, wgpu::RenderPipeline>,
+    pipelines: Vec<wgpu::RenderPipeline>,
+    pipeline_index: HashMap<(PipelineKey, u32), usize>,
     textures: Vec<GpuTexture>,
     white: TextureId,
     samplers: HashMap<SamplerKey, wgpu::Sampler>,
+    materials: Vec<wgpu::BindGroup>,
+    material_index: HashMap<MaterialKey, usize>,
     models: Vec<GpuModel>,
     objects: Vec<Object>,
+    object_buffer: Option<ObjectBuffer>,
+    /// CPU copy of the object uniform buffer (`object_stride` bytes per object).
+    object_data: Vec<u8>,
+    object_stride: usize,
     scene_buffers: [wgpu::Buffer; 2],
     scene_groups: [wgpu::BindGroup; 2],
+    /// What the scene buffers hold, to skip the upload while nothing moves.
+    scene_data: [Option<SceneUniform>; 2],
     depth: Option<(wgpu::Texture, wgpu::TextureView, (u32, u32))>,
     sprites: SpriteRenderer,
     sprite_queue: Vec<Sprite>,
+    /// Opaque draws per layer (see `rebuild_opaque`); rebuilt only when objects are added or change pass.
+    solid: [Vec<DrawItem>; 2],
+    ordered: [Vec<DrawItem>; 2],
+    opaque_dirty: bool,
+    /// Blended draws per layer, rebuilt and sorted back to front every frame (buffers are reused).
+    translucent: [Vec<DrawItem>; 2],
+    /// Rotation of the stage about the ball, applied to objects flagged with [`Renderer::set_tilted`].
+    tilt: Mat4,
+    /// Bytes written outside `render` since the last frame (vertex re-poses).
+    pending_upload_bytes: usize,
+    /// Something that shows changed without an upload (visibility, textures, the target itself).
+    changed: bool,
+    /// Clear colour and target size of the last drawn frame.
+    drawn: Option<([f64; 4], (u32, u32))>,
     pub lighting: Lighting,
     pub clear_color: [f64; 4],
     pub fog: Option<Fog>,
     pub stats: FrameStats,
+    pub load_stats: LoadStats,
+}
+
+fn ms_since(t: Instant) -> f64 {
+    (Instant::now() - t).as_secs_f64() * 1000.0
 }
 
 fn uniform_entry(binding: u32, visibility: wgpu::ShaderStages) -> wgpu::BindGroupLayoutEntry {
@@ -138,6 +249,55 @@ fn uniform_entry(binding: u32, visibility: wgpu::ShaderStages) -> wgpu::BindGrou
         },
         count: None,
     }
+}
+
+const OBJECT_UNIFORM_SIZE: usize = std::mem::size_of::<ObjectUniform>();
+
+fn layer_index(layer: Layer) -> usize {
+    match layer {
+        Layer::Background => 0,
+        Layer::World => 1,
+    }
+}
+
+/// The six planes of a clip matrix (depth 0..1), normalised, pointing inwards.
+fn frustum_planes(clip: &Mat4) -> [Vec4; 6] {
+    let (r0, r1, r2, r3) = (clip.row(0), clip.row(1), clip.row(2), clip.row(3));
+    [r3 + r0, r3 - r0, r3 + r1, r3 - r1, r2, r3 - r2].map(|p| {
+        let len = p.truncate().length();
+        if len > 0.0 {
+            p / len
+        } else {
+            p
+        }
+    })
+}
+
+/// True when the sphere lies completely outside one of the planes.
+fn sphere_outside(planes: &[Vec4; 6], center: Vec3, radius: f32) -> bool {
+    planes
+        .iter()
+        .any(|p| p.truncate().dot(center) + p.w < -radius)
+}
+
+/// Bounding sphere of a point set: centre of the bounding box, radius to the farthest point.
+fn bounding_sphere<'a>(points: impl Iterator<Item = &'a [f32; 3]> + Clone) -> (Vec3, f32) {
+    let mut lo = Vec3::splat(f32::INFINITY);
+    let mut hi = Vec3::splat(f32::NEG_INFINITY);
+    for p in points.clone() {
+        let p = Vec3::from(*p);
+        lo = lo.min(p);
+        hi = hi.max(p);
+    }
+    if lo.x > hi.x {
+        return (Vec3::ZERO, 0.0);
+    }
+    let center = (lo + hi) * 0.5;
+    let radius = points
+        .map(|p| (Vec3::from(*p) - center).length_squared())
+        .fold(0.0f32, f32::max)
+        .sqrt();
+    (center, radius)
 }
 
 fn texture_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
@@ -203,7 +363,16 @@ impl Renderer {
         });
         let object_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("object"),
-            entries: &[uniform_entry(0, vf)],
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: vf,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: true,
+                    min_binding_size: wgpu::BufferSize::new(OBJECT_UNIFORM_SIZE as u64),
+                },
+                count: None,
+            }],
         });
         let material_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("material"),
@@ -246,6 +415,8 @@ impl Renderer {
         let (b0, g0) = make_scene("scene bg");
         let (b1, g1) = make_scene("scene world");
         let sprites = SpriteRenderer::new(&device, target_format, DEPTH_FORMAT);
+        let align = (device.limits().min_uniform_buffer_offset_alignment as usize).max(16);
+        let object_stride = OBJECT_UNIFORM_SIZE.div_ceil(align) * align;
         let mut r = Self {
             device,
             queue,
@@ -254,21 +425,37 @@ impl Renderer {
             object_layout,
             material_layout,
             pipeline_layout,
-            pipelines: HashMap::new(),
+            pipelines: Vec::new(),
+            pipeline_index: HashMap::new(),
             textures: Vec::new(),
             white: TextureId(0),
             samplers: HashMap::new(),
+            materials: Vec::new(),
+            material_index: HashMap::new(),
             models: Vec::new(),
             objects: Vec::new(),
+            object_buffer: None,
+            object_data: Vec::new(),
+            object_stride,
             scene_buffers: [b0, b1],
             scene_groups: [g0, g1],
+            scene_data: [None, None],
             depth: None,
             sprites,
             sprite_queue: Vec::new(),
+            solid: [Vec::new(), Vec::new()],
+            ordered: [Vec::new(), Vec::new()],
+            opaque_dirty: true,
+            translucent: [Vec::new(), Vec::new()],
+            tilt: Mat4::IDENTITY,
+            pending_upload_bytes: 0,
+            changed: true,
+            drawn: None,
             lighting: Lighting::default(),
             clear_color: [0.0, 0.0, 0.0, 1.0],
             fog: None,
             stats: FrameStats::default(),
+            load_stats: LoadStats::default(),
         };
         r.white = r.upload_rgba(1, 1, &[255, 255, 255, 255]);
         r
@@ -293,6 +480,7 @@ impl Renderer {
 
     /// Upload an RGBA8 mip chain: `(width, height, data)` per level, level 0 first.
     pub fn upload_rgba_mips(&mut self, levels: &[(u32, u32, &[u8])]) -> TextureId {
+        let started = Instant::now();
         let (w, h, _) = levels[0];
         let max_levels = 32 - w.max(h).max(1).leading_zeros();
         let count = (levels.len() as u32).min(max_levels).max(1);
@@ -332,11 +520,20 @@ impl Renderer {
             );
         }
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        self.load_stats.textures += 1;
+        self.load_stats.texture_bytes += levels
+            .iter()
+            .take(count as usize)
+            .map(|l| l.2.len())
+            .sum::<usize>();
+        self.load_stats.texture_upload_ms += ms_since(started);
+        self.changed = true;
         self.textures.push(GpuTexture {
             texture,
             view,
             width: w,
             height: h,
+            alpha: levels[0].2.as_chunks::<4>().0.iter().any(|p| p[3] != 255),
         });
         TextureId(self.textures.len() - 1)
     }
@@ -346,9 +543,11 @@ impl Renderer {
     pub fn upload_tpl(&mut self, tpl: &mb_tpl::Tpl) -> TextureSet {
         let mut set: TextureSet = Vec::new();
         for tex in tpl.textures() {
+            let started = Instant::now();
             let Ok(levels) = tex.decode_all() else {
                 continue;
             };
+            self.load_stats.texture_decode_ms += ms_since(started);
             let refs: Vec<(u32, u32, &[u8])> = levels
                 .iter()
                 .map(|l| (l.width as u32, l.height as u32, l.rgba.as_slice()))
@@ -401,9 +600,12 @@ impl Renderer {
 
     // ---- models ------------------------------------------------------------------------------------
 
-    fn ensure_pipeline(&mut self, key: PipelineKey) {
-        if self.pipelines.contains_key(&key) {
-            return;
+    /// Pipeline for `key` whose fragment shader samples only the textures in `samples` (bits 0..2: layers
+    /// through their own UVs, bits 3..5: layers through the sphere map). Most materials use one texture; the
+    /// shader would otherwise pay for six fetches per fragment.
+    fn ensure_pipeline(&mut self, key: PipelineKey, samples: u32) -> usize {
+        if let Some(i) = self.pipeline_index.get(&(key, samples)) {
+            return *i;
         }
         let blend = key.blend.map(|(src, dst)| wgpu::BlendState {
             color: wgpu::BlendComponent {
@@ -431,7 +633,10 @@ impl Renderer {
                 fragment: Some(wgpu::FragmentState {
                     module: &self.shader,
                     entry_point: Some("fs_main"),
-                    compilation_options: Default::default(),
+                    compilation_options: wgpu::PipelineCompilationOptions {
+                        constants: &[("SAMPLE_MASK", samples as f64)],
+                        ..Default::default()
+                    },
                     targets: &[Some(wgpu::ColorTargetState {
                         format: self.target_format,
                         blend,
@@ -457,7 +662,10 @@ impl Renderer {
                 multiview_mask: None,
                 cache: None,
             });
-        self.pipelines.insert(key, pipeline);
+        self.pipelines.push(pipeline);
+        self.pipeline_index
+            .insert((key, samples), self.pipelines.len() - 1);
+        self.pipelines.len() - 1
     }
 
     fn texture_or_white(&self, textures: &[Option<TextureId>], idx: Option<usize>) -> TextureId {
@@ -470,11 +678,16 @@ impl Renderer {
         v: &mb_gma::Vertices,
         indices: &[u32],
         key: PipelineKey,
-        material: wgpu::BindGroup,
+        (material, samples, solid): (usize, u32, bool),
         translucent: bool,
         origin: Vec3,
     ) -> GpuMesh {
-        self.ensure_pipeline(key);
+        let pipeline_blend = self.ensure_pipeline(key, samples);
+        let pipeline = if solid {
+            self.ensure_pipeline(PipelineKey { blend: None, ..key }, samples)
+        } else {
+            pipeline_blend
+        };
         let verts = pack_vertices(v);
         let vertex = self
             .device
@@ -496,7 +709,9 @@ impl Renderer {
             vertex_count: verts.len() as u32,
             index,
             index_count: indices.len() as u32,
-            key,
+            pipeline,
+            pipeline_blend,
+            solid: solid && !translucent,
             material,
             translucent,
             origin,
@@ -509,34 +724,42 @@ impl Renderer {
         model: &mb_gma::Model,
         textures: &[Option<TextureId>],
     ) -> Result<ModelId, mb_gma::Error> {
+        let started = Instant::now();
         let meshes = model.meshes()?;
-        let mut material_groups: HashMap<usize, wgpu::BindGroup> = HashMap::new();
+        let mut material_groups: HashMap<usize, (usize, u32, Option<bool>)> = HashMap::new();
         let mut out = Vec::new();
+        let bounds = bounding_sphere(meshes.iter().flat_map(|m| m.vertices.positions.iter()));
         for mesh in &meshes {
             if mesh.indices.is_empty() || mesh.vertices.is_empty() {
                 continue;
             }
             let shape = &model.shapes[mesh.shape_index];
             let material = match material_groups.get(&mesh.shape_index) {
-                Some(m) => m.clone(),
+                Some(m) => *m,
                 None => {
                     let bg = self.material_bind_group(model, shape, textures);
-                    material_groups.insert(mesh.shape_index, bg.clone());
+                    material_groups.insert(mesh.shape_index, bg);
                     bg
                 }
             };
             let key = pipeline_key(&shape.material, mesh.cull);
+            // `Some(uses vertex colours)`: the material itself never produces alpha below one.
+            let solid = match material.2 {
+                Some(true) => mesh.vertices.colors.iter().all(|c| c[3] == 255),
+                Some(false) => true,
+                None => false,
+            };
             out.push(self.make_mesh(
                 &mesh.vertices,
                 &mesh.indices,
                 key,
-                material,
+                (material.0, material.1, solid),
                 mesh.translucent,
                 Vec3::from(shape.origin),
             ));
         }
-        self.models.push(GpuModel { meshes: out });
-        Ok(ModelId(self.models.len() - 1))
+        self.load_stats.mesh_ms += ms_since(started);
+        Ok(self.push_model(out, bounds))
     }
 
     /// Upload a NaomiLib model (stages such as 10, 19, 20, 30, ...). `textures` belongs to the stage
@@ -546,8 +769,15 @@ impl Renderer {
         model: &mb_gma::NlModel,
         textures: &[Option<TextureId>],
     ) -> ModelId {
+        let started = Instant::now();
         let kind_a = model.kind == mb_gma::VertexKind::A;
         let mut out = Vec::new();
+        let bounds = bounding_sphere(
+            model
+                .meshes
+                .iter()
+                .flat_map(|m| m.vertices.positions.iter()),
+        );
         for mesh in &model.meshes {
             if mesh.indices.is_empty() || mesh.vertices.is_empty() {
                 continue;
@@ -568,12 +798,23 @@ impl Renderer {
                 &mesh.vertices,
                 &mesh.indices,
                 naomi_pipeline_key(mesh),
-                material,
+                // NaomiLib meshes never blend.
+                (material, tex.is_some() as u32, true),
                 false,
                 Vec3::from(model.bound_sphere_center),
             ));
         }
-        self.models.push(GpuModel { meshes: out });
+        self.load_stats.mesh_ms += ms_since(started);
+        self.push_model(out, bounds)
+    }
+
+    fn push_model(&mut self, meshes: Vec<GpuMesh>, (center, radius): (Vec3, f32)) -> ModelId {
+        self.models.push(GpuModel {
+            has_translucent: meshes.iter().any(|m| m.translucent),
+            meshes,
+            center,
+            radius,
+        });
         ModelId(self.models.len() - 1)
     }
 
@@ -582,7 +823,7 @@ impl Renderer {
         model: &mb_gma::Model,
         shape: &mb_gma::Shape,
         textures: &[Option<TextureId>],
-    ) -> wgpu::BindGroup {
+    ) -> (usize, u32, Option<bool>) {
         let m = &shape.material;
         let mut kinds = Vec::new();
         let mut layers: Vec<(TextureId, SamplerKey)> = Vec::new();
@@ -595,7 +836,30 @@ impl Renderer {
             }
         }
         let uniform = material_uniform(m, &kinds);
-        self.make_material_group(&uniform, &layers)
+        let mut samples = 0;
+        for (i, kind) in kinds.iter().enumerate() {
+            samples |= match kind {
+                LayerKind::Diffuse | LayerKind::AlphaBlend => 1 << i,
+                LayerKind::ViewSpecular => 8 << i,
+                LayerKind::WorldSpecular => 0,
+            };
+        }
+        // Alpha is one unless the material, an alpha layer or a texture with an alpha channel lowers it.
+        let opaque = uniform.mat_color[3] >= 1.0
+            && kinds
+                .iter()
+                .zip(&layers)
+                .all(|(kind, (tex, _))| match kind {
+                    LayerKind::Diffuse => !self.textures[tex.0].alpha,
+                    LayerKind::AlphaBlend => false,
+                    LayerKind::ViewSpecular | LayerKind::WorldSpecular => true,
+                });
+        let vertex_colors = uniform.flags[1] != 0;
+        (
+            self.make_material_group(&uniform, &layers),
+            samples,
+            opaque.then_some(vertex_colors),
+        )
     }
 
     /// Bind group 2: material uniform plus up to three (texture, sampler) pairs; unused slots get white.
@@ -603,7 +867,21 @@ impl Renderer {
         &mut self,
         uniform: &MaterialUniform,
         layers: &[(TextureId, SamplerKey)],
-    ) -> wgpu::BindGroup {
+    ) -> usize {
+        let fallback = SamplerKey {
+            wrap_s: WrapKey::Clamp,
+            wrap_t: WrapKey::Clamp,
+            max_lod: 0,
+            nearest: false,
+        };
+        let slots: [(TextureId, SamplerKey); 3] =
+            std::array::from_fn(|i| layers.get(i).copied().unwrap_or((self.white, fallback)));
+        let mut bytes = [0u8; std::mem::size_of::<MaterialUniform>()];
+        bytes.copy_from_slice(bytemuck::bytes_of(uniform));
+        let key: MaterialKey = (bytes, slots.map(|(t, s)| (t.0, s)));
+        if let Some(i) = self.material_index.get(&key) {
+            return *i;
+        }
         let buffer = self
             .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -611,21 +889,14 @@ impl Renderer {
                 contents: bytemuck::bytes_of(uniform),
                 usage: wgpu::BufferUsages::UNIFORM,
             });
-        let fallback = SamplerKey {
-            wrap_s: WrapKey::Clamp,
-            wrap_t: WrapKey::Clamp,
-            max_lod: 0,
-            nearest: false,
-        };
         let mut views = Vec::new();
         let mut samplers = Vec::new();
-        for i in 0..3 {
-            let (tex, key) = layers.get(i).copied().unwrap_or((self.white, fallback));
+        for (tex, key) in slots {
             views.push(tex);
             samplers.push(self.sampler(key));
         }
         let t = |i: usize| &self.textures[views[i].0].view;
-        self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("material"),
             layout: &self.material_layout,
             entries: &[
@@ -658,26 +929,15 @@ impl Renderer {
                     resource: wgpu::BindingResource::Sampler(&samplers[2]),
                 },
             ],
-        })
+        });
+        self.materials.push(group);
+        self.material_index.insert(key, self.materials.len() - 1);
+        self.materials.len() - 1
     }
 
     // ---- objects -----------------------------------------------------------------------------------
 
     pub fn add_object(&mut self, model: ModelId, layer: Layer, transform: Mat4) -> ObjectId {
-        let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("object"),
-            size: std::mem::size_of::<ObjectUniform>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("object"),
-            layout: &self.object_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: buffer.as_entire_binding(),
-            }],
-        });
         self.objects.push(Object {
             model,
             layer,
@@ -686,10 +946,13 @@ impl Renderer {
             color_mul: [1.0; 4],
             visible: true,
             sort_bias: None,
+            tilted: false,
             dirty: true,
-            buffer,
-            bind_group,
+            center: Vec3::ZERO,
+            radius: 0.0,
+            culled: false,
         });
+        self.opaque_dirty = true;
         ObjectId(self.objects.len() - 1)
     }
 
@@ -703,18 +966,32 @@ impl Renderer {
         }
     }
 
+    /// Objects created since the last [`Renderer::clear_scene`].
+    pub fn object_count(&self) -> usize {
+        self.objects.len()
+    }
+
     pub fn transform(&self, object: ObjectId) -> Mat4 {
         self.objects[object.0].transform
     }
 
     pub fn set_visible(&mut self, object: ObjectId, visible: bool) {
-        self.objects[object.0].visible = visible;
+        let o = &mut self.objects[object.0];
+        self.changed |= o.visible != visible;
+        o.visible = visible;
+    }
+
+    /// The target no longer shows the last frame (resized, reconfigured, uncovered): the next
+    /// [`Renderer::prepare`] reports a change whatever the scene did.
+    pub fn invalidate(&mut self) {
+        self.changed = true;
     }
 
     /// Object-wide opacity (1 = opaque). Objects below 1 draw all their shapes in the sorted pass.
     pub fn set_alpha(&mut self, object: ObjectId, alpha: f32) {
         let o = &mut self.objects[object.0];
         if o.alpha != alpha {
+            self.opaque_dirty |= (o.alpha < 1.0) != (alpha < 1.0);
             o.alpha = alpha;
             o.dirty = true;
         }
@@ -722,22 +999,46 @@ impl Renderer {
 
     pub fn set_color_mul(&mut self, object: ObjectId, rgba: [f32; 4]) {
         let o = &mut self.objects[object.0];
-        o.color_mul = rgba;
-        o.dirty = true;
+        if o.color_mul != rgba {
+            self.opaque_dirty |= (o.color_mul[3] < 1.0) != (rgba[3] < 1.0);
+            o.color_mul = rgba;
+            o.dirty = true;
+        }
+    }
+
+    /// Whether the stage tilt ([`Renderer::set_tilt`]) applies to the object, on top of its transform.
+    pub fn set_tilted(&mut self, object: ObjectId, tilted: bool) {
+        let o = &mut self.objects[object.0];
+        if o.tilted != tilted {
+            o.tilted = tilted;
+            o.dirty = true;
+        }
+    }
+
+    /// World-space rotation shown on every tilted object of the world layer. It lives in the scene uniform,
+    /// so tilting the stage re-uploads one matrix and no object.
+    pub fn set_tilt(&mut self, tilt: Mat4) {
+        self.tilt = tilt;
     }
 
     /// Draw every mesh of the object in the back-to-front pass, ordered by the distance of the object's
     /// origin plus `bias` (larger = drawn earlier). Layered shells that share a centre (the ball) need
     /// this: their per-mesh distances tie or flip. `None` restores per-mesh sorting.
     pub fn set_sort_bias(&mut self, object: ObjectId, bias: Option<f32>) {
-        self.objects[object.0].sort_bias = bias;
+        let o = &mut self.objects[object.0];
+        self.opaque_dirty |= o.sort_bias.is_some() != bias.is_some();
+        self.changed |= o.sort_bias != bias;
+        o.sort_bias = bias;
     }
 
     /// Replace the vertices of one mesh of an uploaded model (same vertex count; the index buffer is kept).
     /// For the few meshes that are re-posed on the CPU every frame. Returns false when the mesh does not
     /// exist or the count differs.
     pub fn write_vertices(&mut self, model: ModelId, mesh: usize, v: &mb_gma::Vertices) -> bool {
-        let Some(m) = self.models.get(model.0).and_then(|m| m.meshes.get(mesh)) else {
+        let Some(gpu_model) = self.models.get_mut(model.0) else {
+            return false;
+        };
+        let Some(m) = gpu_model.meshes.get(mesh) else {
             return false;
         };
         if m.vertex_count as usize != v.len() {
@@ -746,6 +1047,16 @@ impl Renderer {
         let verts = pack_vertices(v);
         self.queue
             .write_buffer(&m.vertex, 0, bytemuck::cast_slice(&verts));
+        self.pending_upload_bytes += std::mem::size_of_val(verts.as_slice());
+        // Keep the culling sphere a superset of every pose (the old sphere stays inside the new one).
+        let (center, radius) = bounding_sphere(v.positions.iter());
+        let reach = (center - gpu_model.center).length() + radius;
+        if reach > gpu_model.radius {
+            gpu_model.radius = reach;
+            for o in self.objects.iter_mut().filter(|o| o.model == model) {
+                o.dirty = true;
+            }
+        }
         true
     }
 
@@ -754,7 +1065,12 @@ impl Renderer {
     pub fn clear_scene(&mut self) {
         self.objects.clear();
         self.models.clear();
+        self.materials.clear();
+        self.material_index.clear();
         self.sprite_queue.clear();
+        self.tilt = Mat4::IDENTITY;
+        self.opaque_dirty = true;
+        self.changed = true;
     }
 
     pub fn texture_count(&self) -> usize {
@@ -764,6 +1080,9 @@ impl Renderer {
     /// Free every texture created after the first `keep` (ids handed out later become invalid).
     pub fn truncate_textures(&mut self, keep: usize) {
         self.textures.truncate(keep.max(1));
+        // Texture ids are reused after this, so they no longer identify a material.
+        self.material_index.clear();
+        self.changed = true;
         self.sprites.forget_textures();
     }
 
@@ -785,6 +1104,7 @@ impl Renderer {
         if matches!(&self.depth, Some((_, _, s)) if *s == size) {
             return;
         }
+        self.changed = true;
         let tex = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("depth"),
             size: wgpu::Extent3d {
@@ -818,9 +1138,12 @@ impl Renderer {
             ),
             _ => ([0.0; 4], [0.0, 1.0, 0.0]),
         };
+        // The backdrop never tilts.
+        let tilt = if bg { Mat4::IDENTITY } else { self.tilt };
         SceneUniform {
             view: camera.view.to_cols_array_2d(),
             proj: camera.projection(aspect, near, far).to_cols_array_2d(),
+            tilt: tilt.to_cols_array_2d(),
             light_dir: [dir.x, dir.y, dir.z, 0.0],
             light_color: [l.light_color[0], l.light_color[1], l.light_color[2], 1.0],
             ambient: [l.ambient[0], l.ambient[1], l.ambient[2], 1.0],
@@ -840,88 +1163,307 @@ impl Renderer {
         }
     }
 
-    fn collect(&self, layer: Layer, camera: &Camera) -> (Vec<DrawItem>, Vec<DrawItem>) {
-        let mut opaque = Vec::new();
-        let mut translucent = Vec::new();
-        for (oi, o) in self.objects.iter().enumerate() {
-            if !o.visible || o.layer != layer {
+    /// Bring the object uniform buffer up to date: changed objects are rewritten in the CPU copy and each
+    /// run of changed slots goes to the GPU in one write. Returns the bytes uploaded.
+    fn upload_objects(&mut self) -> usize {
+        let stride = self.object_stride;
+        let count = self.objects.len();
+        if count == 0 {
+            return 0;
+        }
+        let mut grown = false;
+        if self
+            .object_buffer
+            .as_ref()
+            .is_none_or(|b| b.capacity < count)
+        {
+            let capacity = count.next_power_of_two().max(64);
+            let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("objects"),
+                size: (capacity * stride) as u64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("objects"),
+                layout: &self.object_layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: &buffer,
+                        offset: 0,
+                        size: wgpu::BufferSize::new(OBJECT_UNIFORM_SIZE as u64),
+                    }),
+                }],
+            });
+            self.object_buffer = Some(ObjectBuffer {
+                buffer,
+                group,
+                capacity,
+            });
+            grown = true;
+        }
+        self.object_data.resize(count * stride, 0);
+        let buffer = &self.object_buffer.as_ref().unwrap().buffer;
+        let models = &self.models;
+        let mut uploaded = 0;
+        // Current run of slots to upload, as a slot range.
+        let mut run: Option<(usize, usize)> = None;
+        // Slots between two changed ones that are cheaper to resend than to start another write.
+        const MERGE_GAP: usize = 8;
+        for (i, o) in self.objects.iter_mut().enumerate() {
+            // Hidden objects keep their dirty flag and are written when they appear.
+            let refresh = o.dirty && (o.visible || grown);
+            if refresh {
+                let u = ObjectUniform {
+                    model: o.transform.to_cols_array_2d(),
+                    normal_mat: normal_matrix(&o.transform).to_cols_array_2d(),
+                    color_mul: o.color_mul,
+                    params: [o.alpha, o.tilted as u32 as f32, 0.0, 0.0],
+                };
+                self.object_data[i * stride..i * stride + OBJECT_UNIFORM_SIZE]
+                    .copy_from_slice(bytemuck::bytes_of(&u));
+                let model = &models[o.model.0];
+                o.center = o.transform.transform_point3(model.center);
+                let scale = o
+                    .transform
+                    .x_axis
+                    .truncate()
+                    .length_squared()
+                    .max(o.transform.y_axis.truncate().length_squared())
+                    .max(o.transform.z_axis.truncate().length_squared())
+                    .sqrt();
+                o.radius = model.radius * scale;
+                o.dirty = false;
+            }
+            if !(refresh || grown) {
                 continue;
             }
-            let model = &self.models[o.model.0];
-            let sort_all = o.alpha < 1.0 || o.color_mul[3] < 1.0 || o.sort_bias.is_some();
-            for (mi, m) in model.meshes.iter().enumerate() {
-                let dist = match o.sort_bias {
-                    Some(bias) => {
-                        let world = o.transform.w_axis.truncate();
-                        camera.view.transform_point3(world).length() + bias
-                    }
-                    None => {
-                        let world = o.transform.transform_point3(m.origin);
-                        camera.view.transform_point3(world).length()
-                    }
-                };
+            run = match run {
+                Some((start, end)) if i <= end + MERGE_GAP => Some((start, i + 1)),
+                Some((start, end)) => {
+                    let bytes = &self.object_data[start * stride..end * stride];
+                    self.queue
+                        .write_buffer(buffer, (start * stride) as u64, bytes);
+                    uploaded += bytes.len();
+                    Some((i, i + 1))
+                }
+                None => Some((i, i + 1)),
+            };
+        }
+        if let Some((start, end)) = run {
+            let bytes = &self.object_data[start * stride..end * stride];
+            self.queue
+                .write_buffer(buffer, (start * stride) as u64, bytes);
+            uploaded += bytes.len();
+        }
+        uploaded
+    }
+
+    /// Flag visible objects whose bounding sphere is outside the frustum of their pass. Returns how many.
+    fn cull(&mut self, clip: &[Mat4; 2]) -> usize {
+        let bg = frustum_planes(&clip[0]);
+        let world = frustum_planes(&clip[1]);
+        // Tilted objects are tested in the space before the tilt.
+        let tilted = frustum_planes(&(clip[1] * self.tilt));
+        let mut culled = 0;
+        for o in &mut self.objects {
+            if !o.visible {
+                continue;
+            }
+            let planes = match (o.layer, o.tilted) {
+                (Layer::Background, _) => &bg,
+                (Layer::World, false) => &world,
+                (Layer::World, true) => &tilted,
+            };
+            // A NaN or infinite sphere never compares as outside.
+            o.culled = sphere_outside(planes, o.center, o.radius);
+            culled += o.culled as usize;
+        }
+        culled
+    }
+
+    /// Does this object draw all its meshes in the sorted, blended pass?
+    fn sorts_all(o: &Object) -> bool {
+        o.alpha < 1.0 || o.color_mul[3] < 1.0 || o.sort_bias.is_some()
+    }
+
+    /// Rebuild the cached opaque lists. `solid` holds meshes whose alpha is always one: they are drawn without
+    /// blending, so their order is free and they are sorted by pipeline and material. `ordered` holds the
+    /// other meshes of the opaque pass; they blend at texture edges and keep the order of the stage data.
+    fn rebuild_opaque(&mut self) {
+        for list in self.solid.iter_mut().chain(self.ordered.iter_mut()) {
+            list.clear();
+        }
+        for (oi, o) in self.objects.iter().enumerate() {
+            if Self::sorts_all(o) {
+                continue;
+            }
+            let layer = layer_index(o.layer);
+            for (mi, m) in self.models[o.model.0].meshes.iter().enumerate() {
+                if m.translucent {
+                    continue;
+                }
                 let item = DrawItem {
-                    object: oi,
-                    mesh: mi,
-                    dist,
+                    object: oi as u32,
+                    mesh: mi as u32,
+                    key: ((m.pipeline as u64) << 32) | m.material as u64,
+                    dist: 0.0,
                 };
-                if m.translucent || sort_all {
-                    translucent.push(item);
+                if m.solid {
+                    self.solid[layer].push(item);
                 } else {
-                    opaque.push(item);
+                    self.ordered[layer].push(item);
                 }
             }
         }
-        translucent.sort_by(|a, b| b.dist.total_cmp(&a.dist));
-        (opaque, translucent)
+        for list in &mut self.solid {
+            // Stable: equal state keeps object order, so instances of one model stay together.
+            list.sort_by_key(|d| d.key);
+        }
+        self.opaque_dirty = false;
     }
 
-    fn draw_items<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, items: &[DrawItem]) {
-        let mut last_key: Option<PipelineKey> = None;
-        for it in items {
-            let obj = &self.objects[it.object];
-            let mesh = &self.models[obj.model.0].meshes[it.mesh];
-            if last_key != Some(mesh.key) {
-                pass.set_pipeline(&self.pipelines[&mesh.key]);
-                last_key = Some(mesh.key);
+    /// Collect this frame's blended draws, farthest first.
+    fn collect_translucent(&mut self, view: &Mat4) {
+        let view_tilted = *view * self.tilt;
+        for list in &mut self.translucent {
+            list.clear();
+        }
+        for (oi, o) in self.objects.iter().enumerate() {
+            if !o.visible || o.culled {
+                continue;
             }
-            pass.set_bind_group(1, &obj.bind_group, &[]);
-            pass.set_bind_group(2, &mesh.material, &[]);
-            pass.set_vertex_buffer(0, mesh.vertex.slice(..));
-            pass.set_index_buffer(mesh.index.slice(..), wgpu::IndexFormat::Uint32);
+            let sort_all = Self::sorts_all(o);
+            let model = &self.models[o.model.0];
+            if !sort_all && !model.has_translucent {
+                continue;
+            }
+            let layer = layer_index(o.layer);
+            let view = if o.tilted && layer == 1 {
+                &view_tilted
+            } else {
+                view
+            };
+            for (mi, m) in model.meshes.iter().enumerate() {
+                if !(m.translucent || sort_all) {
+                    continue;
+                }
+                let dist = match o.sort_bias {
+                    Some(bias) => {
+                        view.transform_point3(o.transform.w_axis.truncate())
+                            .length()
+                            + bias
+                    }
+                    None => view
+                        .transform_point3(o.transform.transform_point3(m.origin))
+                        .length(),
+                };
+                self.translucent[layer].push(DrawItem {
+                    object: oi as u32,
+                    mesh: mi as u32,
+                    key: 0,
+                    dist,
+                });
+            }
+        }
+        for list in &mut self.translucent {
+            // Stable, like the order the reference gets for equal distances.
+            list.sort_by(|a, b| b.dist.total_cmp(&a.dist));
+        }
+    }
+
+    /// Issue the draws of `items`, skipping every pipeline, bind group and buffer that is already bound.
+    /// `blend` picks each mesh's blending pipeline (solid meshes faded by their object need it).
+    fn draw_items(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        items: &[DrawItem],
+        blend: bool,
+        bound: &mut Bound,
+        stats: &mut FrameStats,
+    ) {
+        let Some(objects) = &self.object_buffer else {
+            return;
+        };
+        for it in items {
+            let obj = &self.objects[it.object as usize];
+            if !obj.visible || obj.culled {
+                continue;
+            }
+            let mesh = &self.models[obj.model.0].meshes[it.mesh as usize];
+            let pipeline = if blend {
+                mesh.pipeline_blend
+            } else {
+                mesh.pipeline
+            };
+            if bound.pipeline != pipeline {
+                pass.set_pipeline(&self.pipelines[pipeline]);
+                bound.pipeline = pipeline;
+                stats.state_changes += 1;
+            }
+            if bound.object != it.object {
+                let offset = it.object as usize * self.object_stride;
+                pass.set_bind_group(1, &objects.group, &[offset as u32]);
+                bound.object = it.object;
+                stats.state_changes += 1;
+            }
+            if bound.material != mesh.material {
+                pass.set_bind_group(2, &self.materials[mesh.material], &[]);
+                bound.material = mesh.material;
+                stats.state_changes += 1;
+            }
+            if bound.mesh != (obj.model.0, it.mesh) {
+                pass.set_vertex_buffer(0, mesh.vertex.slice(..));
+                pass.set_index_buffer(mesh.index.slice(..), wgpu::IndexFormat::Uint32);
+                bound.mesh = (obj.model.0, it.mesh);
+                stats.state_changes += 1;
+            }
             pass.draw_indexed(0..mesh.index_count, 0, 0..1);
+            stats.draws += 1;
         }
     }
 
     /// Render the scene into `target` (a view of a texture with the format given at construction).
     /// Submits the work to the queue.
     pub fn render(&mut self, target: &wgpu::TextureView, size: (u32, u32), camera: &Camera) {
+        self.prepare(size, camera);
+        self.draw(target);
+    }
+
+    /// First half of a frame: upload what changed since the last one and work out what to draw. Returns
+    /// false when the frame would be identical to the last one drawn, in which case the caller may skip
+    /// [`Renderer::draw`] and presenting altogether.
+    pub fn prepare(&mut self, size: (u32, u32), camera: &Camera) -> bool {
         let size = (size.0.max(1), size.1.max(1));
         self.ensure_depth(size);
         let aspect = size.0 as f32 / size.1 as f32;
+        let mut stats = FrameStats {
+            objects: self.objects.len(),
+            upload_bytes: std::mem::take(&mut self.pending_upload_bytes),
+            ..FrameStats::default()
+        };
 
+        let mut clip = [Mat4::IDENTITY; 2];
         for (i, bg) in [true, false].into_iter().enumerate() {
             let u = self.scene_uniform(camera, aspect, bg);
-            self.queue
-                .write_buffer(&self.scene_buffers[i], 0, bytemuck::bytes_of(&u));
-        }
-        for o in &mut self.objects {
-            if o.dirty {
-                let u = ObjectUniform {
-                    model: o.transform.to_cols_array_2d(),
-                    normal_mat: normal_matrix(&o.transform).to_cols_array_2d(),
-                    color_mul: o.color_mul,
-                    params: [o.alpha, 0.0, 0.0, 0.0],
-                };
+            clip[i] = Mat4::from_cols_array_2d(&u.proj) * camera.view;
+            // A still camera (menus, pause) uploads nothing.
+            if self.scene_data[i] != Some(u) {
                 self.queue
-                    .write_buffer(&o.buffer, 0, bytemuck::bytes_of(&u));
-                o.dirty = false;
+                    .write_buffer(&self.scene_buffers[i], 0, bytemuck::bytes_of(&u));
+                self.scene_data[i] = Some(u);
+                stats.upload_bytes += std::mem::size_of::<SceneUniform>();
             }
         }
-        let (bg_opaque, bg_translucent) = self.collect(Layer::Background, camera);
-        let (w_opaque, w_translucent) = self.collect(Layer::World, camera);
+        stats.upload_bytes += self.upload_objects();
+        stats.culled_objects = self.cull(&clip);
+        if self.opaque_dirty {
+            self.rebuild_opaque();
+        }
+        self.collect_translucent(&camera.view);
         let sprites = std::mem::take(&mut self.sprite_queue);
-        self.sprites.prepare(
+        let (sprite_bytes, sprites_changed) = self.sprites.prepare(
             &self.device,
             &self.queue,
             &sprites,
@@ -929,12 +1471,35 @@ impl Renderer {
             size,
             self.target_format.is_srgb(),
         );
-        self.stats = FrameStats {
-            draws: bg_opaque.len() + bg_translucent.len() + w_opaque.len() + w_translucent.len(),
-            translucent_draws: bg_translucent.len() + w_translucent.len(),
-            objects: self.objects.len(),
-        };
+        stats.upload_bytes += sprite_bytes;
+        stats.sprite_draws = self.sprites.batch_count();
+        // Hand the allocation back for the next frame.
+        self.sprite_queue = sprites;
+        self.sprite_queue.clear();
+        let look = Some((self.clear_color, size));
+        let changed = std::mem::take(&mut self.changed)
+            || sprites_changed
+            || stats.upload_bytes > 0
+            || self.drawn != look;
+        self.drawn = look;
+        if !changed {
+            // Keep the counts of the frame that is still on screen.
+            stats.draws = self.stats.draws;
+            stats.translucent_draws = self.stats.translucent_draws;
+            stats.state_changes = 0;
+        }
+        self.stats = stats;
+        changed
+    }
 
+    /// Second half of a frame: encode and submit the passes for what [`Renderer::prepare`] set up.
+    pub fn draw(&mut self, target: &wgpu::TextureView) {
+        let mut stats = FrameStats {
+            draws: 0,
+            translucent_draws: 0,
+            state_changes: 0,
+            ..self.stats
+        };
         let (_, depth_view, _) = self.depth.as_ref().unwrap();
         let mut encoder = self
             .device
@@ -947,23 +1512,15 @@ impl Renderer {
             b: self.clear_color[2],
             a: self.clear_color[3],
         };
-        for (pass_index, (opaque, translucent)) in
-            [(&bg_opaque, &bg_translucent), (&w_opaque, &w_translucent)]
-                .into_iter()
-                .enumerate()
-        {
+        for layer in 0..2 {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some(if pass_index == 0 {
-                    "background"
-                } else {
-                    "world"
-                }),
+                label: Some(if layer == 0 { "background" } else { "world" }),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: target,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: if pass_index == 0 {
+                        load: if layer == 0 {
                             wgpu::LoadOp::Clear(clear)
                         } else {
                             wgpu::LoadOp::Load
@@ -983,14 +1540,31 @@ impl Renderer {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            pass.set_bind_group(0, &self.scene_groups[pass_index], &[]);
-            self.draw_items(&mut pass, opaque);
-            self.draw_items(&mut pass, translucent);
-            if pass_index == 1 {
+            pass.set_bind_group(0, &self.scene_groups[layer], &[]);
+            let mut bound = Bound::default();
+            self.draw_items(&mut pass, &self.solid[layer], false, &mut bound, &mut stats);
+            self.draw_items(
+                &mut pass,
+                &self.ordered[layer],
+                true,
+                &mut bound,
+                &mut stats,
+            );
+            let opaque_draws = stats.draws;
+            self.draw_items(
+                &mut pass,
+                &self.translucent[layer],
+                true,
+                &mut bound,
+                &mut stats,
+            );
+            stats.translucent_draws += stats.draws - opaque_draws;
+            if layer == 1 {
                 self.sprites.draw(&mut pass);
             }
         }
         self.queue.submit(Some(encoder.finish()));
+        self.stats = stats;
     }
 
     /// Render into an offscreen target and (natively) read the pixels back as tightly packed RGBA8.
@@ -1010,6 +1584,44 @@ mod tests {
         let m = Mat4::from_scale(Vec3::splat(2.0));
         let n = normal_matrix(&m);
         assert!((n.x_axis.x - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn frustum_culls_only_what_is_outside() {
+        let camera = Camera::look_at(Vec3::new(0.0, 0.0, 10.0), Vec3::ZERO, Vec3::Y);
+        let clip = camera.projection(1.0, 0.1, 100.0) * camera.view;
+        let planes = frustum_planes(&clip);
+        assert!(!sphere_outside(&planes, Vec3::ZERO, 1.0));
+        // Behind the camera, beyond the far plane, far off to the side.
+        assert!(sphere_outside(&planes, Vec3::new(0.0, 0.0, 20.0), 1.0));
+        assert!(sphere_outside(&planes, Vec3::new(0.0, 0.0, -200.0), 1.0));
+        assert!(sphere_outside(&planes, Vec3::new(50.0, 0.0, 0.0), 1.0));
+        // Centre outside but the sphere reaches in.
+        assert!(!sphere_outside(&planes, Vec3::new(8.0, 0.0, 0.0), 5.0));
+        // A broken bound is never culled.
+        assert!(!sphere_outside(&planes, Vec3::splat(f32::NAN), 1.0));
+        assert!(!sphere_outside(
+            &planes,
+            Vec3::new(50.0, 0.0, 0.0),
+            f32::INFINITY
+        ));
+    }
+
+    #[test]
+    fn bounding_sphere_contains_every_point() {
+        let points = [
+            [0.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [1.0, 3.0, 0.0],
+            [1.0, 0.0, -4.0],
+        ];
+        let (center, radius) = bounding_sphere(points.iter());
+        for p in points {
+            assert!((Vec3::from(p) - center).length() <= radius + 1e-6);
+        }
+        assert_eq!(center, Vec3::new(1.0, 1.5, -2.0));
+        let none: [[f32; 3]; 0] = [];
+        assert_eq!(bounding_sphere(none.iter()), (Vec3::ZERO, 0.0));
     }
 
     #[test]

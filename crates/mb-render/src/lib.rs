@@ -25,8 +25,8 @@ pub use glam;
 pub use lighting::Lighting;
 pub use offscreen::{rgba_to_ppm, OffscreenTarget};
 pub use renderer::{
-    Fog, FrameStats, GpuTexture, Layer, ModelId, ObjectId, Renderer, TextureId, TextureSet,
-    DEPTH_FORMAT,
+    Fog, FrameStats, GpuTexture, Layer, LoadStats, ModelId, ObjectId, Renderer, TextureId,
+    TextureSet, DEPTH_FORMAT,
 };
 pub use sprite::Sprite;
 pub use wgpu;

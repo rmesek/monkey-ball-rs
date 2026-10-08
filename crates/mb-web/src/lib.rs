@@ -13,6 +13,10 @@
 //! workers). Why it is not one big wasm `Vec`: wasm32 linear memory is limited to 4 GiB, never shrinks, and must
 //! grow as one contiguous block, which is the allocation that fails first on phones. See docs/WEB.md.
 
+/// Web Audio backend of the game's audio system (`mb_app::audio`).
+#[cfg(target_arch = "wasm32")]
+mod audio;
+
 #[cfg(target_arch = "wasm32")]
 mod web {
     use std::cell::{Cell, RefCell};
@@ -42,6 +46,88 @@ mod web {
         static FRAMES: Cell<u32> = const { Cell::new(0) };
         /// Adapter description once the GPU is up ("... (BrowserWebGpu, ...)" or "... (Gl, ...)").
         static GPU: RefCell<String> = const { RefCell::new(String::new()) };
+        /// Frame timings, recorded only while the page asked for them (`?fps=1`, [`perf_enable`]).
+        static PERF: RefCell<Option<mb_app::perf::PerfStats>> = const { RefCell::new(None) };
+        /// A gamepad is connected (the page tells us, see `set_gamepad_present`).
+        static PAD_PRESENT: Cell<bool> = const { Cell::new(false) };
+        /// Render scale asked for by the page (`?scale=`) and whether it may drop on its own.
+        static RENDER_OPTIONS: Cell<(f32, bool)> = const { Cell::new((1.0, true)) };
+        /// Render scale in use, relative to the capped device resolution (for the overlay).
+        static QUALITY: Cell<f32> = const { Cell::new(1.0) };
+    }
+
+    /// The page reports gamepads coming and going (`gamepadconnected` / `gamepaddisconnected`), so the
+    /// per-frame poll, which allocates on the JS side, only runs while there is a pad to read.
+    #[wasm_bindgen]
+    pub fn set_gamepad_present(present: bool) {
+        PAD_PRESENT.with(|p| p.set(present));
+    }
+
+    /// Rendering options, to be set before [`start`]. `scale`: render resolution relative to the (capped)
+    /// device resolution, 0.25..=1. `auto`: let the game lower it when frames stay over budget.
+    #[wasm_bindgen]
+    pub fn set_render_options(scale: f32, auto: bool) {
+        let scale = if scale.is_finite() { scale } else { 1.0 };
+        RENDER_OPTIONS.with(|o| o.set((scale.clamp(0.25, 1.0), auto)));
+    }
+
+    /// Render scale currently in use (1 = the capped device resolution).
+    #[wasm_bindgen]
+    pub fn render_quality() -> f32 {
+        QUALITY.with(Cell::get)
+    }
+
+    /// Where the time of the last stage load went, as JSON (`mb_app::stage_scene::LoadTimings`); empty before
+    /// the first stage.
+    #[wasm_bindgen]
+    pub fn perf_last_load() -> String {
+        mb_app::perf::last_load()
+            .map(|t| t.to_json())
+            .unwrap_or_default()
+    }
+
+    /// Start (or stop) recording frame timings for [`perf_json`]. Off by default: recording is cheap, but
+    /// nothing should run that nobody reads.
+    #[wasm_bindgen]
+    pub fn perf_enable(on: bool) {
+        PERF.with(|p| *p.borrow_mut() = on.then(mb_app::perf::PerfStats::new));
+    }
+
+    /// Forget the recorded frames (start a fresh measurement window).
+    #[wasm_bindgen]
+    pub fn perf_reset() {
+        PERF.with(|p| {
+            if let Some(p) = p.borrow_mut().as_mut() {
+                p.reset();
+            }
+        });
+    }
+
+    /// Summary of the recorded window as JSON (see `mb_app::perf::Summary`); empty while recording is off.
+    #[wasm_bindgen]
+    pub fn perf_json() -> String {
+        PERF.with(|p| {
+            p.borrow()
+                .as_ref()
+                .map(|p| p.summary().to_json())
+                .unwrap_or_default()
+        })
+    }
+
+    /// The recorded window, oldest first, four numbers per frame: interval, update and render time in
+    /// milliseconds, simulation ticks.
+    #[wasm_bindgen]
+    pub fn perf_frames() -> Vec<f32> {
+        PERF.with(|p| {
+            p.borrow()
+                .as_ref()
+                .map(|p| {
+                    p.samples()
+                        .flat_map(|s| [s.interval_ms, s.update_ms, s.render_ms, s.ticks as f32])
+                        .collect()
+                })
+                .unwrap_or_default()
+        })
     }
 
     #[wasm_bindgen(start)]
@@ -220,7 +306,10 @@ mod web {
             event_loop,
             WebPlatform::new(force_webgl),
             content,
-            mb_app::initial_game(Box::new(LocalStorage::default())),
+            mb_app::initial_game_with_audio(
+                Box::new(LocalStorage::default()),
+                crate::audio::create(),
+            ),
         )
         .map_err(|e| JsValue::from_str(&e))?;
         Ok(region.to_string())
@@ -302,7 +391,27 @@ mod web {
         insets: Insets,
         frames: u32,
         force_webgl: bool,
+        /// A pad was being read last frame (so its release is still to be delivered).
+        pad_active: bool,
+        /// Render scale on top of the pixel-ratio cap (`?scale=`, lowered by the automatic fallback).
+        quality: f32,
+        auto_quality: bool,
+        quality_changed: bool,
+        /// Surface pixels per CSS pixel (what `render_scale` arrived at), for the layout and the insets.
+        css_ratio: f32,
+        /// Frames of play looked at since the last decision, and how many of them were over budget.
+        watched: u32,
+        slow: u32,
     }
+
+    /// A frame this long (ms) missed 60 Hz by a clear margin.
+    const SLOW_FRAME_MS: f32 = 21.0;
+    /// Frames of play per quality decision (about two seconds), and the share of slow ones that triggers it.
+    const QUALITY_WINDOW: u32 = 120;
+    const QUALITY_SLOW_SHARE: f32 = 0.6;
+    /// Each step renders about a third fewer pixels; below the floor the picture is not worth the speed.
+    const QUALITY_STEP: f32 = 0.8;
+    const QUALITY_FLOOR: f32 = 0.5;
 
     fn pixel_ratio() -> f64 {
         web_sys::window()
@@ -313,8 +422,17 @@ mod web {
 
     impl WebPlatform {
         fn new(force_webgl: bool) -> Self {
+            let (quality, auto_quality) = RENDER_OPTIONS.with(Cell::get);
+            QUALITY.with(|q| q.set(quality));
             Self {
                 force_webgl,
+                pad_active: false,
+                quality,
+                auto_quality,
+                quality_changed: false,
+                css_ratio: pixel_ratio().min(MAX_PIXEL_RATIO) as f32 * quality,
+                watched: 0,
+                slow: 0,
                 pad_axes: [0.0; 4],
                 pad_buttons: [false; 4],
                 insets: Insets::default(),
@@ -323,12 +441,10 @@ mod web {
         }
 
         /// `--sai-*` custom properties are defined in index.html from `env(safe-area-inset-*)`.
-        fn read_insets() -> Option<Insets> {
+        fn read_insets(scale: f32) -> Option<Insets> {
             let win = web_sys::window()?;
             let root = win.document()?.document_element()?;
             let style = win.get_computed_style(&root).ok()??;
-            // Render-target pixels per CSS pixel (see `render_scale`).
-            let scale = pixel_ratio().min(MAX_PIXEL_RATIO) as f32;
             let px = |name: &str| -> f32 {
                 style
                     .get_property_value(name)
@@ -347,7 +463,7 @@ mod web {
 
         fn insets_tick(&mut self) -> Insets {
             if self.frames.is_multiple_of(120) {
-                if let Some(i) = Self::read_insets() {
+                if let Some(i) = Self::read_insets(self.css_ratio) {
                     self.insets = i;
                 }
             }
@@ -404,8 +520,37 @@ mod web {
             self.insets_tick()
         }
 
-        fn render_scale(&mut self, _window: &Window) -> f32 {
-            (MAX_PIXEL_RATIO / pixel_ratio()).min(1.0) as f32
+        fn render_scale(&mut self, window: &Window) -> f32 {
+            // Device pixels the canvas really has per CSS pixel. That is `devicePixelRatio` on real devices,
+            // but the two can disagree (device emulation in developer tools reports the emulated ratio while
+            // the canvas keeps the real pixels), and capping by the wrong one shrinks the picture twice. So
+            // measure it: winit's physical size over the canvas' CSS size.
+            use winit::platform::web::WindowExtWebSys;
+            let css_width = window.canvas().map_or(0, |c| c.client_width());
+            let ratio = if css_width > 0 {
+                window.inner_size().width as f64 / css_width as f64
+            } else {
+                pixel_ratio()
+            };
+            let ratio = if ratio.is_finite() && ratio > 0.0 {
+                ratio
+            } else {
+                1.0
+            };
+            self.css_ratio = ratio.min(MAX_PIXEL_RATIO) as f32 * self.quality;
+            (MAX_PIXEL_RATIO / ratio).min(1.0) as f32 * self.quality
+        }
+
+        fn ui_scale(&mut self, _window: &Window, _render_scale: f32) -> f32 {
+            self.css_ratio
+        }
+
+        fn render_scale_changed(&mut self) -> bool {
+            std::mem::take(&mut self.quality_changed)
+        }
+
+        fn power_preference(&mut self) -> wgpu::PowerPreference {
+            wgpu::PowerPreference::LowPower
         }
 
         fn web_backends(&mut self) -> wgpu::Backends {
@@ -425,6 +570,13 @@ mod web {
         fn poll_input(&mut self, input: &mut InputState) {
             self.frames = self.frames.wrapping_add(1);
             FRAMES.with(|f| f.set(self.frames));
+            // `navigator.getGamepads()` builds a fresh array of objects on every call; without a pad there is
+            // nothing to read. One more read after the pad went away releases what it held.
+            let present = PAD_PRESENT.with(Cell::get);
+            if !(present || self.pad_active) {
+                return;
+            }
+            self.pad_active = present;
             let (axes, buttons) = Self::read_pad();
             for (i, axis) in PAD_AXES.into_iter().enumerate() {
                 if axes[i] != self.pad_axes[i] {
@@ -442,6 +594,34 @@ mod web {
 
         fn run_local(&mut self, fut: std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>) {
             wasm_bindgen_futures::spawn_local(fut);
+        }
+
+        fn on_frame(&mut self, sample: &mb_app::perf::FrameSample) {
+            // Automatic quality fallback: when most frames of a two-second stretch of play miss 60 Hz, render
+            // fewer pixels. It only ever goes down (no oscillation) and stops at half resolution; if the
+            // device is slow for another reason, the picture is at least not made worse than that.
+            if self.auto_quality && self.quality > QUALITY_FLOOR {
+                self.watched += 1;
+                self.slow += (sample.interval_ms > SLOW_FRAME_MS) as u32;
+                if self.watched >= QUALITY_WINDOW {
+                    if self.slow as f32 >= QUALITY_WINDOW as f32 * QUALITY_SLOW_SHARE {
+                        self.quality = (self.quality * QUALITY_STEP).max(QUALITY_FLOOR);
+                        self.quality_changed = true;
+                        QUALITY.with(|q| q.set(self.quality));
+                        web_sys::console::info_1(&JsValue::from_str(&format!(
+                            "frames are slow: render scale lowered to {:.0} %",
+                            self.quality * 100.0
+                        )));
+                    }
+                    self.watched = 0;
+                    self.slow = 0;
+                }
+            }
+            PERF.with(|p| {
+                if let Some(p) = p.borrow_mut().as_mut() {
+                    p.record(*sample);
+                }
+            });
         }
 
         fn on_error(&mut self, msg: &str) {

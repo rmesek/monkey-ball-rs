@@ -19,8 +19,9 @@ have="$(wasm-bindgen --version | awk '{ print $2 }')"
   || fail "wasm-bindgen CLI is $have but the crate is $want. Run: cargo install wasm-bindgen-cli --version $want --locked"
 
 target_dir="${CARGO_TARGET_DIR:-$root/target}"
-profile=release
-flags=(--release)
+# The `web` profile (workspace Cargo.toml) is release plus fat LTO, one codegen unit and panic=abort.
+profile=web
+flags=(--profile web)
 if [ "${1:-}" = "--dev" ]; then
   profile=debug
   flags=()

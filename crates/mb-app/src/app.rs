@@ -35,6 +35,8 @@ pub struct WindowOptions {
     /// Close the window after this many seconds (developer flag for timing runs).
     pub exit_after: Option<f32>,
     pub fullscreen: bool,
+    /// The game's audio system, to silence it while the window is hidden. The game states hold clones.
+    pub audio: Option<crate::audio::Audio>,
 }
 
 /// Frame pacing measured over a session.
@@ -273,7 +275,12 @@ impl App {
     }
 
     fn frame(&mut self, event_loop: &ActiveEventLoop) {
-        if self.hidden() {
+        let hidden = self.hidden();
+        if let Some(audio) = &self.options.audio {
+            // Minimized or fully covered: no sound and no mixing until the window is back.
+            audio.set_suspended(hidden);
+        }
+        if hidden {
             // Do not count the hidden time as one long frame when the window comes back.
             self.last = Instant::now();
             return;

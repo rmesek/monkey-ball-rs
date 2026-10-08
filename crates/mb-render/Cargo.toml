@@ -17,6 +17,9 @@ bytemuck = { version = "1", features = ["derive"] }
 # Mat4/Vec3 maths for transforms and cameras (no deps, wasm-friendly).
 glam = { version = "0.30", features = ["bytemuck"] }
 
+# std::time::Instant panics on wasm32; web-time is a drop-in that re-exports std off the web (load timings).
+web-time = "1"
+
 [dev-dependencies]
 # GPU-gated tests create their own adapter; blocking on the async wgpu calls needs a tiny executor.
 pollster = "0.4"

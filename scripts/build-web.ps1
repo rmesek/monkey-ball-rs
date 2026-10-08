@@ -22,9 +22,10 @@ if ($have -ne $want) {
 }
 
 $targetDir = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $root 'target' }
-$buildProfile = if ($Dev) { 'debug' } else { 'release' }
+$buildProfile = if ($Dev) { 'debug' } else { 'web' }
 $cargoArgs = @('build', '-p', 'mb-web', '--target', 'wasm32-unknown-unknown', '--target-dir', $targetDir)
-if (-not $Dev) { $cargoArgs += '--release' }
+# The web profile (workspace Cargo.toml) is release plus fat LTO, one codegen unit and panic=abort.
+if (-not $Dev) { $cargoArgs += @('--profile', 'web') }
 
 & cargo @cargoArgs
 if ($LASTEXITCODE -ne 0) { Fail 'cargo build failed' }

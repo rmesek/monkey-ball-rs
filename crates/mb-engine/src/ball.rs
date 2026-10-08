@@ -56,6 +56,20 @@ pub struct Ball {
     pub speed: f64,
     pub bananas: i32,
     pub phys_ball: PhysBall,
+    /// What the last [`Ball::step`] hit, for sound triggers (`ball.audio` in the reference).
+    pub audio: BallAudio,
+}
+
+/// The reference's `ball.audio` collision record: written by [`Ball::step`], read by the audio layer.
+/// Output only: the simulation never reads it and it is not part of the state hash.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct BallAudio {
+    /// `stageColiFlags | physBall.flags` of the last step (`COLI_OCCURRED` = touching something).
+    pub last_coli_flags: u32,
+    /// Hardest collision speed along the surface normal in the last step (negative = into the surface).
+    pub last_coli_speed: f64,
+    /// Bumpers hit in the last step.
+    pub bumper_hits: u32,
 }
 
 impl Default for Ball {
@@ -122,6 +136,7 @@ impl Ball {
             speed: 0.0,
             bananas: 0,
             phys_ball: PhysBall::new(),
+            audio: BallAudio::default(),
         }
     }
 
@@ -628,6 +643,8 @@ impl Ball {
             rt.timer_frames,
         );
         self.sync_from_phys_ball();
+        let stage_coli_flags = self.phys_ball.flags;
+        let stage_coli_speed = self.phys_ball.hardest_coli_speed;
 
         if self.phys_ball.flags & COLI_OCCURRED != 0 {
             let id = self.phys_ball.hardest_coli_anim_group_id;
@@ -650,8 +667,14 @@ impl Ball {
         self.update_ball_camera_steer_yaw();
 
         self.init_phys_ball();
+        let bumper_hits = ctx.collider.bumper_hits;
         rt.collide_ball_with_objects(&mut ctx.collider, &mut self.phys_ball);
         self.sync_from_phys_ball();
+        self.audio = BallAudio {
+            last_coli_flags: stage_coli_flags | self.phys_ball.flags,
+            last_coli_speed: stage_coli_speed.min(self.phys_ball.hardest_coli_speed),
+            bumper_hits: ctx.collider.bumper_hits.wrapping_sub(bumper_hits),
+        };
 
         self.unk80 += 1;
     }

@@ -5,6 +5,7 @@
 //! * [`input`]: logical actions, axes, the steering vector and the pointer; shells only feed it.
 //! * [`menu`]: title menu, course / stage select, options and the course flow (root state).
 //! * [`play`] + [`play_scene`] + [`hud`]: one stage being played: fixed-step simulation, 3D scene, HUD.
+//! * [`audio`]: sounds, music and the backend trait (`audio_cpal`: native device output). See `docs/AUDIO.md`.
 //! * [`text`] / [`widgets`]: sprite fonts from the disc and the menu list widget.
 //! * [`stage_scene`] / [`stage_info`] / [`anim`]: assembling an SMB1 stage into renderer objects.
 //! * [`viewer`]: free-fly stage viewer (developer tool).
@@ -15,6 +16,10 @@ pub mod anim;
 // The desktop driver blocks on GPU setup and polls native gamepads; the browser uses `shell`.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod app;
+pub mod audio;
+// Device output through cpal: desktop and (later) Android. The browser shell has its own Web Audio backend.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod audio_cpal;
 pub mod autopilot;
 pub mod content;
 pub mod game;
@@ -26,6 +31,7 @@ pub mod hud;
 pub mod image;
 pub mod input;
 pub mod menu;
+pub mod perf;
 pub mod play;
 pub mod play_scene;
 pub mod shell;
@@ -36,6 +42,8 @@ pub mod ui;
 pub mod viewer;
 pub mod widgets;
 
+/// Re-exported so shells can implement [`audio::AudioBackend`] (its buffers are `mb_audio` sounds).
+pub use mb_audio;
 /// Re-exported so shells can name `Storage` implementations without depending on `mb-game` themselves.
 pub use mb_game;
 
@@ -43,4 +51,13 @@ pub use mb_game;
 /// profile (progress, settings) is kept: `mb_game::FileStorage` on desktop, the platform's own elsewhere.
 pub fn initial_game(storage: Box<dyn mb_game::Storage>) -> Box<dyn game::Game> {
     Box::new(menu::Menu::new(storage))
+}
+
+/// [`initial_game`] with sound: `audio` is the platform's audio system (see [`audio::Audio`]); the shell
+/// keeps a clone to suspend it with the app.
+pub fn initial_game_with_audio(
+    storage: Box<dyn mb_game::Storage>,
+    audio: audio::Audio,
+) -> Box<dyn game::Game> {
+    Box::new(menu::Menu::new(storage).with_audio(audio))
 }

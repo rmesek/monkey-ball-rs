@@ -2,7 +2,9 @@
 //! `mb_game::PlayResult` into the request's report slot and popping itself.
 //!
 //! The simulation (`mb_engine::Sim`) advances in fixed 60 Hz ticks from an accumulator, independent of the
-//! display rate; rendering shows the latest tick. Flow follows `sim.phase`: fly-in and READY, GO, play, then
+//! display rate. Rendering blends the last two ticks by the accumulator's fraction of a tick (the reference's
+//! `getInterpolationAlpha`), so motion is even at any display rate and under frame-time jitter; the blend is
+//! display only and never reaches the simulation. Flow follows `sim.phase`: fly-in and READY, GO, play, then
 //! the goal / fall-out / time-over sequence, after which the outcome is reported. Pause (Esc / P / Start, or
 //! the on-screen button) offers continue, retry and quit.
 
@@ -14,10 +16,11 @@ use mb_engine::{Outcome, Phase, Sim, SimConfig};
 use mb_game::{GoalType, PlayMode, PlayRequest, PlayResult, StageOutcome};
 use mb_render::Camera;
 
+use crate::audio::{Audio, Sfx, StageSounds};
 use crate::game::{Game, GameCtx, PlayView, Transition};
 use crate::hud::{Hud, HudFrame};
 use crate::input::{Action, InputState};
-use crate::play_scene::PlayScene;
+use crate::play_scene::{lerp_s16, PlayScene};
 use crate::stage_info::bg_by_name;
 use crate::stage_scene::S16_TO_RADIANS;
 use crate::text::{rgb, Align, FontId, Painter, UiAssets};
@@ -44,12 +47,35 @@ fn goal_type(g: mb_stage::GoalType) -> GoalType {
     }
 }
 
+/// Where the accumulator rests on a display that runs a whole number of ticks per frame, as a fraction of a
+/// tick. The frame shows the blend at that fraction, so a high value keeps what is drawn close to the newest
+/// tick (0 would lag a full tick behind it).
+const REST_PHASE: f64 = 0.85;
+/// Share of the distance to [`REST_PHASE`] covered per snapped frame: slow enough to be invisible (well under
+/// 1 % of a tick's motion per frame), and it moves both ways, so the game clock is not biased.
+const REST_PULL: f64 = 0.04;
+
+/// `dt` as a whole number of ticks when it is close to one (see [`SNAP`]).
+fn snapped(dt: f64) -> Option<f64> {
+    let whole = (dt / TICK).round();
+    ((1.0..=2.0).contains(&whole) && (dt - whole * TICK).abs() < TICK * SNAP)
+        .then_some(whole * TICK)
+}
+
+/// After a snapped frame, ease the accumulator towards [`REST_PHASE`].
+pub fn settle_phase(rest: f64, dt: f64) -> f64 {
+    if snapped(dt.max(0.0)).is_some() {
+        rest + (REST_PHASE * TICK - rest) * REST_PULL
+    } else {
+        rest
+    }
+}
+
 /// How many ticks to run for a frame of `dt` seconds; returns the count and the new accumulator.
 pub fn ticks_for_frame(accumulator: f64, dt: f64) -> (u32, f64) {
     let mut dt = dt.max(0.0);
-    let whole = (dt / TICK).round();
-    if (1.0..=2.0).contains(&whole) && (dt - whole * TICK).abs() < TICK * SNAP {
-        dt = whole * TICK;
+    if let Some(whole) = snapped(dt) {
+        dt = whole;
     }
     let total = accumulator + dt;
     let steps = ((total + 1e-9) / TICK).floor();
@@ -99,6 +125,47 @@ pub fn camera_from(c: &mb_engine::GameplayCamera, aspect: f32) -> Camera {
     }
 }
 
+/// What rendering needs of the simulation's camera at one tick.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CameraPose {
+    pub eye: Vec3,
+    /// S16 angles about X, Y, Z.
+    pub rot: [i32; 3],
+}
+
+impl CameraPose {
+    pub fn of(c: &mb_engine::GameplayCamera) -> Self {
+        Self {
+            eye: Vec3::new(c.eye.x as f32, c.eye.y as f32, c.eye.z as f32),
+            rot: [c.rot_x, c.rot_y, c.rot_z],
+        }
+    }
+
+    /// A cut (new camera mode, respawn) rather than a move: the eye or an angle jumps further than any
+    /// camera travels in one tick.
+    fn is_cut_from(&self, prev: &CameraPose) -> bool {
+        const EYE: f32 = 8.0;
+        const ANGLE: i32 = 0x2000;
+        (self.eye - prev.eye).length() > EYE
+            || (0..3).any(|i| (self.rot[i].wrapping_sub(prev.rot[i]) as i16 as i32).abs() > ANGLE)
+    }
+
+    /// The render camera `t` of the way from `prev` to `self` (`getCameraPose(alpha)`).
+    pub fn blend(&self, prev: &CameraPose, t: f32, aspect: f32) -> Camera {
+        let eye = prev.eye.lerp(self.eye, t);
+        let rot = |i: usize| lerp_s16(prev.rot[i], self.rot[i], t) * S16_TO_RADIANS;
+        let world = Mat4::from_translation(eye)
+            * Mat4::from_rotation_y(rot(1))
+            * Mat4::from_rotation_x(rot(0))
+            * Mat4::from_rotation_z(rot(2));
+        Camera {
+            view: world.inverse(),
+            fov_y: fov_y_for_aspect(aspect),
+            ..Camera::look_at(Vec3::ZERO, Vec3::NEG_Z, Vec3::Y)
+        }
+    }
+}
+
 fn aspect(size: (u32, u32)) -> f32 {
     size.0.max(1) as f32 / size.1.max(1) as f32
 }
@@ -112,11 +179,16 @@ pub struct PlayState {
     accumulator: f64,
     pause: Option<ListState>,
     camera: Camera,
+    /// Camera of the last two ticks (`[previous, current]`), blended for the frame.
+    cameras: [CameraPose; 2],
     ticks: u64,
+    audio: Audio,
+    /// Sound triggers of the running attempt.
+    sounds: Option<StageSounds>,
 }
 
 impl PlayState {
-    pub fn new(request: PlayRequest, ui: Rc<UiAssets>) -> Self {
+    pub fn new(request: PlayRequest, ui: Rc<UiAssets>, audio: Audio) -> Self {
         let hud = Hud::new(!request.retry, Self::start_score(&request));
         Self {
             request,
@@ -124,10 +196,16 @@ impl PlayState {
             scene: None,
             sim: None,
             hud,
-            accumulator: 0.0,
+            accumulator: REST_PHASE * TICK,
             pause: None,
             camera: Camera::look_at(Vec3::new(0.0, 5.0, 10.0), Vec3::ZERO, Vec3::Y),
+            cameras: [CameraPose {
+                eye: Vec3::ZERO,
+                rot: [0; 3],
+            }; 2],
             ticks: 0,
+            audio,
+            sounds: None,
         }
     }
 
@@ -158,12 +236,21 @@ impl PlayState {
 
     /// Start the stage again in place (practice retry): same scene, fresh simulation, short intro.
     fn restart(&mut self) {
-        let Some(scene) = &self.scene else {
+        let cfg = self.sim_config(true);
+        let Some(scene) = &mut self.scene else {
             return;
         };
-        self.sim = Some(Sim::new(&scene.assets.stagedef, self.sim_config(true)));
+        let sim = Sim::new(&scene.assets.stagedef, cfg);
+        // A new motion: nothing is blended from the old run into the new one.
+        scene.reset_pose();
+        scene.sync(&sim);
+        self.cameras = [CameraPose::of(&sim.camera); 2];
+        // Nothing of the old attempt keeps sounding; the music plays on.
+        self.audio.stop_sounds();
+        self.sounds = Some(StageSounds::new(&sim, true, &self.audio));
+        self.sim = Some(sim);
         self.hud = Hud::new(false, Self::start_score(&self.request));
-        self.accumulator = 0.0;
+        self.accumulator = REST_PHASE * TICK;
         self.pause = None;
     }
 
@@ -267,8 +354,16 @@ impl Game for PlayState {
         let cfg = self.sim_config(self.request.retry);
         let scene = self.scene.as_mut().ok_or("scene missing")?;
         let sim = Sim::new(&scene.assets.stagedef, cfg);
-        scene.sync(ctx.renderer, &sim);
+        scene.reset_pose();
+        scene.sync(&sim);
+        scene.apply(ctx.renderer, 1.0);
+        self.cameras = [CameraPose::of(&sim.camera); 2];
         self.camera = camera_from(&sim.camera, aspect(ctx.size));
+        // Stage load is the only time music is read from the disc; the same track as on the previous
+        // floor just keeps playing.
+        self.audio
+            .stage_music(self.request.bg, &mut |path| ctx.content.read(path));
+        self.sounds = Some(StageSounds::new(&sim, self.request.retry, &self.audio));
         self.sim = Some(sim);
         Ok(())
     }
@@ -278,6 +373,8 @@ impl Game for PlayState {
             scene.unload(ctx.renderer);
         }
         self.sim = None;
+        self.sounds = None;
+        self.audio.stop_sounds();
     }
 
     fn update(&mut self, ctx: &mut GameCtx) -> Transition {
@@ -294,8 +391,20 @@ impl Game for PlayState {
         ctx.input.request_virtual_controls(self.pause.is_none());
 
         if let Some(list) = &mut self.pause {
+            // The simulation stands still: so does the roll. Music and running one-shots play on, as in
+            // the reference.
+            if let Some(sounds) = self.sounds.as_mut() {
+                sounds.hold(&self.audio);
+            }
             let layout = Self::pause_layout(&ctx.layout);
-            match list.update(ctx.input, &layout, &|_| true) {
+            let before = list.selected;
+            let chosen = list.update(ctx.input, &layout, &|_| true);
+            if chosen.is_some() {
+                self.audio.play(Sfx::MenuConfirm);
+            } else if list.selected != before {
+                self.audio.play(Sfx::MenuMove);
+            }
+            match chosen {
                 Some(PAUSE_CONTINUE) => self.pause = None,
                 Some(PAUSE_RETRY) => match self.request.mode {
                     PlayMode::Practice => self.restart(),
@@ -314,7 +423,7 @@ impl Game for PlayState {
             }
         } else {
             let (steps, rest) = ticks_for_frame(self.accumulator, ctx.dt as f64);
-            self.accumulator = rest;
+            self.accumulator = settle_phase(rest, ctx.dt as f64);
             let power = self.request.settings.input_falloff as f32 / 100.0;
             let (x, y) = apply_falloff(ctx.input.tilt(), power);
             // The engine's stick has +Y pointing down (towards the player).
@@ -325,6 +434,20 @@ impl Game for PlayState {
                 };
                 sim.step(stick);
                 self.ticks += 1;
+                if let Some(sounds) = self.sounds.as_mut() {
+                    sounds.tick(sim, &self.audio);
+                }
+                // Record what this tick looks like; the frame blends the last two (render only).
+                if let Some(scene) = self.scene.as_mut() {
+                    scene.sync(sim);
+                }
+                let pose = CameraPose::of(&sim.camera);
+                let from = if pose.is_cut_from(&self.cameras[1]) {
+                    pose
+                } else {
+                    self.cameras[1]
+                };
+                self.cameras = [from, pose];
                 let finished = sim.is_finished();
                 let frame = self.sim.as_ref().map(|s| self.hud_frame(s));
                 if let Some(frame) = frame {
@@ -343,8 +466,9 @@ impl Game for PlayState {
             let result = PlayResult::Finished(Self::outcome(sim, outcome));
             return self.finish(result);
         }
-        scene.sync(ctx.renderer, sim);
-        self.camera = camera_from(&sim.camera, aspect(ctx.size));
+        let alpha = (self.accumulator / TICK).clamp(0.0, 1.0) as f32;
+        scene.apply(ctx.renderer, alpha);
+        self.camera = self.cameras[1].blend(&self.cameras[0], alpha, aspect(ctx.size));
 
         let frame = self.hud_frame(sim);
         let ui = self.ui.clone();
@@ -389,6 +513,7 @@ impl Game for PlayState {
         } else if ctx.input.touch_active() {
             Self::draw_touch_controls(&mut p, &ctx.layout, ctx.input);
         }
+        self.audio.flush();
         Transition::None
     }
 
@@ -448,6 +573,70 @@ mod tests {
             }
             assert!((total as i32 - 600).abs() <= 1, "{hz} Hz ran {total} ticks");
         }
+    }
+
+    /// What a frame shows, in ticks of simulated time: the newest tick minus one, plus the blend fraction.
+    /// It must advance by exactly the frame time whatever the display rate, or motion judders.
+    #[test]
+    fn shown_time_advances_evenly_at_any_display_rate() {
+        for hz in [50.0, 60.0, 75.0, 90.0, 120.0, 144.0, 165.0, 240.0] {
+            let (mut acc, mut ticks) = (REST_PHASE * TICK, 0u32);
+            let mut shown = acc / TICK;
+            for i in 0..2000 {
+                // Up to 10 % jitter around the nominal frame time, as `requestAnimationFrame` delivers.
+                let dt = (1.0 / hz) * (0.9 + 0.2 * ((i * 37) % 11) as f64 / 10.0);
+                let (n, rest) = ticks_for_frame(acc, dt);
+                acc = settle_phase(rest, dt);
+                ticks += n;
+                assert!(
+                    (0.0..TICK).contains(&acc),
+                    "{hz} Hz frame {i}: accumulator {acc}"
+                );
+                let now = ticks as f64 + acc / TICK;
+                let step = now - shown;
+                shown = now;
+                // A snapped frame shows a whole number of ticks (plus the gentle pull to the rest phase);
+                // any other frame shows exactly its own duration.
+                let expect = snapped(dt).unwrap_or(dt) / TICK;
+                assert!(
+                    (step - expect).abs() < 0.05,
+                    "{hz} Hz frame {i}: showed {step} ticks for a frame of {expect}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_steady_sixty_hertz_display_settles_close_to_the_newest_tick() {
+        let mut acc = 0.0;
+        for _ in 0..300 {
+            let (n, rest) = ticks_for_frame(acc, TICK);
+            assert_eq!(n, 1);
+            acc = settle_phase(rest, TICK);
+        }
+        assert!((acc / TICK - REST_PHASE).abs() < 0.01);
+        // An unsnapped frame leaves the accumulator alone.
+        assert_eq!(settle_phase(0.004, TICK * 0.5), 0.004);
+    }
+
+    #[test]
+    fn camera_blend_takes_the_short_way_and_does_not_cross_cuts() {
+        let pose = |x: f32, yaw: i32| CameraPose {
+            eye: Vec3::new(x, 0.0, 0.0),
+            rot: [0, yaw, 0],
+        };
+        // Halfway between two ticks.
+        let cam = pose(2.0, 0).blend(&pose(0.0, 0), 0.5, 1.5);
+        assert!((cam.position() - Vec3::new(1.0, 0.0, 0.0)).length() < 1e-5);
+        // Yaw from just below to just above the S16 wrap passes through the wrap, not through zero.
+        let cam = pose(0.0, -0x7f00).blend(&pose(0.0, 0x7f00), 0.5, 1.5);
+        let forward = cam.view.inverse().transform_vector3(Vec3::NEG_Z);
+        assert!((forward - Vec3::Z).length() < 1e-3, "{forward}");
+        // Ordinary motion is blended; a jump across the stage or a half turn is a cut.
+        assert!(!pose(0.5, 0x200).is_cut_from(&pose(0.0, 0)));
+        assert!(pose(20.0, 0).is_cut_from(&pose(0.0, 0)));
+        assert!(pose(0.0, 0x4000).is_cut_from(&pose(0.0, 0)));
+        assert!(!pose(0.0, -0x7f00).is_cut_from(&pose(0.0, 0x7f00)));
     }
 
     #[test]

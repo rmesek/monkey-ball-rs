@@ -45,9 +45,8 @@ Stage 1 is implemented and verified (2026-10-08):
 
 Not verified: a real phone, a real gamepad, Firefox/Safari, a full course played to its end.
 
-Not in Stage 1 (see `docs/GAMEPLAY.md` for the full list): audio output (PCM decoding exists), the monkey
-inside the ball, ball shadow, goal confetti and other effects, result replays, render interpolation above
-60 Hz, SMB2 content, minigames, Android packaging.
+Not in Stage 1 (see `docs/GAMEPLAY.md` for the full list): the monkey's voices, the monkey
+inside the ball, ball shadow, goal confetti and other effects, result replays, SMB2 content, minigames, Android packaging.
 ## Stage 2 (next target): standalone Android APK
 Native Android packaging with `android-activity`, gyro tilt through `SensorManager` feeding the tilt axes of
 `InputState`, on-screen touch controls (the layout maths already lives in `mb-app::ui`), disc import through the
@@ -67,7 +66,8 @@ backends). The repo never contains or fetches original game files.
 - Web: `wasm-bindgen` + `web-sys`, built with `wasm-bindgen-cli`; the disc image stays on the JS heap in 8 MiB
   pieces and only requested ranges are copied into wasm memory (see `docs/WEB.md`).
 - Parsers (`mb-tpl`, `mb-gma`, `mb-stage`) are std-only.
-- Audio: `mb-audio` produces PCM and has no output dependency; device backend undecided.
+- Audio: `mb-audio` decodes and mixes with no output dependency; device output is `cpal` on native (desktop,
+  Android in Stage 2) and Web Audio (`web-sys`) in the browser, where the browser does the mixing. See `docs/AUDIO.md`.
 
 ## Scope rule: strictly offline
 No networking of any kind: no multiplayer, lobbies, netplay, rollback netcode, WebRTC, telemetry, update checks or

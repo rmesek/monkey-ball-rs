@@ -23,11 +23,18 @@ Menu (title -> Course Play | Practice | Options | Quit)
 
 - `menu.rs` owns the `Profile` (progress + settings) and writes it through the injected `mb_game::Storage`
   after every stage and every option change. Extra and Master courses and unreached practice floors show as
-  `LOCKED` unless the `Unlock all stages` option is on. Options only lists settings that act: that one and the
-  stick curve (the reference's input falloff).
+  `LOCKED` unless the `Unlock all stages` option is on. Options only lists settings that act: that one, the
+  stick curve (the reference's input falloff) and the three volumes (below).
 - `play.rs` runs `mb_engine::Sim` in fixed 60 Hz ticks from an accumulator (`ticks_for_frame`): frame times
   within 12 % of one or two ticks are snapped, at most 5 ticks run per frame, a longer stall is dropped. The
-  renderer shows the latest tick (no interpolation), so the simulation is identical at any display rate.
+  simulation is identical at any display rate. What is drawn is a blend of the last two ticks by the
+  accumulator's fraction of a tick (the reference's `getInterpolationAlpha` and `get*RenderState(alpha)`):
+  `PlayScene::sync` records each tick's pose, `PlayScene::apply` blends ball, stage tilt, anim groups,
+  bananas, bumpers, jamabars, goal bags and tapes, and `CameraPose::blend` the camera, so motion is even at
+  90/120/144 Hz and under frame-time jitter. The blend is display only (the simulation and `sim_hash` never
+  see it) and is skipped across a restart, a teleport of the ball or a camera cut. On a display that runs a
+  whole number of ticks per frame the accumulator eases to 0.85 of a tick, so the picture stays within a
+  sixth of a tick of the newest state.
   The game's own trig tables are installed from `main.dol` first (`Content::install_trig_tables`).
 - Pause freezes the simulation and offers Continue, Retry, Quit. Retry restarts in place in practice;
   in course play it gives the attempt up as a fall-out (one life). Quit reports `PlayResult::Quit`.
@@ -55,6 +62,20 @@ horizontal view of 4:3 is kept instead (portrait phones).
 
 Mouse: hover and click rows, wheel scrolls lists. The on-screen stick and pause button are drawn only while
 touch is the device in use (any key or button press hides them).
+
+## Options and sound
+| Option | Values | Effect |
+|---|---|---|
+| Unlock all stages | on / off | every course and practice floor selectable |
+| Stick curve | 1.00 .. 2.00 | input falloff power |
+| Music volume | off, 10 .. 100 (default 50) | stage music |
+| Sound volume | off, 10 .. 100 (default 30) | effects: roll, impacts, bananas, goal, clock, menus |
+| Announcer volume | off, 10 .. 100 (default 30) | READY, GO, GOAL, FALL OUT, countdown, ... |
+
+Selecting a row steps its value (volumes by ten, wrapping from 100 to off). Changes are saved with the
+profile and apply at once; a category that is off is not played at all. Menus click on move, confirm and
+back. In the pause menu the music plays on and the ball's roll is silent; leaving a stage cuts its effects.
+What plays when, and how sound reaches the device, is in `docs/AUDIO.md`.
 
 ## Input seam (Stage 2 tilt)
 Gameplay reads exactly one thing: `InputState::tilt() -> (x right, y forward)`, a vector in the unit circle.
@@ -92,16 +113,19 @@ Font cell layouts are the reference's `FONT_PARAMS`. The touch stick uses a disc
 - `cargo test -p mb-app`: `tests/gameplay.rs` drives the real states on an offscreen renderer (goal advances
   the course and saves, fall-out retries until game over and continue, pause / retry / quit in practice,
   pointer and stick input, every course stage loads and renders). Skips without a disc or adapter.
-- `mb-app <disc> [stage] --exit-after <s>` prints frame pacing and simulation ticks against the 60 Hz target.
+- `mb-app <disc> [stage] --exit-after <s>` prints frame pacing and simulation ticks against the 60 Hz target,
+  and what the audio device played (stream, callbacks, peak / RMS, late callbacks). `--mute` opens no device.
+- `cargo test -p mb-app --test audio`: the autopilot's floor 1 with a recording audio backend and an offline
+  render of its sound.
 
 ## Not ported from the reference
 - The monkey inside the ball (separate skeletal system in the reference), the projected ball shadow,
   confetti, sparks, streaks and the other `effects.ts` particles, mirror floors, the bonus-wave vertex
   animation, per-background special effects (`Background.ts`), specular suppression on the inner ball shells.
-- Result replays (the reference replays the fall-out and the goal), intro skipping, render interpolation.
+- Result replays (the reference replays the fall-out and the goal), intro skipping.
 - `JUMP TO FLOOR n` and the warp bonus line of the goal banner (`PlayRequest` carries no jump preview), the
   additive white flash of the `GOAL` and `GO` banners (sprites only multiply).
-- Audio, and with it the volume options.
+- The monkey's voice lines and the sounds listed under "Known gaps" in `docs/AUDIO.md`.
 - Multiplayer, netplay, lobby, SMB2 content (out of scope by project rule).
 
 Differences on purpose: lives are shown (the reference hides its counter), the HUD is edge-anchored instead

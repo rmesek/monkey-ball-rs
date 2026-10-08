@@ -6,7 +6,9 @@ use mb_assets::pack::PackProvider;
 use mb_audio::adp::{decode_adp, ADP_FRAME_BYTES};
 use mb_audio::mixer::{Mixer, Sound};
 use mb_audio::music::{catalog, decode_pcm_s16be};
-use mb_audio::musyx::{load_library, sfx_index_from_game_id};
+use mb_audio::music::{stage_music, MUSIC_BACKGROUNDS};
+use mb_audio::musyx::load_library;
+use mb_audio::sound_table::SoundTable;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -199,24 +201,74 @@ fn all_musyx_banks_parse_and_decode() {
         }
     }
     assert!(silent > 0, "silent placeholder macros expected");
+}
 
-    // Every reference id maps into the library.
-    let mut present = 0;
+/// The request ids the reference lists resolve through the executable's own table to sounds in the banks.
+#[test]
+fn sound_table_resolves_the_reference_ids() {
+    let disc = disc_or_skip!();
+    let lib = load_library(|p| disc.fetch(p)).expect("banks");
+    let table = SoundTable::from_dol(&disc.main_dol().expect("main.dol")).expect("sound table");
+    assert_eq!(table.entries.len(), 1061);
+    assert_eq!(table.entries[0].name, "GRPse04");
+    assert_eq!(table.entries.last().unwrap().name, "GRPend");
+
+    let (mut resolved, mut audible) = (0, 0);
     for id in REFERENCE_SFX_IDS {
-        let idx = sfx_index_from_game_id(id);
-        assert!(lib.contains(idx), "{id:#x} -> {idx:#x}");
-        if let Some(r) = lib.render(idx).unwrap() {
-            present += 1;
-            let peak = r.sample.pcm.iter().map(|s| s.unsigned_abs()).max().unwrap();
-            assert!(peak > 500, "sfx {idx:#x} peak {peak}");
+        // 0x33 and friends that no entry answers to do not occur in the reference list; voices resolve
+        // per character.
+        for character in 0..4 {
+            let Some(r) = table.resolve(id, character) else {
+                continue;
+            };
+            assert!(lib.contains(r.musyx_id), "{id:#x} -> {}", r.musyx_id);
+            if character == 0 {
+                resolved += 1;
+                if lib.render(r.musyx_id).unwrap().is_some() {
+                    audible += 1;
+                }
+            }
         }
     }
     eprintln!(
-        "{present}/{} reference sfx ids resolve to audible samples",
+        "{resolved}/{} reference ids resolve, {audible} to an audible sample",
         REFERENCE_SFX_IDS.len()
     );
-    // The other 21 ids land on silent placeholder macros (no start-sample command) in the banks.
-    assert_eq!(present, 51);
+    assert_eq!(resolved, REFERENCE_SFX_IDS.len());
+    assert!(audible >= 60, "{audible}");
+
+    // Spot checks against the disassembled call sites.
+    let get = |id| table.resolve(id, 0).map(|r| (r.musyx_id, r.velocity));
+    assert_eq!(get(0x4), Some((170, 110))); // SND_SED_NAR_READY
+    assert_eq!(get(0x5), Some((158, 110))); // SND_SED_NAR_GO
+    assert_eq!(get(0x8), Some((160, 110))); // SND_SED_NAR_GOAL
+    assert_eq!(get(0x5011), Some((165, 110))); // bumper
+    assert_eq!(get(0x3), Some((206, 110))); // banana
+    assert_eq!(get(0x39), Some((207, 110))); // bunch
+    assert_eq!(get(0x2f), Some((176, 100))); // hard hit
+    assert_eq!(get(0x14), Some((185, 127)));
+    assert_eq!(get(0x13), Some((178, 127)));
+    assert_eq!(get(0x3d806), Some((164, 95))); // timer tick
+    assert_eq!(table.by_name("SND_SE01_RUN01"), Some(248));
+    assert_eq!(table.by_name("SND_SE01_RUN02"), Some(273));
+    assert_eq!(table.by_name("SND_SE01_RUN03"), Some(274));
+}
+
+/// Every stage background's music exists on the disc and its intro joins the loop.
+#[test]
+fn stage_music_files_exist_and_decode() {
+    let disc = disc_or_skip!();
+    for bg in MUSIC_BACKGROUNDS {
+        let m = stage_music(bg).unwrap();
+        let mut frames = 0;
+        for path in m.paths() {
+            let a =
+                decode_adp(&disc.fetch(&path).unwrap_or_else(|e| panic!("{path}: {e}"))).unwrap();
+            assert!(a.frames() > 1000, "{path}");
+            frames += a.frames();
+        }
+        assert!(frames > 48_000 * 20, "{bg}: {frames} frames");
+    }
 }
 
 #[test]

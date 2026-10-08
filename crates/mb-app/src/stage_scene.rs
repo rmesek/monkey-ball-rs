@@ -2,6 +2,7 @@
 //! Mirrors `loadRenderStage` in the reference `main.ts` and the model lookup order of `ModelCache`
 //! (stage GMA first, then the background GMA, then the stage NaomiLib archive).
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::fmt;
 use std::io;
@@ -9,6 +10,7 @@ use std::io;
 use glam::{Mat4, Vec3};
 use mb_render::{Layer, ModelId, ObjectId, Renderer, TextureSet};
 use mb_stage::{S16Vec, Stage};
+use web_time::Instant;
 
 use crate::anim::world_from_group;
 use crate::content::Content;
@@ -66,17 +68,118 @@ fn io_err(what: &str, e: io::Error) -> LoadError {
     LoadError::Io(what.to_string(), e)
 }
 
+/// Where the time of one stage load went, in milliseconds (shown by the web shell's `mbPerf.lastLoad()`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct LoadTimings {
+    pub stage_id: u32,
+    /// Reading files from the disc image (includes RVZ group decompression).
+    pub disc_read_ms: f64,
+    pub disc_bytes: usize,
+    /// LZSS decompression of `.lz` files.
+    pub lzss_ms: f64,
+    pub lzss_bytes: usize,
+    /// Parsing stagedef, GMA, NaomiLib and TPL headers.
+    pub parse_ms: f64,
+    /// Decoding GX texture formats to RGBA.
+    pub texture_decode_ms: f64,
+    /// Creating GPU textures and handing over the texels.
+    pub texture_upload_ms: f64,
+    pub texture_bytes: usize,
+    pub textures: usize,
+    /// Display lists to vertices, vertex/index buffers, materials and pipelines.
+    pub mesh_ms: f64,
+    /// Everything after the files were parsed (the three lines above plus object setup).
+    pub gpu_total_ms: f64,
+    pub total_ms: f64,
+}
+
+impl LoadTimings {
+    pub fn to_json(&self) -> String {
+        format!(
+            "{{\"stage\":{},\"totalMs\":{:.1},\"discReadMs\":{:.1},\"discBytes\":{},\"lzssMs\":{:.1},\
+             \"lzssBytes\":{},\"parseMs\":{:.1},\"textureDecodeMs\":{:.1},\"textureUploadMs\":{:.1},\
+             \"textureBytes\":{},\"textures\":{},\"meshMs\":{:.1},\"gpuTotalMs\":{:.1}}}",
+            self.stage_id,
+            self.total_ms,
+            self.disc_read_ms,
+            self.disc_bytes,
+            self.lzss_ms,
+            self.lzss_bytes,
+            self.parse_ms,
+            self.texture_decode_ms,
+            self.texture_upload_ms,
+            self.texture_bytes,
+            self.textures,
+            self.mesh_ms,
+            self.gpu_total_ms,
+        )
+    }
+}
+
 impl StageAssets {
     /// `bg` overrides the background normally chosen from the stage id.
     pub fn load(content: &Content, stage_id: u32, bg: Option<BgInfo>) -> Result<Self, LoadError> {
+        Self::load_timed(content, stage_id, bg, &mut LoadTimings::default())
+    }
+
+    /// [`StageAssets::load`], recording where the time went.
+    pub fn load_timed(
+        content: &Content,
+        stage_id: u32,
+        bg: Option<BgInfo>,
+        timings: &mut LoadTimings,
+    ) -> Result<Self, LoadError> {
+        let started = Instant::now();
+        // (disc ms, disc bytes, lzss ms, lzss bytes)
+        let io_time = Cell::new((0.0f64, 0usize, 0.0f64, 0usize));
+        let ms = |t: Instant| (Instant::now() - t).as_secs_f64() * 1000.0;
+        let read = |path: &str| -> io::Result<Vec<u8>> {
+            let t = Instant::now();
+            let bytes = content.read(path)?;
+            let (d, db, l, lb) = io_time.get();
+            io_time.set((d + ms(t), db + bytes.len(), l, lb));
+            Ok(bytes)
+        };
+        let unpack = |path: &str, raw: Vec<u8>| -> io::Result<Vec<u8>> {
+            let t = Instant::now();
+            let out = mb_assets::lzss::decompress(&raw)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("{path}: {e}")))?;
+            let (d, db, l, lb) = io_time.get();
+            io_time.set((d, db, l + ms(t), lb + out.len()));
+            Ok(out)
+        };
+        let read_lz = |path: &str| -> io::Result<Vec<u8>> { unpack(path, read(path)?) };
+        // Like `Content::read_maybe_lz`: the plain file, else `path.lz`.
+        let read_maybe_lz = |path: &str| -> io::Result<Vec<u8>> {
+            match read(path) {
+                Err(e) if e.kind() == io::ErrorKind::NotFound => read_lz(&format!("{path}.lz")),
+                other => other,
+            }
+        };
+        let result = Self::load_with(stage_id, bg, &read_lz, &read_maybe_lz);
+        let (disc_ms, disc_bytes, lzss_ms, lzss_bytes) = io_time.get();
+        timings.disc_read_ms = disc_ms;
+        timings.disc_bytes = disc_bytes;
+        timings.lzss_ms = lzss_ms;
+        timings.lzss_bytes = lzss_bytes;
+        timings.parse_ms = (ms(started) - disc_ms - lzss_ms).max(0.0);
+        result
+    }
+
+    fn load_with(
+        stage_id: u32,
+        bg: Option<BgInfo>,
+        read_lz: &dyn Fn(&str) -> io::Result<Vec<u8>>,
+        read_maybe_lz: &dyn Fn(&str) -> io::Result<Vec<u8>>,
+    ) -> Result<Self, LoadError> {
         let bg = bg.unwrap_or(*bg_for_stage_or_nearest(stage_id));
         let base = "smb1_content/test";
         let id = format!("{stage_id:03}");
         let get = |path: &str| -> Result<Vec<u8>, LoadError> {
-            content.read_maybe_lz(path).map_err(|e| io_err(path, e))
+            read_maybe_lz(path).map_err(|e| io_err(path, e))
         };
         let get_lz = |path: &str| -> Result<Vec<u8>, LoadError> {
-            content.read_lz(path).map_err(|e| io_err(path, e))
+            read_lz(path).map_err(|e| io_err(path, e))
         };
         let stagedef_bytes = get_lz(&format!("{base}/st{id}/STAGE{id}.lz"))?;
         let stagedef = mb_stage::parse_stagedef_smb1(&stagedef_bytes)
@@ -91,9 +194,11 @@ impl StageAssets {
         let tpl = |path: &str| -> Result<mb_tpl::Tpl, LoadError> { parse_tpl(get(path)?, path) };
 
         let gma_path = format!("{base}/st{id}/st{id}.gma");
-        let stage_gma = match content.read_maybe_lz(&gma_path) {
-            Ok(_) => Some((
-                parse_gma(&gma_path)?,
+        // Parsed straight from the probe read (the file used to be read and decompressed twice).
+        let stage_gma = match read_maybe_lz(&gma_path) {
+            Ok(bytes) => Some((
+                mb_gma::parse_gma(&bytes)
+                    .map_err(|e| LoadError::Parse(format!("{gma_path}: {e}")))?,
                 tpl(&format!("{base}/st{id}/st{id}.tpl"))?,
             )),
             Err(e) if e.kind() == io::ErrorKind::NotFound && is_naomi_stage(stage_id) => None,

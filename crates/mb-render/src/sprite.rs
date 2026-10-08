@@ -2,8 +2,6 @@
 
 use std::collections::HashMap;
 
-use wgpu::util::DeviceExt;
-
 use crate::gpu_types::SpriteVertex;
 use crate::renderer::{GpuTexture, TextureId};
 
@@ -45,6 +43,7 @@ pub fn quad_vertices(s: &Sprite) -> [SpriteVertex; 6] {
     [a, b, c, a, c, d]
 }
 
+#[derive(PartialEq)]
 struct Batch {
     texture: usize,
     first: u32,
@@ -58,8 +57,14 @@ pub(crate) struct SpriteRenderer {
     screen_group: wgpu::BindGroup,
     sampler: wgpu::Sampler,
     texture_groups: HashMap<usize, wgpu::BindGroup>,
-    vertex: Option<wgpu::Buffer>,
+    /// Vertex buffer, kept between frames and replaced only when it is too small.
+    vertex: Option<(wgpu::Buffer, usize)>,
+    /// What the vertex buffer holds; an unchanged HUD uploads nothing.
+    verts: Vec<SpriteVertex>,
+    scratch: Vec<SpriteVertex>,
+    screen: [f32; 4],
     batches: Vec<Batch>,
+    last_batches: Vec<Batch>,
 }
 
 impl SpriteRenderer {
@@ -177,7 +182,11 @@ impl SpriteRenderer {
             sampler,
             texture_groups: HashMap::new(),
             vertex: None,
+            verts: Vec::new(),
+            scratch: Vec::new(),
+            screen: [0.0; 4],
             batches: Vec::new(),
+            last_batches: Vec::new(),
         }
     }
 
@@ -185,6 +194,12 @@ impl SpriteRenderer {
         self.texture_groups.clear();
     }
 
+    pub(crate) fn batch_count(&self) -> usize {
+        self.batches.len()
+    }
+
+    /// Build this frame's batches and bring the vertex buffer up to date. Returns the bytes uploaded and
+    /// whether the sprites differ from the last frame's in any way.
     pub(crate) fn prepare(
         &mut self,
         device: &wgpu::Device,
@@ -193,18 +208,21 @@ impl SpriteRenderer {
         textures: &[GpuTexture],
         size: (u32, u32),
         srgb_target: bool,
-    ) {
+    ) -> (usize, bool) {
+        std::mem::swap(&mut self.batches, &mut self.last_batches);
         self.batches.clear();
         if sprites.is_empty() {
-            self.vertex = None;
-            return;
+            return (0, !self.last_batches.is_empty());
         }
-        queue.write_buffer(
-            &self.screen_buffer,
-            0,
-            bytemuck::cast_slice(&[size.0 as f32, size.1 as f32, srgb_target as u32 as f32, 0.0]),
-        );
-        let mut verts: Vec<SpriteVertex> = Vec::with_capacity(sprites.len() * 6);
+        let mut uploaded = 0;
+        let screen = [size.0 as f32, size.1 as f32, srgb_target as u32 as f32, 0.0];
+        if screen != self.screen {
+            queue.write_buffer(&self.screen_buffer, 0, bytemuck::cast_slice(&screen));
+            self.screen = screen;
+            uploaded += 16;
+        }
+        let mut verts = std::mem::take(&mut self.scratch);
+        verts.clear();
         for s in sprites {
             let Some(_) = textures.get(s.texture.0) else {
                 continue;
@@ -238,17 +256,30 @@ impl SpriteRenderer {
                 })
             });
         }
-        self.vertex = Some(
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let fits = matches!(&self.vertex, Some((_, capacity)) if *capacity >= verts.len());
+        if !fits {
+            let capacity = verts.len().next_power_of_two().max(1024);
+            let buffer = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("sprite vertices"),
-                contents: bytemuck::cast_slice(&verts),
-                usage: wgpu::BufferUsages::VERTEX,
-            }),
-        );
+                size: (capacity * std::mem::size_of::<SpriteVertex>()) as u64,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            self.vertex = Some((buffer, capacity));
+        }
+        if !fits || verts != self.verts {
+            if let Some((buffer, _)) = &self.vertex {
+                queue.write_buffer(buffer, 0, bytemuck::cast_slice(&verts));
+                uploaded += std::mem::size_of_val(verts.as_slice());
+            }
+            std::mem::swap(&mut self.verts, &mut verts);
+        }
+        self.scratch = verts;
+        (uploaded, uploaded > 0 || self.batches != self.last_batches)
     }
 
     pub(crate) fn draw<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>) {
-        let Some(vb) = &self.vertex else {
+        let (Some((vb, _)), false) = (&self.vertex, self.batches.is_empty()) else {
             return;
         };
         pass.set_pipeline(&self.pipeline);
