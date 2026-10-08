@@ -36,6 +36,13 @@ impl Lighting {
         let ry = Mat3::from_rotation_y(self.light_rot_y as f32 * S16_TO_RADIANS);
         (ry * (rx * v)).normalize()
     }
+
+    /// The light's up vector: `(0, 1, 0)` under the same two rotations (the reference's `shadowLightUp`).
+    pub fn light_up(&self) -> Vec3 {
+        let rx = Mat3::from_rotation_x(self.light_rot_x as f32 * S16_TO_RADIANS);
+        let ry = Mat3::from_rotation_y(self.light_rot_y as f32 * S16_TO_RADIANS);
+        ry * (rx * Vec3::Y)
+    }
 }
 
 #[cfg(test)]

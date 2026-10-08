@@ -17,13 +17,19 @@ struct Scene {
     fog_color: vec4<f32>,
     // x: fog start, y: fog end, z: fog enabled, w: target is sRGB (convert output to linear)
     fog_params: vec4<f32>,
+    // Projected shadow of the ball (the reference's shadow program, see `effects.rs`): world before the tilt
+    // -> shadow space, colour and peak opacity, and x: radius, y: z of the caster in shadow space,
+    // z: fade per unit behind the caster, w: enabled.
+    shadow_from_world: mat4x4<f32>,
+    shadow_color: vec4<f32>,
+    shadow_info: vec4<f32>,
 };
 
 struct Object {
     model: mat4x4<f32>,
     normal_mat: mat4x4<f32>,
     color_mul: vec4<f32>,
-    // x: object alpha, y: 1 = apply scene.tilt
+    // x: object alpha, y: 1 = apply scene.tilt, z: 1 = the projected shadow falls on it
     params: vec4<f32>,
 };
 
@@ -41,6 +47,8 @@ struct Material {
 };
 
 @group(0) @binding(0) var<uniform> scene: Scene;
+@group(0) @binding(1) var shadow_tex: texture_2d<f32>;
+@group(0) @binding(2) var shadow_samp: sampler;
 @group(1) @binding(0) var<uniform> object: Object;
 @group(2) @binding(0) var<uniform> material: Material;
 @group(2) @binding(1) var tex0: texture_2d<f32>;
@@ -59,6 +67,14 @@ struct VsIn {
     @location(5) uv2: vec2<f32>,
 };
 
+// One instance of an instanced draw: the rows of its affine model matrix and a colour multiplier.
+struct InstIn {
+    @location(6) row0: vec4<f32>,
+    @location(7) row1: vec4<f32>,
+    @location(8) row2: vec4<f32>,
+    @location(9) color: vec4<f32>,
+};
+
 struct VsOut {
     @builtin(position) clip: vec4<f32>,
     @location(0) color: vec4<f32>,
@@ -67,14 +83,30 @@ struct VsOut {
     @location(3) uv2: vec2<f32>,
     @location(4) view_normal: vec3<f32>,
     @location(5) view_depth: f32,
+    @location(6) shadow_pos: vec3<f32>,
+    // x: z of the unit normal in shadow space, y: the vertex has a normal, z: the shadow applies here
+    @location(7) shadow_n: vec3<f32>,
 };
 
-@vertex
-fn vs_main(in: VsIn) -> VsOut {
+// Everything after the model transform. `params` is `Object.params`.
+fn shade(in: VsIn, world_in: vec4<f32>, n_in: vec3<f32>, color_mul: vec4<f32>, params: vec4<f32>) -> VsOut {
     var out: VsOut;
-    var world = object.model * vec4<f32>(in.position, 1.0);
-    var n = (object.normal_mat * vec4<f32>(in.normal, 0.0)).xyz;
-    if (object.params.y > 0.5) {
+    var world = world_in;
+    var n = n_in;
+    // The shadow is cast in stage space, before the tilt (the ball's own position does not tilt).
+    out.shadow_pos = vec3<f32>(0.0);
+    out.shadow_n = vec3<f32>(0.0);
+    if (params.z > 0.5 && scene.shadow_info.w > 0.5) {
+        out.shadow_pos = (scene.shadow_from_world * world).xyz;
+        let sn = (scene.shadow_from_world * vec4<f32>(n, 0.0)).xyz;
+        let sl = length(sn);
+        if (sl > 1e-5) {
+            out.shadow_n = vec3<f32>(sn.z / sl, 1.0, 1.0);
+        } else {
+            out.shadow_n = vec3<f32>(0.0, 0.0, 1.0);
+        }
+    }
+    if (params.y > 0.5) {
         world = scene.tilt * world;
         n = (scene.tilt * vec4<f32>(n, 0.0)).xyz;
     }
@@ -115,8 +147,8 @@ fn vs_main(in: VsIn) -> VsOut {
             a = material.mat_color.a;
         }
     }
-    rgb = rgb * object.color_mul.rgb;
-    a = a * object.params.x * object.color_mul.a;
+    rgb = rgb * color_mul.rgb;
+    a = a * params.x * color_mul.a;
     out.color = vec4<f32>(rgb, a);
     var uv0 = in.uv0;
     if (material.extra.x > 0.5) {
@@ -126,6 +158,37 @@ fn vs_main(in: VsIn) -> VsOut {
     out.uv1 = in.uv1;
     out.uv2 = in.uv2;
     return out;
+}
+
+@vertex
+fn vs_main(in: VsIn) -> VsOut {
+    let world = object.model * vec4<f32>(in.position, 1.0);
+    let n = (object.normal_mat * vec4<f32>(in.normal, 0.0)).xyz;
+    return shade(in, world, n, object.color_mul, object.params);
+}
+
+// Instanced draws take the model matrix and the colour multiplier from the instance; the bound object only
+// says whether the stage tilt applies.
+@vertex
+fn vs_instanced(in: VsIn, inst: InstIn) -> VsOut {
+    let p = vec4<f32>(in.position, 1.0);
+    let world = vec4<f32>(dot(inst.row0, p), dot(inst.row1, p), dot(inst.row2, p), 1.0);
+    // Normal matrix without an inverse: the cofactors of the upper 3x3 (its inverse transpose times the
+    // determinant), with the sign put back for mirrored instances.
+    let c0 = vec3<f32>(inst.row0.x, inst.row1.x, inst.row2.x);
+    let c1 = vec3<f32>(inst.row0.y, inst.row1.y, inst.row2.y);
+    let c2 = vec3<f32>(inst.row0.z, inst.row1.z, inst.row2.z);
+    let k0 = cross(c1, c2);
+    var n = k0 * in.normal.x + cross(c2, c0) * in.normal.y + cross(c0, c1) * in.normal.z;
+    if (dot(c0, k0) < 0.0) {
+        n = -n;
+    }
+    // Small instances have tiny cofactors; `shade` takes anything shorter than 1e-6 for no normal.
+    let nl = length(n);
+    if (nl > 0.0) {
+        n = n / nl;
+    }
+    return shade(in, world, n, inst.color, vec4<f32>(1.0, object.params.y, 0.0, 0.0));
 }
 
 fn matcap_uv(n: vec3<f32>) -> vec2<f32> {
@@ -145,6 +208,11 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     var a = in.color.a;
     let count = material.flags.z;
     let naomi = material.flags.w;
+
+    // Derivatives belong to uniform control flow; the shadow mask itself is fetched only under the ball.
+    let shadow_uv = in.shadow_pos.xy / (scene.shadow_info.x * 2.0) + vec2<f32>(0.5);
+    let shadow_dx = dpdx(shadow_uv);
+    let shadow_dy = dpdy(shadow_uv);
 
     // Textures are sampled up front (uniform control flow: the mask is a pipeline constant); the kinds then
     // pick what to use.
@@ -211,6 +279,22 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     if (scene.fog_params.z > 0.5) {
         let f = clamp((in.view_depth - scene.fog_params.x) / max(scene.fog_params.y - scene.fog_params.x, 1e-4), 0.0, 1.0);
         c = mix(c, scene.fog_color.rgb, f);
+    }
+    // The reference draws the receivers a second time with its shadow program, blended over the finished
+    // (fogged) frame; the same maths here costs no draw.
+    if (in.shadow_n.z > 0.5) {
+        let inside = shadow_uv.x >= 0.0 && shadow_uv.x <= 1.0 && shadow_uv.y >= 0.0 && shadow_uv.y <= 1.0;
+        // Faces turned away from the light take no shadow; vertices without a normal are not tested.
+        let facing = in.shadow_n.y <= 0.5 || in.shadow_n.x > 0.0;
+        if (inside && facing) {
+            let mask = textureSampleGrad(shadow_tex, shadow_samp, shadow_uv, shadow_dx, shadow_dy);
+            let behind = max(scene.shadow_info.y - in.shadow_pos.z, 0.0);
+            let fade = clamp(1.0 - behind * scene.shadow_info.z, 0.0, 1.0);
+            let shade_a = max(max(mask.r, mask.g), mask.b) * scene.shadow_color.a * fade;
+            if (shade_a > 0.0) {
+                c = mix(c, scene.shadow_color.rgb, shade_a);
+            }
+        }
     }
     if (scene.fog_params.w > 0.5) {
         c = srgb_to_linear(c);
