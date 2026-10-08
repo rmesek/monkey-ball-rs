@@ -324,3 +324,201 @@ fn animated_group_follows_its_keyframes() {
     let m = sim.runtime.anim_groups[1].transform;
     assert!((m[7] as f64 - 4.0).abs() < 1e-6);
 }
+
+// Intro fast-forward (`fastForwardIntro`): the primary action held during the fly-in of a first attempt.
+
+const ACTION: u32 = mb_engine::BUTTON_PRIMARY_ACTION;
+const IDLE: QuantizedInput = QuantizedInput { x: 0, y: 0 };
+
+/// Everything the fly-in shows: the pose of the camera, and its timer.
+fn fly_in(sim: &Sim) -> (V3, V3, [i32; 3], i32) {
+    let c = &sim.camera;
+    (c.eye, c.look_at, [c.rot_x, c.rot_y, c.rot_z], c.timer_curr)
+}
+
+fn ball_is_hidden(sim: &Sim) -> bool {
+    sim.ball.flags & mb_engine::constants::ball_flags::INVISIBLE != 0
+}
+
+#[test]
+fn holding_the_action_runs_the_fly_in_at_twice_the_speed() {
+    let mut fast = Sim::new(&stage(), SimConfig::first_attempt(1));
+    let mut plain = fast.clone();
+    for tick in 1..=120 {
+        fast.step_with_buttons(IDLE, ACTION);
+        plain.step(IDLE);
+        plain.step(IDLE);
+        assert_eq!(fast.intro_timer, 360 - 2 * tick);
+        // One fast tick shows what two plain ticks show.
+        assert_eq!(fast.intro_timer, plain.intro_timer);
+        assert_eq!(fly_in(&fast), fly_in(&plain), "tick {tick}");
+        assert_eq!(fast.phase, Phase::Intro);
+        assert!(fast.events.is_empty());
+    }
+    assert_eq!((fast.tick, plain.tick), (120, 240));
+    assert_eq!(fast.intro_timer, 120);
+    // The fast ticks moved nothing but the two timers: the stage clock still waits and the ball is still away.
+    assert_eq!(fast.runtime.timer_frames, plain.runtime.timer_frames);
+    assert!(ball_is_hidden(&fast));
+    assert_eq!(fast.stage_timer_frames, 0);
+
+    // From 120 frames on the action does nothing: tick for tick the same as without it.
+    let mut released = fast.clone();
+    for _ in 0..200 {
+        fast.step_with_buttons(QuantizedInput { x: 40, y: -90 }, ACTION);
+        released.step(QuantizedInput { x: 40, y: -90 });
+        assert_eq!(fast.intro_timer, released.intro_timer);
+        assert_eq!(fast.hash_visual(), released.hash_visual());
+        assert_eq!(fly_in(&fast), fly_in(&released));
+        assert_eq!(fast.events, released.events);
+        assert_eq!(fast.phase, released.phase);
+    }
+    assert_eq!(fast.phase, Phase::Playing);
+    assert_eq!(fast.stage_timer_frames, 80, "play began 240 ticks in");
+}
+
+#[test]
+fn the_action_does_nothing_at_exactly_120_frames() {
+    let mut sim = Sim::new(&stage(), SimConfig::first_attempt(1));
+    run(&mut sim, 239, IDLE);
+    assert_eq!(sim.intro_timer, 121);
+    let mut at_121 = sim.clone();
+    at_121.step_with_buttons(IDLE, ACTION);
+    assert_eq!(at_121.intro_timer, 119, "more than 120 left: two frames");
+    sim.step(IDLE);
+    assert_eq!(sim.intro_timer, 120);
+    sim.step_with_buttons(IDLE, ACTION);
+    assert_eq!(sim.intro_timer, 119, "120 left: one frame");
+}
+
+#[test]
+fn the_action_does_nothing_on_a_retry_or_when_switched_off() {
+    // A retry starts with 120 frames, so it is never above them. A long intro with the fast-forward switched
+    // off is the case the reference decides by its attempt counter.
+    let mut off = SimConfig::first_attempt(1);
+    off.intro_fast_forward = false;
+    assert!(SimConfig::first_attempt(1).intro_fast_forward);
+    assert!(!SimConfig::retry(1).intro_fast_forward);
+    for (cfg, intro_ticks) in [(SimConfig::retry(1), 120), (off, 360)] {
+        let mut held = Sim::new(&stage(), cfg);
+        let mut plain = held.clone();
+        let mut ticks = 0;
+        while held.phase == Phase::Intro {
+            held.step_with_buttons(IDLE, ACTION);
+            plain.step(IDLE);
+            ticks += 1;
+            assert_eq!(held.intro_timer, plain.intro_timer);
+            assert_eq!(held.hash_visual(), plain.hash_visual());
+            assert_eq!(fly_in(&held), fly_in(&plain));
+        }
+        assert_eq!(ticks, intro_ticks);
+    }
+}
+
+#[test]
+fn only_the_primary_action_bit_counts() {
+    let mut none = Sim::new(&stage(), SimConfig::first_attempt(1));
+    let mut zero = none.clone();
+    let mut others = none.clone();
+    let mut all = none.clone();
+    let mut action = none.clone();
+    for i in 0..500 {
+        let input = QuantizedInput {
+            x: (i % 9) - 4,
+            y: 3,
+        };
+        none.step(input);
+        zero.step_with_buttons(input, 0);
+        others.step_with_buttons(input, !ACTION);
+        all.step_with_buttons(input, u32::MAX);
+        action.step_with_buttons(input, ACTION);
+        assert_eq!(none.hash_visual(), zero.hash_visual());
+        assert_eq!(none.hash_visual(), others.hash_visual());
+        assert_eq!(fly_in(&none), fly_in(&others));
+        assert_eq!(all.hash_visual(), action.hash_visual());
+        assert_eq!(fly_in(&all), fly_in(&action));
+    }
+    assert_eq!(none.stage_timer_frames, 140);
+    assert_eq!(action.stage_timer_frames, 260);
+}
+
+/// The ball drop (`introTimerFrames === dropFrames`) and the end of the intro (`=== 0`) are tests for
+/// equality on a timer that can go down by two. Neither is ever stepped over: a tick fast-forwards only when
+/// it starts above 120, so the lowest frame a double step can reach is 119, and the one it can pass is 120.
+#[test]
+fn a_fast_forwarded_intro_still_drops_the_ball_at_24_frames_and_ends_at_0() {
+    // Holding from the first tick keeps the timer even (.., 122, 120); from the second it is odd and goes
+    // 121 -> 119. `taps` presses and releases at awkward moments.
+    let from_start = |_tick: usize| true;
+    let from_second = |tick: usize| tick >= 1;
+    let taps = |tick: usize| tick.is_multiple_of(3) || (tick > 100 && tick % 7 < 4);
+    let cases: [&dyn Fn(usize) -> bool; 3] = [&from_start, &from_second, &taps];
+    let mut passed_120 = Vec::new();
+    for (case, press) in cases.into_iter().enumerate() {
+        let mut sim = Sim::new(&stage(), SimConfig::first_attempt(1));
+        let mut timers = vec![sim.intro_timer];
+        let mut dropped_at = None;
+        let mut tick = 0;
+        while sim.phase == Phase::Intro {
+            let hidden = ball_is_hidden(&sim);
+            sim.step_with_buttons(IDLE, press(tick) as u32);
+            tick += 1;
+            timers.push(sim.intro_timer);
+            if hidden && !ball_is_hidden(&sim) {
+                dropped_at = Some(sim.intro_timer);
+            }
+            // The fly-in ends 11 frames before the intro whatever was skipped: both timers skip together.
+            if sim.intro_timer > 0 {
+                assert_eq!(sim.camera.timer_curr, (sim.intro_timer - 11).max(0));
+            }
+            assert!(tick <= 360);
+        }
+        assert_eq!(dropped_at, Some(24), "case {case}");
+        assert_eq!(sim.intro_timer, 0);
+        assert_eq!(sim.phase, Phase::Playing);
+        assert_eq!(
+            sim.camera.state,
+            mb_engine::constants::camera_state::LEVEL_MAIN,
+            "the camera snapped behind the ball when the timer reached 0"
+        );
+        // 120 itself is only ever missed from 121.
+        let missed = !timers.contains(&120);
+        assert_eq!(timers.windows(2).any(|w| w == [121, 119]), missed);
+        passed_120.push(missed);
+        // Below 120 every frame is visited, one per tick.
+        assert!(timers.ends_with(&(0..=119).rev().collect::<Vec<_>>()));
+        // READY, as the reference and the HUD test it (`prev > 120 && now <= 120`), happens exactly once.
+        let ready = timers.windows(2).filter(|w| w[0] > 120 && w[1] <= 120);
+        assert_eq!(ready.count(), 1);
+
+        // Whatever was skipped, play starts from the same stage clock, ball and camera.
+        let mut plain = Sim::new(&stage(), SimConfig::first_attempt(1));
+        intro(&mut plain);
+        assert!(tick < plain.tick as usize);
+        assert_eq!(sim.runtime.timer_frames, plain.runtime.timer_frames);
+        assert_eq!(sim.ball.pos, plain.ball.pos);
+        assert_eq!(sim.ball.vel, plain.ball.vel);
+        assert_eq!(fly_in(&sim), fly_in(&plain));
+    }
+    assert_eq!(passed_120[..2], [false, true]);
+}
+
+/// The fly-in camera guards its timer only before the first of its two steps (`if (timerCurr > 0) { -1; if
+/// (fast) -1 }`), so a fly-in that stands at 1 on a fast-forwarded tick ends at -1 and stays there. The two
+/// configurations of the game (360 / 350 and 120 / 90) cannot get there, because the fly-in is over 11 frames
+/// before the intro; a configuration with a fly-in much shorter than its intro does, as in the reference.
+#[test]
+fn a_fly_in_much_shorter_than_the_intro_can_overshoot_by_one() {
+    let mut cfg = SimConfig::first_attempt(1);
+    cfg.fly_in_frames = 4;
+    let mut sim = Sim::new(&stage(), cfg);
+    assert_eq!(sim.camera.timer_curr, 3, "the first step is taken at once");
+    sim.step_with_buttons(IDLE, ACTION);
+    assert_eq!(sim.camera.timer_curr, 1);
+    sim.step_with_buttons(IDLE, ACTION);
+    assert_eq!(sim.camera.timer_curr, -1);
+    let overshot = fly_in(&sim);
+    run(&mut sim, 300, IDLE);
+    assert_eq!(fly_in(&sim), overshot, "and there it stays until GO");
+    assert!(overshot.0.x.is_finite() && overshot.0.y.is_finite() && overshot.0.z.is_finite());
+}

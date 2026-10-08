@@ -8,12 +8,14 @@
 //!
 //! For each scripted stage the reference writes one line per tick (ball position/velocity as raw f64 bits, state,
 //! rotations, camera yaw, timers, tilt, the `hashSimState` value, and for the display-only particles the
-//! `includeVisual` hash, their counts, a hash over every field of every particle and the visual random state);
+//! `includeVisual` hash, their counts, a hash over every field of every particle and the visual random state,
+//! and the camera's eye, look-at point, angles and fly-in timer);
 //! the Rust `Sim` is stepped with the same quantized stick feed and compared tick by tick. Environment knobs:
 //! `MB_PARITY_STAGES=1,2,50` (stages), `MB_PARITY_FRAMES` (length, default 1500), `MB_PARITY_SCRIPTS=0,1,2,3`
 //! (stick scripts tried per stage), `MB_PARITY_AUTOPILOT` (goal runs), and for the effect runs
 //! `MB_PARITY_FX_STAGES`, `MB_PARITY_FX_SCRIPTS`, `MB_PARITY_FX_FRAMES`, `MB_PARITY_FX_FAST` (stages run with
-//! the stick held forward), `MB_PARITY_FX_GOALS`.
+//! the stick held forward), `MB_PARITY_FX_GOALS`, and for the intro fast-forward `MB_PARITY_FF_STAGES`,
+//! `MB_PARITY_FF_RETRY`.
 
 mod common;
 
@@ -305,6 +307,11 @@ struct RefFrame {
     ringout: i64,
     tilt: [i64; 2],
     visual: Visual,
+    cam_eye: [u64; 3],
+    cam_look_at: [u64; 3],
+    cam_rot_x: i64,
+    cam_rot_z: i64,
+    cam_timer: i64,
 }
 
 /// One line of the reference's output (see `tests/ref/run.ts`).
@@ -342,6 +349,11 @@ fn parse_ref(text: &str) -> Vec<RefLine> {
                     ringout: n(f[19]),
                     tilt: [n(f[20]), n(f[21])],
                     visual: Visual::parse(&f[22..]),
+                    cam_eye: [h(f[28]), h(f[29]), h(f[30])],
+                    cam_look_at: [h(f[31]), h(f[32]), h(f[33])],
+                    cam_rot_x: n(f[34]),
+                    cam_rot_z: n(f[35]),
+                    cam_timer: n(f[36]),
                 })));
             }
             "RELOAD" => lines.push(RefLine::Reload),
@@ -371,12 +383,34 @@ fn run_reference(
     mode: Mode,
     tmp: &Path,
 ) -> String {
+    run_reference_with_buttons(env, id, tag, inputs, &[], mode, tmp)
+}
+
+/// `buttons` holds the button bits of each tick of an attempt (bit 0: the primary action is held); empty
+/// for a run without a button, which is then fed to the reference exactly as before buttons existed.
+fn run_reference_with_buttons(
+    env: &Env,
+    id: u32,
+    tag: &str,
+    inputs: &[QuantizedInput],
+    buttons: &[u32],
+    mode: Mode,
+    tmp: &Path,
+) -> String {
     let lz = tmp.join(format!("s{id:03}.lz"));
     std::fs::write(&lz, common::stage_lz(&env.disc, id)).unwrap();
     let inp = tmp.join(format!("in{id:03}{tag}.txt"));
     let text: String = inputs
         .iter()
-        .map(|i| format!("{} {}\n", i.x, i.y))
+        .enumerate()
+        .map(|(at, i)| {
+            if buttons.is_empty() {
+                format!("{} {}\n", i.x, i.y)
+            } else {
+                let held = buttons.get(at).copied().unwrap_or(0);
+                format!("{} {} {held}\n", i.x, i.y)
+            }
+        })
         .collect();
     std::fs::write(&inp, text).unwrap();
     let out = tmp.join(format!("out{id:03}{tag}.txt"));
@@ -543,17 +577,36 @@ fn visual_diff(sim: &Sim, reference: &Visual, diffs: &mut Vec<String>) {
 }
 
 fn compare(id: u32, stage: &mb_stage::Stage, inputs: &[QuantizedInput], reference: &str) -> Report {
+    compare_with_buttons(id, stage, inputs, &[], reference)
+}
+
+/// One tick of the feed: `Sim::step` for a run without buttons, as every run was before they existed.
+fn step_feed(sim: &mut Sim, inputs: &[QuantizedInput], buttons: &[u32], at: usize) {
+    let input = inputs.get(at).copied().unwrap_or_default();
+    if buttons.is_empty() {
+        sim.step(input);
+    } else {
+        sim.step_with_buttons(input, buttons.get(at).copied().unwrap_or(0));
+    }
+}
+
+fn compare_with_buttons(
+    id: u32,
+    stage: &mb_stage::Stage,
+    inputs: &[QuantizedInput],
+    buttons: &[u32],
+    reference: &str,
+) -> Report {
     let lines = parse_ref(reference);
     let mut sim = Sim::new(stage, headless_cfg(id, 0));
     let mut report = Report::default();
     // Index into the stick feed, which the reference restarts with every stage load.
     let mut feed_at = 0;
     for (i, line) in lines.iter().enumerate() {
-        let input = |at: usize| inputs.get(at).copied().unwrap_or_default();
         match line {
             RefLine::Frame(r) => {
                 let before = FxBefore::of(&sim);
-                sim.step(input(feed_at));
+                step_feed(&mut sim, inputs, buttons, feed_at);
                 feed_at += 1;
                 report.ref_ticks += 1;
                 let b = &sim.ball;
@@ -608,6 +661,24 @@ fn compare(id: u32, stage: &mb_stage::Stage, inputs: &[QuantizedInput], referenc
                 chk("hash", hash == r.hash, &|| {
                     format!("{hash:08x} vs {:08x}", r.hash)
                 });
+                let cam = &sim.camera;
+                let eye = [cam.eye.x, cam.eye.y, cam.eye.z];
+                chk("camEye", eye.map(f64::to_bits) == r.cam_eye, &|| {
+                    format!("rust {eye:?} ref {:?}", rb(r.cam_eye))
+                });
+                let look_at = [cam.look_at.x, cam.look_at.y, cam.look_at.z];
+                chk(
+                    "camLookAt",
+                    look_at.map(f64::to_bits) == r.cam_look_at,
+                    &|| format!("rust {look_at:?} ref {:?}", rb(r.cam_look_at)),
+                );
+                let cam_rot = [cam.rot_x as i64, cam.rot_z as i64];
+                chk("camRotXZ", cam_rot == [r.cam_rot_x, r.cam_rot_z], &|| {
+                    format!("{cam_rot:?} vs {:?}", [r.cam_rot_x, r.cam_rot_z])
+                });
+                chk("camTimer", cam.timer_curr as i64 == r.cam_timer, &|| {
+                    format!("{} vs {}", cam.timer_curr, r.cam_timer)
+                });
                 visual_diff(&sim, &r.visual, &mut diffs);
                 if !diffs.is_empty() {
                     report.first_divergence = Some((i, diffs.join("; ")));
@@ -630,7 +701,7 @@ fn compare(id: u32, stage: &mb_stage::Stage, inputs: &[QuantizedInput], referenc
                 // The attempt ended on this tick in the reference (fall-out or time over); the Rust sim must
                 // end on the same tick, and the next attempt starts from a fresh `Sim` as the reference starts
                 // from a fresh `StageRuntime`.
-                sim.step(input(feed_at));
+                step_feed(&mut sim, inputs, buttons, feed_at);
                 if !matches!(
                     sim.phase,
                     Phase::Finished(Outcome::FellOut | Outcome::TimeOver)
@@ -654,7 +725,7 @@ fn compare(id: u32, stage: &mb_stage::Stage, inputs: &[QuantizedInput], referenc
                 // The reference left the plain gameplay loop on this tick (it starts a result replay, reloads
                 // the stage or ends the goal sequence); the Rust sim must be at the matching point of the same
                 // sequence.
-                sim.step(input(feed_at));
+                step_feed(&mut sim, inputs, buttons, feed_at);
                 report.end = Some((reason.clone(), *at));
                 let ok = match reason.as_str() {
                     // goal sequence over, or the fall-out sequence 30 ticks in
@@ -925,4 +996,164 @@ fn effects_match_reference() {
     assert!(seen.moving_ground);
     assert!(seen.confetti_on_ground && seen.confetti_expired && seen.tail_ran_empty);
     assert!(reloads > 0 && seen.effects_after_reload && seen.reset_on_reload);
+}
+
+/// Button bits for `frames` ticks with the primary action held on the given tick ranges (end exclusive).
+fn held(ranges: &[(usize, usize)], frames: usize) -> Vec<u32> {
+    (0..frames)
+        .map(|t| ranges.iter().any(|&(from, to)| (from..to).contains(&t)) as u32)
+        .collect()
+}
+
+/// How long the intro of each attempt took in the reference (ticks until its timer reached 0), and whether
+/// the timer ever went from above 120 to below it without stopping there.
+fn reference_intros(reference: &str) -> (Vec<usize>, bool) {
+    let mut lengths = Vec::new();
+    let mut passed_120 = false;
+    let (mut ticks, mut last, mut counting) = (0, i64::MAX, true);
+    for line in parse_ref(reference) {
+        match line {
+            RefLine::Frame(f) => {
+                ticks += 1;
+                passed_120 |= last > 120 && f.intro < 120;
+                if counting && f.intro == 0 {
+                    lengths.push(ticks);
+                    counting = false;
+                }
+                last = f.intro;
+            }
+            RefLine::Reload => (ticks, last, counting) = (0, i64::MAX, true),
+            _ => {}
+        }
+    }
+    (lengths, passed_120)
+}
+
+/// What `fastForwardIntro` does to an intro of `frames` frames, as plain arithmetic on the timer.
+fn intro_length(frames: i32, buttons: &[u32]) -> usize {
+    let (mut timer, mut ticks) = (frames, 0);
+    while timer > 0 {
+        let fast = timer > 120 && buttons.get(ticks).copied().unwrap_or(0) & 1 != 0;
+        timer -= 1 + fast as i32;
+        ticks += 1;
+    }
+    ticks
+}
+
+/// The intro fast-forward (`fastForwardIntro`): the reference with a scripted primary action against
+/// `Sim::step_with_buttons`, every column of `matches_reference_game_loop` on every tick, through the fly-in
+/// (camera eye, look-at, angles and timer), the ball drop and the play that follows.
+///
+/// The action is only ever held during an intro. After it the reference also uses it to cut the fall-out and
+/// goal sequences short, which is not ported.
+#[test]
+fn intro_fast_forward_matches_reference() {
+    let Some(env) = setup() else { return };
+    let frames = 900;
+    let tmp = std::env::temp_dir().join("mb-engine-parity-ff");
+    std::fs::create_dir_all(&tmp).unwrap();
+    // A first intro is over after 240 ticks at the earliest, so every range below lies inside it.
+    let mut taps = Vec::new();
+    let mut state = 0x2545_f491u32;
+    let mut at = 0;
+    while at < 236 {
+        state ^= state << 13;
+        state ^= state >> 17;
+        state ^= state << 5;
+        let len = 1 + (state & 7) as usize;
+        if state & 8 != 0 {
+            taps.push((at, (at + len).min(236)));
+        }
+        at += len;
+    }
+    let every_other: Vec<(usize, usize)> = (0..115).map(|k| (2 * k, 2 * k + 1)).collect();
+    let scripts: [(&str, &[(usize, usize)]); 8] = [
+        (
+            "held from the first tick to the last of the intro",
+            &[(0, 240)],
+        ),
+        ("held from the first tick across READY", &[(0, 180)]),
+        // One tick late: the timer is odd and goes from 121 to 119.
+        ("held from the second tick", &[(1, 200)]),
+        ("held from the middle through the ball drop", &[(100, 280)]),
+        ("released with 121 frames left", &[(1, 120)]),
+        (
+            "released and pressed again",
+            &[
+                (0, 30),
+                (45, 46),
+                (60, 61),
+                (62, 90),
+                (130, 131),
+                (150, 239),
+            ],
+        ),
+        ("every other tick", &every_other),
+        ("random taps", &taps),
+    ];
+    let mut failures = Vec::new();
+    let (mut ticks, mut runs, mut passed_120) = (0, 0, false);
+    for id in env_list("MB_PARITY_FF_STAGES", &[1, 2, 10, 36, 50, 77, 126]) {
+        let id = id as u32;
+        let stage = common::load_stage(&env.disc, id);
+        for (k, (name, ranges)) in scripts.iter().enumerate() {
+            let inputs = script(k, frames);
+            let buttons = held(ranges, frames);
+            let tag = format!("ff{k}");
+            let reference =
+                run_reference_with_buttons(&env, id, &tag, &inputs, &buttons, Mode::Replay, &tmp);
+            let report = compare_with_buttons(id, &stage, &inputs, &buttons, &reference);
+            if diverged(&format!("stage {id:03} action {name}"), &report) {
+                failures.push((id, k));
+            }
+            // The reference's intro was shortened, by exactly what its rule says.
+            let (intros, skipped) = reference_intros(&reference);
+            let expected = intro_length(360, &buttons);
+            assert!(expected < 360, "{name}: the script holds nothing");
+            assert_eq!(intros, [expected], "stage {id} {name}: intro length");
+            passed_120 |= skipped;
+            ticks += report.identical;
+            runs += 1;
+        }
+    }
+    // Retries: the action held through the start of every attempt's intro. The first intro is shortened, the
+    // intro of an attempt after a fall-out (120 frames) is not.
+    let mut retries = 0;
+    for id in env_list("MB_PARITY_FF_RETRY", &[2, 10, 36, 50, 77, 126]) {
+        let id = id as u32;
+        let stage = common::load_stage(&env.disc, id);
+        let frames = 2400;
+        let inputs = vec![QuantizedInput { x: 0, y: -127 }; frames];
+        let buttons = held(&[(0, 110)], frames);
+        let mode = Mode::NoReplay { tail: 0 };
+        let reference =
+            run_reference_with_buttons(&env, id, "ffretry", &inputs, &buttons, mode, &tmp);
+        let report = compare_with_buttons(id, &stage, &inputs, &buttons, &reference);
+        if diverged(
+            &format!("stage {id:03} action held into each attempt"),
+            &report,
+        ) {
+            failures.push((id, 100));
+        }
+        let (intros, _) = reference_intros(&reference);
+        assert_eq!(intros[0], 250, "stage {id}: first intro");
+        assert!(
+            intros[1..].iter().all(|&n| n == 120),
+            "stage {id}: a retry's intro was shortened: {intros:?}"
+        );
+        retries += intros.len() - 1;
+        ticks += report.identical;
+        runs += 1;
+    }
+    let _ = std::fs::remove_dir_all(&tmp);
+    eprintln!("intro fast-forward: {runs} runs, {ticks} ticks identical, {retries} retry intros");
+    assert!(
+        failures.is_empty(),
+        "diverged on (stage, script): {failures:?}"
+    );
+    if std::env::vars().any(|(k, _)| k.starts_with("MB_PARITY_FF_")) {
+        return;
+    }
+    assert!(passed_120, "no run took the timer from 121 to 119");
+    assert!(retries > 0, "no run reached a retry");
 }

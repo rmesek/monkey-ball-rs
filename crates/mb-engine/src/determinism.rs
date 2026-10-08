@@ -9,6 +9,11 @@ pub struct QuantizedInput {
     pub y: i32,
 }
 
+/// Bit 0 of the reference's button bits (`Input.getButtonsBitmask`, the optional `buttons` of its
+/// `QuantizedInput`): the primary action is held (`isPrimaryActionDown`: Space, Enter, Z, the touch action or
+/// gamepad button 0). Passed to [`crate::Sim::step_with_buttons`].
+pub const BUTTON_PRIMARY_ACTION: u32 = 1;
+
 pub fn quantize_stick_axis(value: f64) -> i32 {
     let clamped = value.clamp(-1.0, 1.0);
     (js_round(clamped * 127.0) as i32).clamp(-127, 127)

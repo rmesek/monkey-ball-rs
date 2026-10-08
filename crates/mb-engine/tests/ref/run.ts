@@ -7,6 +7,7 @@
 // Runs the real `Game` (fixed-tick mode, no HUD/audio) with a scripted stick feed and writes one line per tick:
 //   F tick hash px py pz vx vy vz state flags rotX rotY rotZ apeYaw camRotY intro stageTimer goalTimer ringout xrot zrot
 //     visualHash effects confetti effectsState confettiState visualRng
+//     camEyeX camEyeY camEyeZ camLookX camLookY camLookZ camRotX camRotZ camTimer
 // f64 values are the raw IEEE bits as 16 hex digits. `visualHash` is `hashSimState(.., { includeVisual: true })`;
 // `effectsState` / `confettiState` are FNV hashes over every field of every live particle (see `effectsState`).
 //
@@ -17,6 +18,10 @@
 // as the next attempt with the stick feed from its start. A goal sequence that ends writes `END goal-finished
 // tick`; after it the stage runtime alone is advanced `tail` ticks (one `T k visualHash effects confetti
 // effectsState confettiState visualRng` line each), which is how the confetti is followed to its end.
+//
+// A line of the inputs file is `x y` or `x y buttons`. With the third column the feed frame carries `buttons`,
+// and its bit 0 is what the game's input device reports as the primary action during that tick: the reference
+// asks the device (`input.isPrimaryActionDown()`), not the feed, whether to fast-forward the intro.
 import "./shim.ts";
 
 const [srcDir, stageIdArg, stageFile, inputsFile, framesArg, outFile, modeArg, tailArg] = Deno.args;
@@ -37,8 +42,8 @@ const id3 = String(stageId).padStart(3, "0");
 console.warn = () => {};
 
 const feed = Deno.readTextFileSync(inputsFile).trim().split("\n").filter((l) => l.length).map((l) => {
-  const [x, y] = l.split(" ").map(Number);
-  return { x, y };
+  const [x, y, buttons] = l.split(" ").map(Number);
+  return buttons === undefined ? { x, y } : { x, y, buttons };
 });
 
 const { Game } = await import(base + "game.ts");
@@ -53,6 +58,11 @@ game.setInputFeed(feed);
 game.paused = false;
 game.simPerf.enabled = false;
 game.rollbackPerf.enabled = false;
+// Ticks done in the current attempt, which is the index of the feed frame the next tick consumes.
+let attemptTick = 0;
+if (feed.some((f: any) => f.buttons !== undefined)) {
+  game.input.isPrimaryActionDown = () => ((feed[attemptTick] as any)?.buttons & 1) === 1;
+}
 
 const f64 = new DataView(new ArrayBuffer(8));
 const bits = (v: number) => {
@@ -101,13 +111,20 @@ const visual = () => {
   return [hex(h), rt.effects.length, rt.confetti.length, hex(effectsState(rt.effects)), hex(confettiState(rt.confetti)), hex(rt.visualRng.state)];
 };
 
+const camera = () => {
+  const c = player.camera;
+  return [bits(c.eye.x), bits(c.eye.y), bits(c.eye.z), bits(c.lookAt.x), bits(c.lookAt.y), bits(c.lookAt.z), c.rotX, c.rotZ, c.timerCurr];
+};
+
 const lines: string[] = [];
 for (let i = 0; i < frames; i++) {
   const goalTimerBefore = player.goalTimerFrames;
   game.update(game.fixedStep);
+  attemptTick += 1;
   if (noReplay && game.loadingStage) {
     while (game.loadingStage) await new Promise((r) => setTimeout(r, 0));
     game.setInputFeed(feed);
+    attemptTick = 0;
     lines.push(`RELOAD ${i}`);
     continue;
   }
@@ -132,6 +149,7 @@ for (let i = 0; i < frames; i++) {
     game.introTimerFrames, game.stageTimerFrames, player.goalTimerFrames, player.ringoutTimerFrames,
     player.world.xrot, player.world.zrot,
     ...visual(),
+    ...camera(),
   ].join(" "));
 }
 Deno.writeTextFileSync(outFile, lines.join("\n") + "\n");

@@ -2,14 +2,15 @@
 //! (intro, tilt, stage objects, ball step, fall-out, banana pickup, goal entry, timers, gameplay camera),
 //! one fixed 60 Hz tick per [`Sim::step`].
 //!
-//! Not modelled (render/UI/meta only): result replays, audio triggers, course progression. A finished sequence is reported through [`Phase::Finished`] instead of loading the next
+//! Not modelled (render/UI/meta only): result replays, audio triggers, course progression, and the primary
+//! action outside the intro (it cuts the fall-out and goal sequences short in the reference). A finished sequence is reported through [`Phase::Finished`] instead of loading the next
 //! stage.
 
 use crate::ball::{check_ball_entered_goal, Ball, GoalHit, PhysicsCtx};
 use crate::camera::GameplayCamera;
 use crate::collision::{intersects_moving_spheres, PhysBall};
 use crate::constants::*;
-use crate::determinism::QuantizedInput;
+use crate::determinism::{QuantizedInput, BUTTON_PRIMARY_ACTION};
 use crate::geom::StageGeom;
 use crate::hash::{hash_sim_state, hash_sim_state_visual};
 use crate::math::*;
@@ -21,6 +22,8 @@ use crate::world::World;
 use mb_stage::{GoalType, Stage};
 
 const DROP_FRAMES: i32 = 24;
+/// The last part of the intro (READY, the ball drop), which the fast-forward never shortens.
+const INTRO_READY_FRAMES: i32 = 120;
 const ITEM_FLAG_COLLIDABLE: i32 = 1 << 1;
 const BONUS_STAGE_MIN_ID: u32 = 91;
 const BONUS_STAGE_MAX_ID: u32 = 95;
@@ -45,6 +48,10 @@ pub struct SimConfig {
     /// Simulate the display-only particles (`runtime.effects`, `runtime.confetti`). Off is the reference's
     /// `suppressVisualEffects`; the simulation itself is the same either way.
     pub visual_effects: bool,
+    /// Holding the primary action speeds up the fly-in (see [`Sim::step_with_buttons`]). The reference
+    /// allows it for a single player on the first attempt of a stage (`stageAttempts === 1`); which attempt
+    /// this is, is the caller's knowledge.
+    pub intro_fast_forward: bool,
 }
 
 impl SimConfig {
@@ -58,6 +65,7 @@ impl SimConfig {
             goal_tape_anchor_y: GOAL_TAPE_ANCHOR_Y,
             bound_sphere: None,
             visual_effects: true,
+            intro_fast_forward: true,
         }
     }
 
@@ -65,6 +73,7 @@ impl SimConfig {
         SimConfig {
             intro_frames: 120,
             fly_in_frames: 90,
+            intro_fast_forward: false,
             ..SimConfig::first_attempt(stage_id)
         }
     }
@@ -459,14 +468,26 @@ impl Sim {
         self.phase = Phase::GoalSequence;
     }
 
-    /// Advance exactly one fixed 60 Hz tick with this frame's quantized stick input.
+    /// Advance exactly one fixed 60 Hz tick with this frame's quantized stick input and no button held.
     pub fn step(&mut self, input: QuantizedInput) {
+        self.step_with_buttons(input, 0);
+    }
+
+    /// [`Sim::step`] with the tick's button bits (the reference's `getButtonsBitmask`; the one bit it has is
+    /// [`BUTTON_PRIMARY_ACTION`]).
+    ///
+    /// The primary action fast-forwards the intro (`fastForwardIntro` in `game.ts`): on a tick that starts
+    /// with more than 120 intro frames left, with [`SimConfig::intro_fast_forward`] set, the intro timer and
+    /// the fly-in camera's timer go down by two instead of one. Everything else advances once, so the stage
+    /// and the ball are where they would be anyway when the intro reaches the same frame. Buttons do nothing
+    /// else.
+    pub fn step_with_buttons(&mut self, input: QuantizedInput, buttons: u32) {
         self.events.clear();
         if self.is_finished() {
             return;
         }
         self.ball.audio.bumper_hits = 0;
-        self.step_inner(input);
+        self.step_inner(input, buttons);
         if self.ball.audio.bumper_hits > 0 {
             self.events.push(SimEvent::BumperHit);
         }
@@ -481,7 +502,15 @@ impl Sim {
         self.tick += 1;
     }
 
-    fn step_inner(&mut self, input: QuantizedInput) {
+    /// `fastForwardIntro`, decided from the intro timer as the tick finds it.
+    fn intro_fast_forward(&self, buttons: u32) -> bool {
+        self.cfg.intro_fast_forward
+            && self.intro_timer > INTRO_READY_FRAMES
+            && buttons & BUTTON_PRIMARY_ACTION != 0
+    }
+
+    fn step_inner(&mut self, input: QuantizedInput, buttons: u32) {
+        let fast_forward_intro = self.intro_fast_forward(buttons);
         let timeover_active = self.timeover_timer > 0;
         let ringout_active = self.ringout_timer > 0;
         let stage_input_enabled = self.intro_timer <= 0 && !timeover_active;
@@ -489,7 +518,7 @@ impl Sim {
             stage_input_enabled && self.goal_timer <= 0 && !ringout_active && !self.finished;
         let is_bonus = self.cfg.bonus_stage;
         let anim_timer_override = if self.intro_timer > 0 {
-            Some((120 - self.intro_timer).max(0))
+            Some((INTRO_READY_FRAMES - self.intro_timer).max(0))
         } else {
             None
         };
@@ -564,6 +593,11 @@ impl Sim {
 
         if self.intro_timer > 0 {
             self.intro_timer -= 1;
+            if fast_forward_intro {
+                // The second step can pass 120 (121 -> 119) but nothing below: it needs more than 120
+                // frames left, so the two equality tests that follow are never stepped over.
+                self.intro_timer -= 1;
+            }
             if self.intro_timer == DROP_FRAMES {
                 self.ball.start_drop(DROP_FRAMES, &mut self.ctx);
             }
@@ -657,6 +691,7 @@ impl Sim {
             }
         }
 
-        self.camera.update(&self.ball, timeover_active, false);
+        self.camera
+            .update(&self.ball, timeover_active, fast_forward_intro);
     }
 }

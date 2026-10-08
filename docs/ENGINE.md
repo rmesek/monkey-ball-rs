@@ -10,6 +10,9 @@ Port of WebMonkeyBall `math.ts`, `collision.ts`, `physics.ts`, the runtime half 
   `phase` (`Intro | Playing | GoalSequence | FallOut | TimeOver | Finished(Outcome)`), timers, `score`.
   `sim.hash()` = `hashSimState`, `sim.hash_visual()` = the same with `includeVisual` (below). `Sim` is
   `Clone`.
+- `sim.step_with_buttons(QuantizedInput{x,y}, buttons)` is the same tick with the reference's button bits;
+  the one bit there is, `BUTTON_PRIMARY_ACTION` (1), fast-forwards the intro (below). `step(input)` is
+  `step_with_buttons(input, 0)`.
 - `Tables::from_dol(main.dol bytes)` + `install_tables()` before the first `Sim`: the S16 sin/atan tables are game
   data (not equal to `fround(sin)`), read at runtime from the user's own disc. Without them a computed
   approximation is used (not bit-exact).
@@ -20,6 +23,48 @@ Port of WebMonkeyBall `math.ts`, `collision.ts`, `physics.ts`, the runtime half 
 JS doubles are `f64`; `f32` rounding only where the reference has it (matrices, tables, `fround`, custom
 `sqrt`/`rsqrt`). Same operation order, so results are bit-identical. The one libm use (banana fly easing cosine)
 is a 33-entry table.
+
+## Intro fast-forward
+`fastForwardIntro` of `game.ts`. On a tick that starts with more than 120 intro frames left, with
+`SimConfig::intro_fast_forward` set and `BUTTON_PRIMARY_ACTION` in the tick's buttons, `intro_timer` and the
+fly-in camera's `timer_curr` go down by two instead of one. Nothing else is advanced twice: the stage clock is
+held at 0 until 120 frames are left anyway, the ball is not there yet, and bananas and bags do one tick. So a
+first intro takes between 240 and 360 ticks, and the last 120 frames (READY, the ball drop at 24, GO at 0)
+always take 120 ticks. A fast tick shows the camera where two plain ticks would have put it.
+
+Who decides what:
+
+| Condition of the reference | Here |
+|---|---|
+| `introTimerFrames > 120` | the engine, every tick |
+| the primary action is held (`Input.isPrimaryActionDown`: Space, Enter, Z, the touch action, gamepad button 0) | the caller, as bit 0 of `buttons` |
+| `stageAttempts === 1` | the caller, through `SimConfig::intro_fast_forward`: `first_attempt()` sets it, `retry()` clears it |
+| `players.length <= 1` | always true here |
+
+Behaviour ported as it is in the reference:
+
+- The timer is not clamped at 120. From an odd count it goes 121 -> 119; that happens when the action is first
+  pressed after an odd number of plain ticks. READY is therefore a crossing (`prev > 120 && now <= 120`, as
+  the reference's announcer and this port's HUD and audio test it), never `== 120`.
+- The ball drop and the end of the intro are tests for equality (`=== dropFrames`, `=== 0`) on that timer. A
+  double step cannot pass either, because it needs more than 120 frames left and so lands on 119 at the
+  lowest. The same holds for the stage clock override `max(0, 120 - intro)`: it is 0 for every frame above
+  119, so play starts from the same clock whatever was skipped.
+- The camera guards its timer only before the first of the two steps, so a fly-in standing at 1 on a fast
+  tick ends at -1 and stays. With the game's lengths (intro 360, fly-in 350) the fly-in timer is always the
+  intro timer minus 11 and is at 110 or more before a fast tick; only a `SimConfig` with a fly-in much shorter
+  than its intro gets there.
+- A retry's intro is 120 frames, so it would never fast-forward even with the flag set; the flag is the
+  reference's attempt counter, kept for a configuration with other lengths.
+- In the reference the game loop asks the input device on every tick; the `buttons` of its input feed and
+  replays are recorded but not read back for this. Here the buttons are an argument of the tick, so a
+  recorded run replays its fast-forward. `QuantizedInput` stays the stick alone (the reference's
+  `QuantizedStick`).
+- `SimEvent`s are unchanged; none is added.
+
+Not ported: the other two uses of the primary action in `game.ts`, cutting the fall-out sequence short
+(`ringoutSkipTimerFrames`) and leaving the goal sequence once the ball has launched, and skipping a result
+replay. Buttons do nothing outside the intro.
 
 ## Particles (display only)
 `effects.rs` ports `effects.ts` and the confetti of `stage.ts`. The state is public and read by the renderer;
@@ -85,9 +130,18 @@ Deno / reference checkout
 (`tests/ref/`, stubs for DOM/gl-matrix/fflate) with scripted stick feeds and compares per tick: ball
 position/velocity (raw f64 bits), state, flags, rotations, camera yaw, timers, tilt and the sim hash, and for
 the particles the `includeVisual` hash, both counts, a hash over every field of every effect and confetti
-piece (computed by the harness from the reference's objects) and the visual random state.
-Knobs: `MB_PARITY_STAGES`, `MB_PARITY_SCRIPTS`, `MB_PARITY_FRAMES`, `MB_PARITY_AUTOPILOT`, and
-`MB_PARITY_FX_STAGES`, `MB_PARITY_FX_SCRIPTS`, `MB_PARITY_FX_FAST`, `MB_PARITY_FX_GOALS`, `MB_PARITY_FX_FRAMES`.
+piece (computed by the harness from the reference's objects) and the visual random state, and for the camera
+its eye and look-at point (raw f64 bits), the other two angles and the fly-in timer.
+Knobs: `MB_PARITY_STAGES`, `MB_PARITY_SCRIPTS`, `MB_PARITY_FRAMES`, `MB_PARITY_AUTOPILOT`,
+`MB_PARITY_FX_STAGES`, `MB_PARITY_FX_SCRIPTS`, `MB_PARITY_FX_FAST`, `MB_PARITY_FX_GOALS`, `MB_PARITY_FX_FRAMES`,
+and `MB_PARITY_FF_STAGES`, `MB_PARITY_FF_RETRY`.
+
+`intro_fast_forward_matches_reference` gives the reference a scripted primary action: an inputs line with a
+third column makes the harness answer `input.isPrimaryActionDown()` from it, tick by tick (the game code is
+unchanged; only the device is scripted). The action is held during intros only, because afterwards the
+reference also uses it to cut sequences short (above). Next to the comparison the test checks that the
+reference's intro took exactly as many ticks as the rule says for the script, that a retry's took 120, and
+that some run took the timer from 121 to 119.
 
 `effects_match_reference` runs the reference with result replays off (`run.ts ... noreplay`), so that the
 particles can be followed where the game would cut to a replay: a fall-out runs its 270 ticks and reloads the
@@ -106,6 +160,16 @@ stick scripts; 36, 77, 95, 126, 133, 151, 197 with the stick held forward; goal 
 (`MB_PARITY_FX_STAGES` and `MB_PARITY_FX_FAST` = 1..200, scripts 0 to 3: 1004 runs, 1.9 million ticks, 1997
 retries). Not compared: confetti from a goal on a moving group, and anything during a result replay (not
 ported).
+
+Intro fast-forward: bit-identical in every column on 7 stages (1, 2, 10, 36, 50, 77, 126) with 8 action
+scripts each, 900 ticks a run with a stick script after the intro: held from the first tick to the last of
+the intro; from the first tick to 60 frames before its end (across READY); from the second tick (121 -> 119);
+from tick 100 through the ball drop; released with 121 frames left; released and pressed again six times;
+every other tick; random taps. And on 6 stages (2, 10, 36, 50, 77, 126) with result replays off, the stick
+held forward and the action held for the first 110 ticks of every attempt, 2400 ticks a run: the first intro
+takes 250 ticks, the 18 intros after a fall-out take 120. 62 runs, 49,323 ticks. `tests/synthetic.rs` has the
+same rules without a disc (twice the speed above 120, nothing at 120 or below, nothing on a retry or with the
+flag off, the drop at 24 and the end at 0 for even, odd and tapped timers, the camera overshoot).
 
 One thing the retry comparison showed about the simulation itself: the reference reuses its ball object
 across a reload and `initBallForStage` leaves `ball.speed` as the last step set it, so its hash carries a
