@@ -480,6 +480,7 @@
     if (!wasmModule || busy || running) return;
     busy = true;
     pick.disabled = true;
+    if ($("pick-any")) $("pick-any").disabled = true;
     removeButton.hidden = true;
     cancel.hidden = false;
     const t0 = performance.now();
@@ -566,6 +567,7 @@
       busy = false;
       cancel.hidden = true;
       if (!running) pick.disabled = false;
+      if (!running && $("pick-any")) $("pick-any").disabled = false;
     }
   }
 
@@ -814,9 +816,23 @@
   // ---- picking the file -------------------------------------------------------------------------------------
 
   // The extension filter helps on a desktop (the dialog still offers "all files"). A phone's file chooser
-  // maps extensions to media types, knows none for .rvz or .gcm, and may then grey the right file out
-  // with no way around it: there the filter is dropped and the file is judged by its content alone.
-  if (navigator.maxTouchPoints > 0) fileInput.removeAttribute("accept");
+  // works with media types, not extensions, and knows none for .rvz or .gcm. No filter at all is not the
+  // answer either: a chooser asked for "any file" also offers the camera and the sound recorder, and
+  // Firefox for Android then asks for the "record audio" and camera permissions, which this page never
+  // needs. So a phone is asked for generic binary files, which is how its storage reports a disc image.
+  // Should some file manager report it differently and grey it out, the second button asks for any file.
+  const touchDevice = navigator.maxTouchPoints > 0;
+  const pickAny = $("pick-any");
+  if (touchDevice) {
+    fileInput.setAttribute("accept", "application/octet-stream,application/x-iso9660-image,application/x-cd-image");
+    if (pickAny) {
+      pickAny.hidden = false;
+      pickAny.addEventListener("click", () => {
+        fileInput.removeAttribute("accept");
+        fileInput.click();
+      });
+    }
+  }
   pick.addEventListener("click", () => fileInput.click());
   fileInput.addEventListener("change", () => {
     const file = fileInput.files && fileInput.files[0];

@@ -229,8 +229,13 @@ page (main.js + wasm)
 * The browser's back gesture goes one step back inside the game while it is in a sub-menu or a stage (one
   history entry is kept for that, added and removed when the game says so, with no polling); at the title it
   leaves the page as usual.
-* On a touch device the file input has no extension filter: a phone's chooser maps extensions to media types,
-  knows none for `.rvz` or `.gcm`, and could grey the right file out. The file is judged by its content.
+* On a touch device the file input asks for generic binary files (`application/octet-stream` and the ISO
+  types), not for extensions: a phone's chooser works with media types and knows none for `.rvz` or `.gcm`.
+  It does not ask for "any file" either, because a chooser then also offers the camera and the sound recorder,
+  and Firefox for Android asks for the camera and "record audio" permissions, which the page never uses. A
+  second button, "File greyed out? Show all files", drops the filter for a file manager that reports the image
+  under another type (that one can bring the permission question back; denying it is harmless). The file is
+  judged by its content. Not tried on a phone.
 * Playing from the picked file (nothing stored), the file can vanish mid-session: moved, deleted, or the
   permission a phone gave for it has ended. The game then cannot load another stage; the page says "The game
   file can no longer be read" and offers the way back to the picker. Progress is already saved.
