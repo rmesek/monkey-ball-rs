@@ -93,9 +93,9 @@ pub fn world_from_group(
             rot.z = v * DEG_TO_RAD;
         }
     }
-    let origin_from_group = Mat4::from_rotation_x(-origin_rot.x as f32 * S16_TO_RADIANS)
-        * Mat4::from_rotation_y(-origin_rot.y as f32 * S16_TO_RADIANS)
-        * Mat4::from_rotation_z(-origin_rot.z as f32 * S16_TO_RADIANS)
+    let origin_from_group = Mat4::from_rotation_x(-(origin_rot.x as f32) * S16_TO_RADIANS)
+        * Mat4::from_rotation_y(-(origin_rot.y as f32) * S16_TO_RADIANS)
+        * Mat4::from_rotation_z(-(origin_rot.z as f32) * S16_TO_RADIANS)
         * Mat4::from_translation(-origin);
     Mat4::from_translation(pos)
         * Mat4::from_rotation_z(rot.z)

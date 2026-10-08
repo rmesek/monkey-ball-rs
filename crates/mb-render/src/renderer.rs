@@ -17,6 +17,8 @@ use crate::material::{
     material_uniform, naomi_material_uniform, naomi_pipeline_key, naomi_sampler_key, pipeline_key,
     sampler_key, LayerKind, PipelineKey, SamplerKey, WrapKey,
 };
+// Only the readback path (`render_to_rgba`) names the type, and that path does not exist on wasm32.
+#[cfg(not(target_arch = "wasm32"))]
 use crate::offscreen::OffscreenTarget;
 use crate::sprite::{Sprite, SpriteRenderer};
 
@@ -60,6 +62,7 @@ pub struct GpuTexture {
 
 struct GpuMesh {
     vertex: wgpu::Buffer,
+    vertex_count: u32,
     index: wgpu::Buffer,
     index_count: u32,
     key: PipelineKey,
@@ -79,6 +82,7 @@ struct Object {
     alpha: f32,
     color_mul: [f32; 4],
     visible: bool,
+    sort_bias: Option<f32>,
     dirty: bool,
     buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
@@ -156,6 +160,19 @@ fn sampler_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
         ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
         count: None,
     }
+}
+
+fn pack_vertices(v: &mb_gma::Vertices) -> Vec<Vertex> {
+    (0..v.len())
+        .map(|i| Vertex {
+            position: v.positions[i],
+            normal: v.normals[i],
+            color: v.colors[i],
+            uv0: v.uv0[i],
+            uv1: v.uv1[i],
+            uv2: v.uv2[i],
+        })
+        .collect()
 }
 
 /// Normal matrix (inverse transpose of the upper 3x3), padded to a mat4 for the uniform.
@@ -458,22 +475,14 @@ impl Renderer {
         origin: Vec3,
     ) -> GpuMesh {
         self.ensure_pipeline(key);
-        let verts: Vec<Vertex> = (0..v.len())
-            .map(|i| Vertex {
-                position: v.positions[i],
-                normal: v.normals[i],
-                color: v.colors[i],
-                uv0: v.uv0[i],
-                uv1: v.uv1[i],
-                uv2: v.uv2[i],
-            })
-            .collect();
+        let verts = pack_vertices(v);
         let vertex = self
             .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("vertices"),
                 contents: bytemuck::cast_slice(&verts),
-                usage: wgpu::BufferUsages::VERTEX,
+                // COPY_DST so `write_vertices` can re-pose dynamic meshes (goal tape).
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             });
         let index = self
             .device
@@ -484,6 +493,7 @@ impl Renderer {
             });
         GpuMesh {
             vertex,
+            vertex_count: verts.len() as u32,
             index,
             index_count: indices.len() as u32,
             key,
@@ -675,6 +685,7 @@ impl Renderer {
             alpha: 1.0,
             color_mul: [1.0; 4],
             visible: true,
+            sort_bias: None,
             dirty: true,
             buffer,
             bind_group,
@@ -685,8 +696,11 @@ impl Renderer {
     /// Replace the object's model-to-world transform (e.g. each frame for animated anim groups).
     pub fn set_transform(&mut self, object: ObjectId, transform: Mat4) {
         let o = &mut self.objects[object.0];
-        o.transform = transform;
-        o.dirty = true;
+        // Callers re-pose whole scenes every frame; only what moved is uploaded again.
+        if o.transform != transform {
+            o.transform = transform;
+            o.dirty = true;
+        }
     }
 
     pub fn transform(&self, object: ObjectId) -> Mat4 {
@@ -700,14 +714,39 @@ impl Renderer {
     /// Object-wide opacity (1 = opaque). Objects below 1 draw all their shapes in the sorted pass.
     pub fn set_alpha(&mut self, object: ObjectId, alpha: f32) {
         let o = &mut self.objects[object.0];
-        o.alpha = alpha;
-        o.dirty = true;
+        if o.alpha != alpha {
+            o.alpha = alpha;
+            o.dirty = true;
+        }
     }
 
     pub fn set_color_mul(&mut self, object: ObjectId, rgba: [f32; 4]) {
         let o = &mut self.objects[object.0];
         o.color_mul = rgba;
         o.dirty = true;
+    }
+
+    /// Draw every mesh of the object in the back-to-front pass, ordered by the distance of the object's
+    /// origin plus `bias` (larger = drawn earlier). Layered shells that share a centre (the ball) need
+    /// this: their per-mesh distances tie or flip. `None` restores per-mesh sorting.
+    pub fn set_sort_bias(&mut self, object: ObjectId, bias: Option<f32>) {
+        self.objects[object.0].sort_bias = bias;
+    }
+
+    /// Replace the vertices of one mesh of an uploaded model (same vertex count; the index buffer is kept).
+    /// For the few meshes that are re-posed on the CPU every frame. Returns false when the mesh does not
+    /// exist or the count differs.
+    pub fn write_vertices(&mut self, model: ModelId, mesh: usize, v: &mb_gma::Vertices) -> bool {
+        let Some(m) = self.models.get(model.0).and_then(|m| m.meshes.get(mesh)) else {
+            return false;
+        };
+        if m.vertex_count as usize != v.len() {
+            return false;
+        }
+        let verts = pack_vertices(v);
+        self.queue
+            .write_buffer(&m.vertex, 0, bytemuck::cast_slice(&verts));
+        true
     }
 
     /// Drop all models and objects (switching stages). Keeps pipelines, samplers and textures; release
@@ -733,6 +772,11 @@ impl Renderer {
     /// Queue a screen-space quad for the next `render` call (cleared afterwards).
     pub fn draw_sprite(&mut self, sprite: Sprite) {
         self.sprite_queue.push(sprite);
+    }
+
+    /// Drop queued sprites without drawing them (a frame that was updated but is not rendered).
+    pub fn discard_sprites(&mut self) {
+        self.sprite_queue.clear();
     }
 
     // ---- frame -------------------------------------------------------------------------------------
@@ -804,10 +848,18 @@ impl Renderer {
                 continue;
             }
             let model = &self.models[o.model.0];
-            let sort_all = o.alpha < 1.0 || o.color_mul[3] < 1.0;
+            let sort_all = o.alpha < 1.0 || o.color_mul[3] < 1.0 || o.sort_bias.is_some();
             for (mi, m) in model.meshes.iter().enumerate() {
-                let world = o.transform.transform_point3(m.origin);
-                let dist = camera.view.transform_point3(world).length();
+                let dist = match o.sort_bias {
+                    Some(bias) => {
+                        let world = o.transform.w_axis.truncate();
+                        camera.view.transform_point3(world).length() + bias
+                    }
+                    None => {
+                        let world = o.transform.transform_point3(m.origin);
+                        camera.view.transform_point3(world).length()
+                    }
+                };
                 let item = DrawItem {
                     object: oi,
                     mesh: mi,

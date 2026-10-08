@@ -144,6 +144,11 @@ pub struct StageScene {
     pub items: Vec<Item>,
     pub bg_objects: Vec<ObjectId>,
     pub fg_objects: Vec<ObjectId>,
+    /// For each entry of `bg_objects` / `fg_objects`: its index in the stagedef list.
+    pub bg_sources: Vec<usize>,
+    pub fg_sources: Vec<usize>,
+    /// The uploaded `common.tpl`, for states that add more `common.gma` models (ball, goal bag).
+    pub common_set: TextureSet,
     pub start: Vec3,
     /// Model names that could not be found in any source.
     pub missing_models: Vec<String>,
@@ -161,12 +166,26 @@ pub enum Motion {
     WorldSpinY(f32),
 }
 
+/// What a stage item is, with its index in the simulation's runtime lists (`mb_engine::StageRuntime`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ItemKind {
+    Model,
+    /// Index over all goals in anim-group order.
+    Goal(usize),
+    /// Index within the item's anim group.
+    Bumper(usize),
+    Jamabar(usize),
+    /// Index over all bananas in anim-group order.
+    Banana(usize),
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct Item {
     pub object: ObjectId,
     pub group: usize,
     pub local: Mat4,
     pub motion: Motion,
+    pub kind: ItemKind,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -286,9 +305,10 @@ fn place_bg_objects(
     list: &[mb_stage::BgObject],
     layer: Layer,
     missing: &mut Vec<String>,
-) -> Vec<ObjectId> {
+) -> (Vec<ObjectId>, Vec<usize>) {
     let mut out = Vec::new();
-    for o in list {
+    let mut sources = Vec::new();
+    for (index, o) in list.iter().enumerate() {
         if o.flags & 1 == 0 {
             continue;
         }
@@ -297,11 +317,12 @@ fn place_bg_objects(
                 let obj = r.add_object(id, layer, trs_s16(v3(o.pos), o.rot, v3(o.scale)));
                 r.set_alpha(obj, 1.0 - o.translucency);
                 out.push(obj);
+                sources.push(index);
             }
             None => missing.push(o.name.clone()),
         }
     }
-    out
+    (out, sources)
 }
 
 impl StageScene {
@@ -338,7 +359,7 @@ impl StageScene {
         let jamabar = loader.find_substring(r, "JAMABAR");
         let banana_single = loader.get(r, Src::Common, "OBJ_BANANA_01_LOD150");
         let banana_bunch = loader.get(r, Src::Common, "OBJ_BANANA_02_LOD100");
-        let mut add = |r: &mut Renderer, model: Option<ModelId>, group, local, motion| {
+        let mut add = |r: &mut Renderer, model: Option<ModelId>, group, local, motion, kind| {
             if let Some(m) = model {
                 let object = r.add_object(m, Layer::World, Mat4::IDENTITY);
                 items.push(Item {
@@ -346,13 +367,22 @@ impl StageScene {
                     group,
                     local,
                     motion,
+                    kind,
                 });
             }
         };
+        let (mut goal_index, mut banana_index) = (0, 0);
         for (gi, g) in a.stagedef.anim_groups.iter().enumerate() {
             for m in &g.models {
                 match loader.resolve(r, &m.name) {
-                    Some(id) => add(r, Some(id), gi, Mat4::IDENTITY, Motion::Static),
+                    Some(id) => add(
+                        r,
+                        Some(id),
+                        gi,
+                        Mat4::IDENTITY,
+                        Motion::Static,
+                        ItemKind::Model,
+                    ),
                     None if m.name.starts_with("null") => {}
                     None => missing.push(m.name.clone()),
                 }
@@ -364,15 +394,18 @@ impl StageScene {
                     mb_stage::GoalType::Red => goal_red,
                 };
                 let local = trs_s16(v3(goal.pos), goal.rot, Vec3::ONE);
-                add(r, model, gi, local, Motion::Static);
+                let kind = ItemKind::Goal(goal_index);
+                add(r, model, gi, local, Motion::Static, kind);
+                goal_index += 1;
             }
-            for b in &g.bumpers {
+            for (i, b) in g.bumpers.iter().enumerate() {
                 let local = trs_s16(v3(b.pos), b.rot, v3(b.scale));
-                add(r, bumper, gi, local, Motion::LocalSpinY(0x100 as f32));
+                let motion = Motion::LocalSpinY(0x100 as f32);
+                add(r, bumper, gi, local, motion, ItemKind::Bumper(i));
             }
-            for j in &g.jamabars {
+            for (i, j) in g.jamabars.iter().enumerate() {
                 let local = trs_s16(v3(j.pos), j.rot, v3(j.scale));
-                add(r, jamabar, gi, local, Motion::Static);
+                add(r, jamabar, gi, local, Motion::Static, ItemKind::Jamabar(i));
             }
             for b in &g.bananas {
                 let (model, rate) = if b.kind == 0 {
@@ -381,18 +414,20 @@ impl StageScene {
                     (banana_bunch, 768.0)
                 };
                 let local = Mat4::from_translation(v3(b.pos));
-                add(r, model, gi, local, Motion::WorldSpinY(rate));
+                let kind = ItemKind::Banana(banana_index);
+                add(r, model, gi, local, Motion::WorldSpinY(rate), kind);
+                banana_index += 1;
             }
         }
 
-        let bg_objects = place_bg_objects(
+        let (bg_objects, bg_sources) = place_bg_objects(
             r,
             &mut loader,
             &a.stagedef.bg_objects,
             Layer::Background,
             &mut missing,
         );
-        let fg_objects = place_bg_objects(
+        let (fg_objects, fg_sources) = place_bg_objects(
             r,
             &mut loader,
             &a.stagedef.fg_objects,
@@ -410,6 +445,9 @@ impl StageScene {
             items,
             bg_objects,
             fg_objects,
+            bg_sources,
+            fg_sources,
+            common_set: loader.common_set.clone(),
             start,
             missing_models: missing,
             texture_base,

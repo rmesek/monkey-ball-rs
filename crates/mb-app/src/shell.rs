@@ -42,6 +42,18 @@ pub trait Platform: 'static {
     fn run_local(&mut self, fut: Pin<Box<dyn Future<Output = ()>>>) {
         pollster::block_on(fut);
     }
+    /// Render resolution relative to the window's physical size, in 0..=1 (1.0 = native). The web shell caps
+    /// very dense displays here; pointer positions and the layout scale follow the reduced size.
+    fn render_scale(&mut self, _window: &Window) -> f32 {
+        1.0
+    }
+    /// Browser only: the backends to choose from. WebGPU is used when the browser really provides an adapter,
+    /// WebGL2 otherwise; a shell can narrow this (e.g. to force WebGL2 on a machine with a bad WebGPU driver).
+    fn web_backends(&mut self) -> wgpu::Backends {
+        wgpu::Backends::BROWSER_WEBGPU | wgpu::Backends::GL
+    }
+    /// Called once when the GPU is up, with the adapter description ("name (backend, device type)").
+    fn on_ready(&mut self, _gpu: &str) {}
     /// Fatal error: show it to the user (the driver then stops).
     fn on_error(&mut self, msg: &str) {
         eprintln!("error: {msg}");
@@ -59,8 +71,12 @@ struct Live {
     renderer: Renderer,
 }
 
+/// Id used when the left mouse button drives the touch controls (real touch ids are small numbers).
+const MOUSE_TOUCH_ID: u64 = u64::MAX;
+
 struct Shell<P: Platform> {
     platform: P,
+    /// `None` on the web, where the instance is created asynchronously (WebGPU detection, see [`init_gpu`]).
     instance: Option<wgpu::Instance>,
     content: Content,
     initial: Option<Box<dyn Game>>,
@@ -73,9 +89,46 @@ struct Shell<P: Platform> {
     start: Instant,
     last: Instant,
     failed: bool,
+    /// Current [`Platform::render_scale`]: surface pixels per window physical pixel.
+    scale: f32,
+    /// Last cursor position in window physical pixels.
+    cursor: Option<(f32, f32)>,
+    /// The left mouse button is held and acts as a touch.
+    mouse_touch: bool,
+    /// Actions currently held from the keyboard, released together when the window loses focus.
+    keys_down: Vec<Action>,
 }
 
-async fn init_gpu(instance: wgpu::Instance, surface: wgpu::Surface<'static>) -> GpuInit {
+/// Instance for the browser: of `backends`, WebGPU when the browser really provides an adapter, otherwise
+/// WebGL2. `Instance::new` cannot find that out (it is synchronous), so the web path creates the instance here.
+async fn web_instance(backends: wgpu::Backends) -> wgpu::Instance {
+    let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
+    desc.backends = backends;
+    wgpu::util::new_instance_with_webgpu_detection(desc).await
+}
+
+/// Limits to request. GL/WebGL2 adapters get the WebGL2 baseline (raised to the adapter's texture size), which
+/// is what the renderer is written against; requesting everything a GL adapter reports is not portable.
+fn required_limits(adapter: &wgpu::Adapter) -> wgpu::Limits {
+    if adapter.get_info().backend == wgpu::Backend::Gl {
+        wgpu::Limits::downlevel_webgl2_defaults().using_resolution(adapter.limits())
+    } else {
+        adapter.limits()
+    }
+}
+
+async fn init_gpu(
+    instance: Option<wgpu::Instance>,
+    web_backends: wgpu::Backends,
+    window: Arc<Window>,
+) -> GpuInit {
+    let instance = match instance {
+        Some(i) => i,
+        None => web_instance(web_backends).await,
+    };
+    let surface = instance
+        .create_surface(window)
+        .map_err(|e| format!("surface: {e}"))?;
     let adapter = instance
         .request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
@@ -88,7 +141,7 @@ async fn init_gpu(instance: wgpu::Instance, surface: wgpu::Surface<'static>) -> 
         .request_device(&wgpu::DeviceDescriptor {
             label: Some("mb device"),
             required_features: wgpu::Features::empty(),
-            required_limits: adapter.limits(),
+            required_limits: required_limits(&adapter),
             ..Default::default()
         })
         .await
@@ -120,16 +173,49 @@ impl<P: Platform> Shell<P> {
                 .create_window(attrs)
                 .map_err(|e| format!("window: {e}"))?,
         );
-        let instance = self.instance.clone().ok_or("no wgpu instance")?;
-        let surface = instance
-            .create_surface(window.clone())
-            .map_err(|e| format!("surface: {e}"))?;
-        self.window = Some(window);
+        let instance = self.instance.clone();
+        self.window = Some(window.clone());
         let slot = self.pending.clone();
+        let web_backends = self.platform.web_backends();
         self.platform.run_local(Box::pin(async move {
-            *slot.borrow_mut() = Some(init_gpu(instance, surface).await);
+            *slot.borrow_mut() = Some(init_gpu(instance, web_backends, window).await);
         }));
         Ok(())
+    }
+
+    /// Surface size for the window: its physical size times the platform's render scale.
+    fn surface_size(&mut self, window: &Window) -> (u32, u32) {
+        let size = window.inner_size();
+        self.scale = self.platform.render_scale(window).clamp(0.1, 1.0);
+        let scaled = |v: u32| ((v as f32 * self.scale).round() as u32).max(1);
+        (scaled(size.width), scaled(size.height))
+    }
+
+    /// Feed one pointer sample (window physical pixels) to the touch controls.
+    fn pointer(&mut self, id: u64, phase: TouchPhase, pos: (f32, f32)) {
+        let Some(st) = self.live.as_ref() else {
+            return;
+        };
+        let insets = self.platform.insets(&st.window);
+        let layout = Layout::new(
+            (st.config.width, st.config.height),
+            insets,
+            st.window.scale_factor() as f32 * self.scale,
+        );
+        let pos = (pos.0 * self.scale, pos.1 * self.scale);
+        self.touch.touch(id, phase, pos, &layout, &mut self.input);
+    }
+
+    /// Let go of everything held through events that will not get their "up" (focus moved elsewhere).
+    fn release_held(&mut self) {
+        for action in std::mem::take(&mut self.keys_down) {
+            self.input.set_action(action, false);
+        }
+        self.input.set_mouse_look(false);
+        if std::mem::take(&mut self.mouse_touch) {
+            let pos = self.cursor.unwrap_or_default();
+            self.pointer(MOUSE_TOUCH_ID, TouchPhase::Ended, pos);
+        }
     }
 
     /// Finish setup once the (possibly asynchronous) GPU init has landed.
@@ -141,12 +227,13 @@ impl<P: Platform> Shell<P> {
         let window = self.window.clone().ok_or("window missing")?;
         let caps = surface.get_capabilities(&gpu.adapter);
         let format = pick_surface_format(&caps.formats);
-        let size = window.inner_size();
+        let (width, height) = self.surface_size(&window);
         let mut config = surface
-            .get_default_config(&gpu.adapter, size.width.max(1), size.height.max(1))
+            .get_default_config(&gpu.adapter, width, height)
             .ok_or("surface not supported by adapter")?;
         config.format = format;
         surface.configure(&gpu.device, &config);
+        self.platform.on_ready(&gpu.describe());
         let renderer = Renderer::new(gpu.device.clone(), gpu.queue.clone(), format);
         self.live = Some(Live {
             window,
@@ -157,13 +244,16 @@ impl<P: Platform> Shell<P> {
         });
         if let Some(game) = self.initial.take() {
             let st = self.live.as_mut().unwrap();
+            let size = (st.config.width, st.config.height);
+            let insets = self.platform.insets(&st.window);
             let mut ctx = GameCtx {
                 dt: 0.0,
                 time: 0.0,
                 input: &self.input,
                 renderer: &mut st.renderer,
                 content: &self.content,
-                size: (st.config.width, st.config.height),
+                size,
+                layout: Layout::new(size, insets, st.window.scale_factor() as f32 * self.scale),
             };
             self.stack.push(game, &mut ctx)?;
         }
@@ -187,6 +277,7 @@ impl<P: Platform> Shell<P> {
         let dt = (now - self.last).as_secs_f32().min(0.1);
         self.last = now;
         let size = (st.config.width, st.config.height);
+        let insets = self.platform.insets(&st.window);
         let mut ctx = GameCtx {
             dt,
             time: (now - self.start).as_secs_f64(),
@@ -194,6 +285,7 @@ impl<P: Platform> Shell<P> {
             renderer: &mut st.renderer,
             content: &self.content,
             size,
+            layout: Layout::new(size, insets, st.window.scale_factor() as f32 * self.scale),
         };
         match self.stack.update(&mut ctx) {
             Ok(true) => {}
@@ -239,8 +331,9 @@ impl<P: Platform> ApplicationHandler for Shell<P> {
                 match st.gpu.instance.create_surface(st.window.clone()) {
                     Ok(s) => {
                         let size = st.window.inner_size();
-                        st.config.width = size.width.max(1);
-                        st.config.height = size.height.max(1);
+                        let scaled = |v: u32| ((v as f32 * self.scale).round() as u32).max(1);
+                        st.config.width = scaled(size.width);
+                        st.config.height = scaled(size.height);
                         s.configure(&st.gpu.device, &st.config);
                         st.surface = Some(s);
                     }
@@ -266,12 +359,15 @@ impl<P: Platform> ApplicationHandler for Shell<P> {
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
-            WindowEvent::Resized(size) => {
-                if let Some(st) = self.live.as_mut() {
-                    st.config.width = size.width.max(1);
-                    st.config.height = size.height.max(1);
-                    if let Some(s) = &st.surface {
-                        s.configure(&st.gpu.device, &st.config);
+            WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
+                if let Some(window) = self.window.clone() {
+                    let (width, height) = self.surface_size(&window);
+                    if let Some(st) = self.live.as_mut() {
+                        st.config.width = width;
+                        st.config.height = height;
+                        if let Some(s) = &st.surface {
+                            s.configure(&st.gpu.device, &st.config);
+                        }
                     }
                 }
             }
@@ -283,37 +379,62 @@ impl<P: Platform> ApplicationHandler for Shell<P> {
                         c => action_for_key(c),
                     };
                     if let Some(action) = action {
-                        self.input
-                            .set_action(action, event.state == ElementState::Pressed);
+                        let down = event.state == ElementState::Pressed;
+                        self.keys_down.retain(|a| *a != action);
+                        if down {
+                            self.keys_down.push(action);
+                        }
+                        self.input.set_action(action, down);
                     }
                 }
             }
+            WindowEvent::Focused(false) => self.release_held(),
             WindowEvent::MouseInput {
                 state,
                 button: MouseButton::Right,
                 ..
             } => self.input.set_mouse_look(state == ElementState::Pressed),
-            WindowEvent::Touch(t) => {
-                if let Some(st) = self.live.as_ref() {
-                    let insets = self.platform.insets(&st.window);
-                    let layout = Layout::new(
-                        (st.config.width, st.config.height),
-                        insets,
-                        st.window.scale_factor() as f32,
-                    );
-                    let phase = match t.phase {
-                        winit::event::TouchPhase::Started => TouchPhase::Started,
-                        winit::event::TouchPhase::Moved => TouchPhase::Moved,
-                        _ => TouchPhase::Ended,
+            // The left button works the touch controls, so menus and the stick are usable with a mouse.
+            WindowEvent::MouseInput {
+                state,
+                button: MouseButton::Left,
+                ..
+            } => {
+                let down = state == ElementState::Pressed;
+                if let (Some(pos), true) = (self.cursor, down != self.mouse_touch) {
+                    self.mouse_touch = down;
+                    let phase = if down {
+                        TouchPhase::Started
+                    } else {
+                        TouchPhase::Ended
                     };
-                    self.touch.touch(
-                        t.id,
-                        phase,
-                        (t.location.x as f32, t.location.y as f32),
-                        &layout,
-                        &mut self.input,
-                    );
+                    self.pointer(MOUSE_TOUCH_ID, phase, pos);
                 }
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                let pos = (position.x as f32, position.y as f32);
+                if self.mouse_touch {
+                    self.pointer(MOUSE_TOUCH_ID, TouchPhase::Moved, pos);
+                } else if let Some(last) = self.cursor {
+                    // Right-button mouse look; `look_delta` ignores this while the button is up.
+                    self.input.add_mouse_delta(pos.0 - last.0, pos.1 - last.1);
+                }
+                self.cursor = Some(pos);
+            }
+            WindowEvent::CursorLeft { .. } => {
+                if std::mem::take(&mut self.mouse_touch) {
+                    let pos = self.cursor.unwrap_or_default();
+                    self.pointer(MOUSE_TOUCH_ID, TouchPhase::Ended, pos);
+                }
+                self.cursor = None;
+            }
+            WindowEvent::Touch(t) => {
+                let phase = match t.phase {
+                    winit::event::TouchPhase::Started => TouchPhase::Started,
+                    winit::event::TouchPhase::Moved => TouchPhase::Moved,
+                    _ => TouchPhase::Ended,
+                };
+                self.pointer(t.id, phase, (t.location.x as f32, t.location.y as f32));
             }
             WindowEvent::RedrawRequested => self.frame(event_loop),
             _ => {}
@@ -328,6 +449,7 @@ impl<P: Platform> ApplicationHandler for Shell<P> {
 }
 
 /// Build the wgpu instance for an event loop (shares the display handle, required on Android/Wayland).
+/// Not used in the browser: there the backend has to be detected asynchronously (see `web_instance`).
 pub fn new_instance(event_loop: &EventLoop<()>) -> wgpu::Instance {
     wgpu::Instance::new(wgpu::InstanceDescriptor::new_with_display_handle(Box::new(
         event_loop.owned_display_handle(),
@@ -346,7 +468,11 @@ pub fn run<P: Platform>(
     let now = Instant::now();
     let shell = Shell {
         platform,
-        instance: Some(new_instance(&event_loop)),
+        instance: if cfg!(target_arch = "wasm32") {
+            None
+        } else {
+            Some(new_instance(&event_loop))
+        },
         content,
         initial: Some(initial),
         stack: GameStack::new(),
@@ -358,6 +484,10 @@ pub fn run<P: Platform>(
         start: now,
         last: now,
         failed: false,
+        scale: 1.0,
+        cursor: None,
+        mouse_touch: false,
+        keys_down: Vec::new(),
     };
     #[cfg(target_arch = "wasm32")]
     {

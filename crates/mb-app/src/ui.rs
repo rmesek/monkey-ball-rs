@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 
-use crate::input::{Action, Axis, InputState};
+use crate::input::{Action, Axis, InputState, TouchStick};
 
 /// Reference height the HUD is designed for (the game's 480p-ish virtual screen scaled to 720).
 pub const REFERENCE_HEIGHT: f32 = 720.0;
@@ -121,12 +121,13 @@ impl Layout {
         (self.button_size() * 0.9).max(self.min_tap())
     }
 
-    /// Action buttons, bottom-right, stacked in a column from the bottom. Each is at least the minimum tap size.
+    /// On-screen action buttons, bottom-right, stacked in a column from the bottom. Each is at least the
+    /// minimum tap size. Gameplay only needs pause; the stick does the rest.
     pub fn buttons(&self) -> Vec<(Action, Rect)> {
         let s = self.safe_rect();
         let size = self.button_size();
         let gap = size * 0.2;
-        let actions = [Action::Confirm, Action::Pause, Action::ResetCamera];
+        let actions = [Action::Pause];
         actions
             .iter()
             .enumerate()
@@ -143,6 +144,13 @@ impl Layout {
             })
             .collect()
     }
+
+    /// Where the stick is drawn while no finger holds it.
+    pub fn stick_rest(&self) -> (f32, f32) {
+        let z = self.stick_zone();
+        let r = self.stick_radius();
+        (z.x + r * 1.6, z.y + z.h - r * 1.6)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -154,16 +162,26 @@ pub enum TouchPhase {
 
 #[derive(Clone, Copy, Debug)]
 enum Role {
-    Stick { origin: (f32, f32) },
-    Look { last: (f32, f32) },
+    Stick {
+        origin: (f32, f32),
+    },
+    Look {
+        last: (f32, f32),
+    },
     Button(Action),
+    /// Started while virtual controls were off: pointer only.
+    Pointer,
 }
 
-/// Maps raw touches to input: a floating stick in the stick zone drives the move axes, a drag anywhere else
-/// looks around, and taps on buttons raise actions.
+/// Maps raw touches to input. Every touch marks touch as the active device and the first finger doubles as
+/// the pointer (menus). While the running state asks for virtual controls
+/// ([`InputState::request_virtual_controls`]) a floating stick in the stick zone drives the move axes, a drag
+/// anywhere else looks around, and taps on buttons raise actions; otherwise touches are pointer-only.
 #[derive(Default)]
 pub struct TouchControls {
     active: HashMap<u64, Role>,
+    /// The finger that currently acts as the pointer.
+    pointer_id: Option<u64>,
 }
 
 impl TouchControls {
@@ -179,8 +197,39 @@ impl TouchControls {
         layout: &Layout,
         input: &mut InputState,
     ) {
+        self.route(id, phase, pos, layout, input);
+        // Last, because raising a button action counts as key use, which clears the flag.
+        input.set_touch_active(true);
+    }
+
+    fn route(
+        &mut self,
+        id: u64,
+        phase: TouchPhase,
+        pos: (f32, f32),
+        layout: &Layout,
+        input: &mut InputState,
+    ) {
+        match phase {
+            TouchPhase::Started if self.pointer_id.is_none() => {
+                self.pointer_id = Some(id);
+                input.set_pointer(Some(pos));
+                input.set_pointer_down(true);
+            }
+            TouchPhase::Moved if self.pointer_id == Some(id) => input.set_pointer(Some(pos)),
+            TouchPhase::Ended if self.pointer_id == Some(id) => {
+                self.pointer_id = None;
+                input.set_pointer(Some(pos));
+                input.set_pointer_down(false);
+            }
+            _ => {}
+        }
         match phase {
             TouchPhase::Started => {
+                if !input.virtual_controls() {
+                    self.active.insert(id, Role::Pointer);
+                    return;
+                }
                 let role = if let Some((a, _)) =
                     layout.buttons().into_iter().find(|(_, r)| r.contains(pos))
                 {
@@ -192,6 +241,7 @@ impl TouchControls {
                         .values()
                         .any(|r| matches!(r, Role::Stick { .. }))
                 {
+                    input.set_touch_stick(Some(TouchStick { origin: pos, pos }));
                     Role::Stick { origin: pos }
                 } else {
                     Role::Look { last: pos }
@@ -203,6 +253,10 @@ impl TouchControls {
                     let r = layout.stick_radius();
                     let dx = ((pos.0 - origin.0) / r).clamp(-1.0, 1.0);
                     let dy = ((pos.1 - origin.1) / r).clamp(-1.0, 1.0);
+                    input.set_touch_stick(Some(TouchStick {
+                        origin: *origin,
+                        pos: (origin.0 + dx * r, origin.1 + dy * r),
+                    }));
                     input.set_axis(Axis::MoveX, dx);
                     // Screen Y grows downward; pushing up means forward.
                     input.set_axis(Axis::MoveY, -dy);
@@ -218,6 +272,7 @@ impl TouchControls {
                 Some(Role::Stick { .. }) => {
                     input.set_axis(Axis::MoveX, 0.0);
                     input.set_axis(Axis::MoveY, 0.0);
+                    input.set_touch_stick(None);
                 }
                 Some(Role::Look { .. }) => {
                     if !self.active.values().any(|r| matches!(r, Role::Look { .. })) {
@@ -225,7 +280,7 @@ impl TouchControls {
                     }
                 }
                 Some(Role::Button(a)) => input.set_action(a, false),
-                None => {}
+                Some(Role::Pointer) | None => {}
             },
         }
     }
@@ -298,6 +353,7 @@ mod tests {
     fn stick_drives_axes_and_releases() {
         let l = landscape();
         let mut input = InputState::new();
+        input.request_virtual_controls(true);
         let mut t = TouchControls::new();
         let z = l.stick_zone().center();
         t.touch(1, TouchPhase::Started, z, &l, &mut input);
@@ -318,6 +374,7 @@ mod tests {
     fn button_tap_raises_and_clears_action() {
         let l = landscape();
         let mut input = InputState::new();
+        input.request_virtual_controls(true);
         let mut t = TouchControls::new();
         let (a, r) = l.buttons()[0];
         t.touch(7, TouchPhase::Started, r.center(), &l, &mut input);
@@ -327,9 +384,26 @@ mod tests {
     }
 
     #[test]
+    fn touches_are_pointer_only_without_virtual_controls() {
+        let l = landscape();
+        let mut input = InputState::new();
+        let mut t = TouchControls::new();
+        let (a, r) = l.buttons()[0];
+        t.touch(1, TouchPhase::Started, r.center(), &l, &mut input);
+        assert!(!input.held(a) && input.touch_active());
+        assert!(input.pointer_pressed() && input.pointer() == Some(r.center()));
+        t.touch(1, TouchPhase::Moved, (5.0, 6.0), &l, &mut input);
+        assert_eq!(input.pointer(), Some((5.0, 6.0)));
+        assert_eq!(input.axis(Axis::MoveX), 0.0);
+        t.touch(1, TouchPhase::Ended, (5.0, 6.0), &l, &mut input);
+        assert!(input.pointer_released() && !input.pointer_held());
+    }
+
+    #[test]
     fn drag_outside_zones_looks_around() {
         let l = landscape();
         let mut input = InputState::new();
+        input.request_virtual_controls(true);
         let mut t = TouchControls::new();
         t.touch(2, TouchPhase::Started, (900.0, 100.0), &l, &mut input);
         t.touch(2, TouchPhase::Moved, (910.0, 95.0), &l, &mut input);

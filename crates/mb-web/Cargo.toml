@@ -18,13 +18,14 @@ wgpu = { version = "30", features = ["webgl"] }
 
 # Everything below only exists on wasm32 so `cargo check --workspace` on the host stays unchanged.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-# JS glue; wasm-bindgen-cli at the same version produces the .js/.wasm pair (scripts/build-web.*).
-wasm-bindgen = "0.2"
+# JS glue. Pinned exactly: wasm-bindgen-cli must be the same version to produce the .js/.wasm pair
+# (`cargo install wasm-bindgen-cli --version 0.2.129 --locked`; scripts/build-web.* check this).
+wasm-bindgen = "=0.2.129"
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
 web-sys = { version = "0.3", features = [
     "Window", "Document", "Element", "HtmlElement", "HtmlCanvasElement", "Navigator",
-    "Gamepad", "GamepadButton", "GamepadMappingType", "console",
+    "Gamepad", "GamepadButton", "CssStyleDeclaration", "Storage", "console",
 ] }
 # Panics become console.error messages instead of "unreachable executed".
 console_error_panic_hook = "0.1"

@@ -16,6 +16,8 @@ mb-gma = { path = "../mb-gma" }
 mb-tpl = { path = "../mb-tpl" }
 mb-stage = { path = "../mb-stage" }
 mb-render = { path = "../mb-render" }
+mb-engine = { path = "../mb-engine" }
+mb-game = { path = "../mb-game" }
 # Window + input event loop (decision recorded in docs/PLAN.md); Android/web backends come with it.
 # 0.30 is the latest stable release (0.31 is still beta).
 winit = "0.30"
@@ -27,3 +29,10 @@ pollster = "0.4"
 glam = "0.30"
 # std::time::Instant panics on wasm32; web-time is a drop-in that re-exports std off the web. Used by `shell`.
 web-time = "1"
+
+# Desktop-only conveniences (never built for the browser or Android).
+[target.'cfg(not(any(target_arch = "wasm32", target_os = "android")))'.dependencies]
+# Native "open file" dialog so the disc image can be picked without a command line.
+rfd = "0.17"
+# Gamepad input (XInput / evdev / IOKit) for the desktop runner; the browser shell uses the Gamepad API.
+gilrs = "0.11"

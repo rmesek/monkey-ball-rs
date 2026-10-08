@@ -32,7 +32,7 @@ impl ContentSource for DiscImageSource {
                 ),
             ));
         }
-        Ok(Content::new(Arc::new(disc)))
+        Ok(Content::from_disc(disc))
     }
 }
 
@@ -62,11 +62,51 @@ pub fn source_from_path(path: impl AsRef<Path>) -> Box<dyn ContentSource> {
 #[derive(Clone)]
 pub struct Content {
     pack: Arc<dyn PackProvider>,
+    /// The game executable; it lives outside the disc's file table, so the pack cannot serve it.
+    main_dol: Option<Arc<Vec<u8>>>,
 }
+
+/// Where a content directory may keep the executable (the layout of an extracted disc).
+const MAIN_DOL_PATHS: [&str; 2] = ["sys/main.dol", "smb1_content/sys/main.dol"];
 
 impl Content {
     pub fn new(pack: Arc<dyn PackProvider>) -> Self {
-        Self { pack }
+        Self {
+            pack,
+            main_dol: None,
+        }
+    }
+
+    /// A disc image, including its `main.dol` (for the simulation's exact trig tables).
+    pub fn from_disc(disc: mb_assets::disc::DiscPack) -> Self {
+        let main_dol = disc.main_dol().ok().map(Arc::new);
+        Self {
+            pack: Arc::new(disc),
+            main_dol,
+        }
+    }
+
+    /// The game executable, when the source has one.
+    pub fn main_dol(&self) -> Option<Arc<Vec<u8>>> {
+        self.main_dol.clone().or_else(|| {
+            MAIN_DOL_PATHS
+                .iter()
+                .find_map(|p| self.read(p).ok())
+                .map(Arc::new)
+        })
+    }
+
+    /// Install the game's own S16 sine / arctangent tables into `mb-engine` (once per process; later calls
+    /// are no-ops). Returns false when the executable is unavailable or has no tables: the engine then
+    /// keeps its computed approximation, which plays the same but is not bit-identical to the original.
+    pub fn install_trig_tables(&self) -> bool {
+        use std::sync::OnceLock;
+        static DONE: OnceLock<bool> = OnceLock::new();
+        *DONE.get_or_init(|| {
+            self.main_dol()
+                .and_then(|dol| mb_engine::Tables::from_dol(&dol))
+                .is_some_and(|t| mb_engine::install_tables(t).is_ok())
+        })
     }
 
     pub fn read(&self, path: &str) -> io::Result<Vec<u8>> {

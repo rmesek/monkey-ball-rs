@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#10131a">
+<!-- Everything this page needs is served next to it; it never talks to another host. -->
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; worker-src 'self' blob:">
+<title>Monkey Ball (Rust)</title>
+<style>
+  :root {
+    /* Safe-area insets in CSS pixels; crates/mb-web reads these to keep the HUD clear of notches. */
+    --sai-left: env(safe-area-inset-left, 0px);
+    --sai-top: env(safe-area-inset-top, 0px);
+    --sai-right: env(safe-area-inset-right, 0px);
+    --sai-bottom: env(safe-area-inset-bottom, 0px);
+    --bg: #10131a;
+    --panel: #1a1f2b;
+    --line: #333c50;
+    --text: #e8ebf2;
+    --muted: #a2abbd;
+    --accent: #ffc83d;
+    --accent-text: #1b1400;
+    --error: #ff8a80;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    overscroll-behavior: none; -webkit-text-size-adjust: 100%;
+  }
+  [hidden] { display: none !important; }
+
+  #landing {
+    min-height: 100%; display: flex; align-items: center; justify-content: center;
+    padding: calc(16px + var(--sai-top)) calc(16px + var(--sai-right))
+             calc(16px + var(--sai-bottom)) calc(16px + var(--sai-left));
+  }
+  .card { width: 100%; max-width: 560px; }
+  h1 { font-size: 1.6rem; line-height: 1.2; margin: 0 0 .25em; }
+  p { margin: .6em 0; color: var(--muted); }
+  p strong { color: var(--text); font-weight: 600; }
+
+  #drop {
+    margin: 20px 0 12px; padding: 28px 16px; text-align: center;
+    background: var(--panel); border: 2px dashed var(--line); border-radius: 14px;
+    transition: border-color .12s, background-color .12s;
+  }
+  body.dragging #drop { border-color: var(--accent); background: #232a3a; }
+  #drop p { margin: 0 0 14px; }
+  button {
+    font: inherit; font-weight: 600; color: var(--accent-text); background: var(--accent);
+    border: 0; border-radius: 10px; padding: 0 22px; min-height: 48px; min-width: 48px; cursor: pointer;
+    touch-action: manipulation;
+  }
+  button:disabled { opacity: .5; cursor: default; }
+  button:focus-visible { outline: 3px solid #fff; outline-offset: 2px; }
+
+  #progress { margin: 14px 0 0; }
+  #bar { height: 8px; background: var(--line); border-radius: 4px; overflow: hidden; }
+  #bar > div { height: 100%; width: 0; background: var(--accent); }
+  #status { min-height: 1.5em; margin: 8px 0 0; font-size: .95rem; }
+  .error { color: var(--error); white-space: pre-wrap; overflow-wrap: anywhere; }
+  .small { font-size: .875rem; }
+
+  /* The game canvas covers the window; winit follows its CSS size and sets the backing-store size. */
+  #mb-canvas {
+    position: fixed; inset: 0; width: 100vw; height: 100vh; height: 100dvh; display: block;
+    background: #000; outline: none; touch-action: none;
+    -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+  #fps {
+    position: fixed; z-index: 2; left: calc(8px + var(--sai-left)); top: calc(8px + var(--sai-top));
+    padding: 2px 8px; border-radius: 6px; background: rgba(0, 0, 0, .6); color: #9f9;
+    font: 12px/1.5 ui-monospace, Consolas, monospace; pointer-events: none;
+  }
+  #fatal {
+    position: fixed; z-index: 3; inset: 0; display: flex; align-items: center; justify-content: center;
+    padding: 24px; background: rgba(8, 10, 14, .88);
+  }
+  #fatal .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 20px; }
+  #fatal h2 { margin: 0 0 .4em; font-size: 1.2rem; }
+</style>
+</head>
+<body>
+  <main id="landing">
+    <div class="card">
+      <h1>Monkey Ball, Rust port</h1>
+      <p>This page contains only the engine. To play, open <strong>your own disc image</strong> of
+         Super Monkey Ball (GameCube): an <code>.rvz</code> or <code>.iso</code> file.</p>
+
+      <div id="drop">
+        <p>Drop the disc image anywhere on this page, or</p>
+        <button id="pick" type="button" disabled>Choose disc image</button>
+        <input id="file" type="file" accept=".rvz,.iso,.gcm,.wia,.ciso,.wbfs,application/octet-stream" hidden>
+        <div id="progress" hidden>
+          <div id="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div></div></div>
+        </div>
+        <p id="status" role="status" aria-live="polite">Loading the engine...</p>
+      </div>
+
+      <p><strong>The file never leaves your device.</strong> It is read inside this browser tab and nothing is
+         uploaded; the page works offline once it has loaded.</p>
+      <p class="small">The image is kept in memory while you play, so the tab needs about as much free memory as
+         the file is large (roughly 0.5 GB for an RVZ). Play with the keyboard, a mouse, touch or a gamepad.</p>
+      <noscript><p class="error">This page needs JavaScript and WebAssembly.</p></noscript>
+    </div>
+  </main>
+
+  <canvas id="mb-canvas" hidden></canvas>
+  <div id="fps" hidden></div>
+  <div id="fatal" hidden role="alertdialog" aria-labelledby="fatal-title">
+    <div class="card">
+      <h2 id="fatal-title">The game stopped</h2>
+      <p id="fatal-text" class="error"></p>
+      <button id="reload" type="button">Reload the page</button>
+    </div>
+  </div>
+
+  <script type="module" src="./main.js"></script>
+</body>
+</html>

@@ -1,6 +1,8 @@
 //! Offscreen render target with CPU readback, for headless screenshots and GPU tests.
 
 pub struct OffscreenTarget {
+    // Read back by `read_rgba`, which is not built for wasm32.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     texture: wgpu::Texture,
     view: wgpu::TextureView,
     size: (u32, u32),

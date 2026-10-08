@@ -6,6 +6,7 @@ use mb_render::{Camera, Renderer};
 
 use crate::content::Content;
 use crate::input::InputState;
+use crate::ui::Layout;
 
 pub struct GameCtx<'a> {
     /// Seconds since the previous update (0 for the first frame and for headless captures).
@@ -17,6 +18,19 @@ pub struct GameCtx<'a> {
     pub content: &'a Content,
     /// Render target size in pixels.
     pub size: (u32, u32),
+    /// Safe area and scale of the target (`Layout::new(size, insets, window scale factor)`).
+    pub layout: Layout,
+}
+
+/// What automated drivers (autoplay, tests) may look at while a stage is being played.
+pub struct PlayView<'a> {
+    /// What the menus asked for (stage, floor, lives and score at stage start, retry flag).
+    pub request: &'a mb_game::PlayRequest,
+    pub sim: &'a mb_engine::Sim,
+    pub stage: &'a mb_stage::Stage,
+    pub paused: bool,
+    /// HUD banner on screen (`"READY"`, `"GO"`, `"GOAL"`, ...).
+    pub banner: Option<&'static str>,
 }
 
 pub enum Transition {
@@ -50,7 +64,15 @@ pub trait Game {
     fn status(&self) -> String {
         String::new()
     }
+
+    /// The running simulation, if this state is playing a stage.
+    fn play_view(&self) -> Option<PlayView<'_>> {
+        None
+    }
 }
+
+/// Most state changes handled in one frame (menu -> play -> ... loops would otherwise never draw).
+const MAX_TRANSITIONS_PER_FRAME: usize = 4;
 
 #[derive(Default)]
 pub struct GameStack {
@@ -76,13 +98,24 @@ impl GameStack {
         Ok(())
     }
 
-    /// Update the top state and apply its transition. Returns false when the app should quit.
-    pub fn update(&mut self, ctx: &mut GameCtx) -> Result<bool, String> {
+    pub fn len(&self) -> usize {
+        self.stack.len()
+    }
+
+    /// Leave every state (top first), releasing their renderer resources.
+    pub fn clear(&mut self, ctx: &mut GameCtx) {
+        while let Some(mut g) = self.stack.pop() {
+            g.on_exit(ctx);
+        }
+    }
+
+    /// Update the top state once and apply its transition. `Ok(None)` means it asked for no change.
+    fn step(&mut self, ctx: &mut GameCtx) -> Result<Option<bool>, String> {
         let Some(top) = self.stack.last_mut() else {
-            return Ok(false);
+            return Ok(Some(false));
         };
         match top.update(ctx) {
-            Transition::None => {}
+            Transition::None => return Ok(Some(true)),
             Transition::Push(g) => self.push(g, ctx)?,
             Transition::Pop => {
                 if let Some(mut g) = self.stack.pop() {
@@ -95,9 +128,39 @@ impl GameStack {
                 }
                 self.push(g, ctx)?;
             }
-            Transition::Quit => return Ok(false),
+            Transition::Quit => return Ok(Some(false)),
         }
-        Ok(!self.stack.is_empty())
+        Ok(None)
+    }
+
+    /// Update the top state and apply its transition. After a transition the state that is now on top is
+    /// updated in the same frame (with `dt = 0` and this frame's input edges removed), so what gets
+    /// rendered is always a state that has drawn itself: no blank frame between a menu and a stage, and the
+    /// key that closed one screen does not act on the next. Returns false when the app should quit.
+    pub fn update(&mut self, ctx: &mut GameCtx) -> Result<bool, String> {
+        if let Some(running) = self.step(ctx)? {
+            return Ok(running);
+        }
+        let muted = ctx.input.without_edges();
+        let mut inner = GameCtx {
+            dt: 0.0,
+            time: ctx.time,
+            input: &muted,
+            renderer: &mut *ctx.renderer,
+            content: ctx.content,
+            size: ctx.size,
+            layout: ctx.layout,
+        };
+        let mut result = None;
+        for _ in 1..MAX_TRANSITIONS_PER_FRAME {
+            result = self.step(&mut inner)?;
+            if result.is_some() {
+                break;
+            }
+        }
+        // Requests made on the copy belong to the real input.
+        ctx.input.request_virtual_controls(muted.virtual_controls());
+        Ok(result.unwrap_or(!self.stack.is_empty()))
     }
 }
 
