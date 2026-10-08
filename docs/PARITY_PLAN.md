@@ -19,7 +19,7 @@ gameplay item (Phase 5).
 
 | | Question | Default |
 |---|---|---|
-| D1 | Port the fall-out and goal instant replays? | yes, last (Phase 5) |
+| D1 | Port the fall-out and goal instant replays? | yes, in 0.3.0 (Phase 5) |
 | D2 | Add what the original has and the reference lacks (monkey in the ball, its voices, jingles, menu music)? | no; out of scope |
 | D3 | Push branches and tags to `origin`? | no, local only until told |
 
@@ -38,6 +38,23 @@ browser checks, draw calls, frame times, wasm size, memory) and every later phas
   `scripts/web-e2e.ts` where the browser can observe it.
 * Every new visual can be absent without breaking a stage: a missing model or texture costs that decoration
   only, as the goal tape and clock digits do today.
+
+### Regression budgets as tests
+
+Counted, not timed, wherever a count exists, so the tests do not flicker with the load of the machine.
+They are added in Phase 1 (step 1d) against the 0.1.0 figures and tightened or extended by each phase.
+
+| What | Test | Budget |
+|---|---|---|
+| Performance: draw calls | `mb-app` test over the course stages: draws per frame in the intro, in play and during the goal sequence | no stage draws more than its 0.1.0 count outside effects; effects and confetti add at most 12; mirrors only on stages 92, 102, 103 |
+| Performance: per-frame GPU work | the same test reads the renderer's counters | 0 buffers, textures, pipelines or bind groups created in a play frame after the first |
+| Performance: tick cost | `mb-engine` test with a counting allocator | 0 heap allocations per tick in steady play, effects included |
+| Performance: frame time | `scripts/web-e2e.ts`, WebGL2, 6x CPU throttle, steering on a heavy stage | reported and written to `docs/WEB.md`; fails only beyond 1.5x the 0.1.0 figure, to stay stable |
+| Memory | `scripts/web-e2e.ts`: wasm memory after playing Beginner 1 and Expert 50 | at most 2 MB over 0.1.0 (23 and 28 MB) |
+| Memory: GPU | `mb-app` test: texture bytes uploaded for the heaviest stage | at most 1 MB over 0.1.0 (16.6 MB), mirror target excluded and reported |
+| Storage: game pack | `mb-app/tests/pack.rs`: total bytes and file count of what the import copies | 144.1 MB / 382 files; any growth is a deliberate, documented number with `gamepack::VERSION` raised |
+| Storage: site | `cargo xtask build-web`: size of the wasm module | at most 250 KB over 3 877 298 bytes |
+| Storage: saves | existing slot tests | format unchanged; a 0.1.0 save still loads |
 
 ## Keeping Android possible
 
@@ -76,8 +93,10 @@ describes, and records the numbers there. A phase that breaks a budget is not me
 
 * `main` stays releasable. One branch per phase, `parity/p1-effects` and so on, merged into `main` with
   `--no-ff` when the gates are green, then an annotated tag `checkpoint/p1`. One logical change per commit.
-* `CHANGELOG.md` and the matching `docs/` file are updated in the phase that changes them. Version bumps:
-  0.2.0 after Phase 2, 0.3.0 after Phase 4.
+* `CHANGELOG.md` and the matching `docs/` file are updated in the phase that changes them.
+* Version 0.2.0 is Phases 1 to 4. Phase 5 is left for 0.3.0. When Phase 4 is merged the version is set and
+  the release candidate is handed to the project owner to try by hand; the tag `v0.2.0` is made, and
+  anything is pushed, only after the owner confirms.
 * Cargo workspace: no new crate. Effect state goes into `mb-engine`, drawing into `mb-render`, assembly
   into `mb-app`, so the layering of `AGENTS.md` and the crate ownership of its subagent table hold.
 * One checkout, as `AGENTS.md` says: subagents split by crate ownership, edit only what they own, run no
@@ -125,7 +144,8 @@ Reference: `effects.ts`, `stage.ts` (confetti), `physics.ts` (spawn calls), `Wor
 | 1b | Simulation | `mb-engine`: port of `effects.ts` (sparks, stars, flash, post-goal sparkle) and of the confetti; visual RNG seeded as the reference; fixed pools; not hashed | parity test extended with the reference's `includeVisual` hash; existing parity unchanged |
 | 1c | Game | `play_scene.rs`: draws effects (streak, sparkle, flash, star, ground glow), confetti and the projected shadow, blended between ticks like the ball; any new texture or model file added to the file lists | `tests/gameplay.rs` (effects exist after a collision and a goal), screenshots from `--autoplay` |
 
-1a and 1b run in parallel (different crates) once the render-state structs are agreed; 1c follows. Four or
+1a and 1b run in parallel (different crates); 1c follows; 1d adds the budget tests of "Regression budgets
+as tests" (draw calls, per-frame GPU work, allocations per tick, wasm memory, pack and wasm size). Four or
 five commits, then `checkpoint/p1`.
 
 ## Phase 2: the small items
@@ -141,7 +161,7 @@ d and e can run beside it.
 | 2d | HUD: `JUMP TO FLOOR n`, the warp bonus line, additive flash on `GOAL` and `GO` | an additive blend mode in `sprite.rs` |
 | 2e | Intro fast-forward (`fastForwardIntro` in `game.ts`) | simulation behaviour: ported in `mb-engine` with a parity script |
 
-Then `checkpoint/p2`, version 0.2.0.
+Then `checkpoint/p2`.
 
 ## Phase 3: material fidelity
 
@@ -158,9 +178,9 @@ and 103, the wavy one on stage 92. One extra pass into a half-resolution colour 
 reflected camera, skipping what the reference skips (mirror models, objects flagged out of mirror
 captures) and all particles. Stages without a mirror pay nothing. An options row "Reflections" turns the
 pass off on weak devices. Verified by an offscreen test on stage 102 and by the frame budget. Then
-`checkpoint/p4`, version 0.3.0.
+`checkpoint/p4` and the 0.2.0 release candidate (not tagged, see above).
 
-## Phase 5: result replays (if D1 stays yes)
+## Phase 5: result replays (version 0.3.0, not part of this round)
 
 Reference: `game.ts` (`startResultReplay`, `stepResultReplay`, the history frames), `camera.ts`
 (`FALLOUT_REPLAY`, `GOAL_REPLAY`). A bounded history in `mb-engine`, the two replay cameras, and the flow
