@@ -86,11 +86,12 @@ first things to look at when work resumes.
 
 ## Possible next features
 
-Drawn from the known gaps (`docs/GAMEPLAY.md` "Not ported", `docs/AUDIO.md` "Known gaps"). None is started.
+The order, budgets and checkpoints for bringing these to parity with the reference are in
+`docs/PARITY_PLAN.md`. Drawn from the known gaps (`docs/GAMEPLAY.md` "Not ported", `docs/AUDIO.md` "Known gaps"). None is started.
 
 | Feature | Where it would live | Notes |
 |---|---|---|
-| The monkey inside the ball | `mb-gma` (skeletal models), `mb-app/play_scene.rs` | a separate skeletal system in the reference; its files must be added to `StageFiles` / `common_files` |
+| The monkey inside the ball | `mb-gma` (skeletal models), `mb-app/play_scene.rs` | in the original only: the reference draws the ball's shells and no monkey, so this is outside parity (`docs/PARITY_PLAN.md`, D2) |
 | Ball shadow | `mb-render`, `mb-app/play_scene.rs` | projected shadow as in the reference's renderer |
 | Effects: goal confetti, sparks, streaks, banner flashes | `mb-engine` (state), `mb-render` (additive sprites), `mb-app` | `effects.ts` in the reference |
 | Remaining sounds: monkey voices, softest impact tier, time-over explosion, jingles, menu music | `mb-app/audio.rs`, `mb-audio` | more banks and streams mean a larger import; update `sfx_paths` and the file lists |
