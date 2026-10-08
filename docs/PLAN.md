@@ -47,7 +47,7 @@ Not verified: a real phone, a real gamepad, Firefox/Safari, a full course played
 
 Not in Stage 1 (see `docs/GAMEPLAY.md` for the full list): audio output (PCM decoding exists), the monkey
 inside the ball, ball shadow, goal confetti and other effects, result replays, render interpolation above
-60 Hz, SMB2 content, minigames, Android packaging. `crates/mb-android` is an empty crate reserved for Stage 2.
+60 Hz, SMB2 content, minigames, Android packaging.
 ## Stage 2 (next target): standalone Android APK
 Native Android packaging with `android-activity`, gyro tilt through `SensorManager` feeding the tilt axes of
 `InputState`, on-screen touch controls (the layout maths already lives in `mb-app::ui`), disc import through the
