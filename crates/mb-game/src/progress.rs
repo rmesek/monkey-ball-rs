@@ -358,7 +358,12 @@ impl Profile {
                     );
                 }
                 Some("stage") => {
-                    let f: Vec<u32> = it.filter_map(|s| s.parse().ok()).collect();
+                    // Exactly the first three fields, each a number: skipping a bad one would shift the
+                    // others into the wrong meaning.
+                    let f: Vec<u32> = it
+                        .take(3)
+                        .map(|s| s.parse().map_err(|_| LoadError::Corrupt))
+                        .collect::<Result<_, _>>()?;
                     if f.len() < 3 {
                         return Err(LoadError::Corrupt);
                     }

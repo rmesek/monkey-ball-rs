@@ -6,8 +6,10 @@
 //! `getInterpolationAlpha`), so motion is even at any display rate and under frame-time jitter; the blend is
 //! display only and never reaches the simulation. Flow follows `sim.phase`: fly-in and READY, GO, play, then
 //! the goal / fall-out / time-over sequence, after which the outcome is reported. Pause (Esc / P / Start, or
-//! the on-screen button) offers continue, retry and quit.
+//! the on-screen button) offers continue, retry and quit; what retry and quit may do is decided by
+//! [`retry_available`] and [`quit_needs_confirmation`].
 
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use glam::{Mat4, Vec3};
@@ -21,11 +23,12 @@ use crate::game::{Game, GameCtx, PlayView, Transition};
 use crate::hud::{Hud, HudFrame};
 use crate::input::{Action, InputState};
 use crate::play_scene::{lerp_s16, PlayScene};
-use crate::stage_info::bg_by_name;
 use crate::stage_scene::S16_TO_RADIANS;
 use crate::text::{rgb, Align, FontId, Painter, UiAssets};
 use crate::ui::{Layout, Rect};
-use crate::widgets::{draw_list, fit_scale, ListLayout, ListState, Row};
+use crate::widgets::{
+    back_button_rect, draw_back_button, draw_list, fit_scale, ListLayout, ListState, Row, Tap,
+};
 
 /// Seconds per simulation tick.
 pub const TICK: f64 = 1.0 / 60.0;
@@ -38,6 +41,29 @@ const SNAP: f64 = 0.12;
 const PAUSE_CONTINUE: usize = 0;
 const PAUSE_RETRY: usize = 1;
 const PAUSE_QUIT: usize = 2;
+
+const CONFIRM_KEEP_PLAYING: usize = 0;
+const CONFIRM_QUIT: usize = 1;
+
+/// Whether the pause menu's Retry may be chosen.
+///
+/// * Only while the attempt is undecided (fly-in or play). Once the ball is through the goal, has fallen
+///   out or the clock has run out, the sequence on screen is the result: a retry there would turn a goal
+///   into a lost life, or dodge a fall-out's cost in practice.
+/// * Never on a bonus stage in course play. A bonus stage is one attempt: failing it costs nothing and
+///   the course moves on, so "retry" (which is reported as a fall-out) would skip the stage instead.
+///
+/// Pausing itself, Continue and Quit work in every phase.
+pub fn retry_available(mode: PlayMode, bonus_stage: bool, phase: Phase) -> bool {
+    let undecided = matches!(phase, Phase::Intro | Phase::Playing);
+    undecided && !(mode == PlayMode::Course && bonus_stage)
+}
+
+/// Quitting a course gives up the whole run (floors, score, lives), so it asks first; quitting practice
+/// loses nothing.
+pub fn quit_needs_confirmation(mode: PlayMode) -> bool {
+    mode == PlayMode::Course
+}
 
 fn goal_type(g: mb_stage::GoalType) -> GoalType {
     match g {
@@ -178,6 +204,8 @@ pub struct PlayState {
     hud: Hud,
     accumulator: f64,
     pause: Option<ListState>,
+    /// The "quit the course?" question, on top of the pause menu.
+    quit_confirm: Option<ListState>,
     camera: Camera,
     /// Camera of the last two ticks (`[previous, current]`), blended for the frame.
     cameras: [CameraPose; 2],
@@ -185,19 +213,35 @@ pub struct PlayState {
     audio: Audio,
     /// Sound triggers of the running attempt.
     sounds: Option<StageSounds>,
+    /// Where the scene goes when this state ends, so a retry of the same stage can take it over instead
+    /// of loading everything again. Without one the scene is unloaded on exit.
+    park: Option<Rc<RefCell<Option<PlayScene>>>>,
+    /// The pause screen's Back button (resumes).
+    back: Tap,
 }
 
 impl PlayState {
-    pub fn new(request: PlayRequest, ui: Rc<UiAssets>, audio: Audio) -> Self {
+    /// Play `request` on `scene`, which is loaded and built already (by `loading::StageLoad`, or by the
+    /// previous attempt at the same stage).
+    pub fn new(
+        request: PlayRequest,
+        ui: Rc<UiAssets>,
+        audio: Audio,
+        scene: PlayScene,
+        park: Option<Rc<RefCell<Option<PlayScene>>>>,
+    ) -> Self {
         let hud = Hud::new(!request.retry, Self::start_score(&request));
         Self {
             request,
             ui,
-            scene: None,
+            park,
+            back: Tap::default(),
+            scene: Some(scene),
             sim: None,
             hud,
             accumulator: REST_PHASE * TICK,
             pause: None,
+            quit_confirm: None,
             camera: Camera::look_at(Vec3::new(0.0, 5.0, 10.0), Vec3::ZERO, Vec3::Y),
             cameras: [CameraPose {
                 eye: Vec3::ZERO,
@@ -245,6 +289,7 @@ impl PlayState {
         scene.reset_pose();
         scene.sync(&sim);
         self.cameras = [CameraPose::of(&sim.camera); 2];
+        crate::host::post(crate::host::Command::CalibrateTilt);
         // Nothing of the old attempt keeps sounding; the music plays on.
         self.audio.stop_sounds();
         self.sounds = Some(StageSounds::new(&sim, true, &self.audio));
@@ -252,6 +297,13 @@ impl PlayState {
         self.hud = Hud::new(false, Self::start_score(&self.request));
         self.accumulator = REST_PHASE * TICK;
         self.pause = None;
+        self.quit_confirm = None;
+    }
+
+    fn retry_available(&self) -> bool {
+        self.sim.as_ref().is_some_and(|sim| {
+            retry_available(self.request.mode, self.request.is_bonus_stage(), sim.phase)
+        })
     }
 
     fn hud_frame(&self, sim: &Sim) -> HudFrame {
@@ -263,7 +315,9 @@ impl PlayState {
             timeover_timer: sim.timeover_timer,
             time_limit: sim.cfg.time_limit_frames,
             stage_timer: sim.stage_timer_frames,
-            score: Self::start_score(&self.request) + sim.score.max(0) as u64,
+            // Capped like the course flow caps it, so the counter never shows more than will be kept.
+            score: (Self::start_score(&self.request) + sim.score.max(0) as u64)
+                .min(mb_game::run::MAX_SCORE),
             bananas: sim.ball.bananas,
             bananas_left: sim.bananas_left,
             lives: course.then_some(self.request.lives),
@@ -298,6 +352,10 @@ impl PlayState {
 
     fn pause_layout(layout: &Layout) -> ListLayout {
         ListLayout::column(layout, 3, 0.36)
+    }
+
+    fn confirm_layout(layout: &Layout) -> ListLayout {
+        ListLayout::column(layout, 2, 0.46)
     }
 
     fn finish(&mut self, result: PlayResult) -> Transition {
@@ -347,10 +405,6 @@ impl Game for PlayState {
     }
 
     fn on_enter(&mut self, ctx: &mut GameCtx) -> Result<(), String> {
-        ctx.content.install_trig_tables();
-        let bg = bg_by_name(self.request.bg).copied();
-        let scene = PlayScene::load(ctx.renderer, ctx.content, self.request.stage_id, bg)?;
-        self.scene = Some(scene);
         let cfg = self.sim_config(self.request.retry);
         let scene = self.scene.as_mut().ok_or("scene missing")?;
         let sim = Sim::new(&scene.assets.stagedef, cfg);
@@ -359,10 +413,12 @@ impl Game for PlayState {
         scene.apply(ctx.renderer, 1.0);
         self.cameras = [CameraPose::of(&sim.camera); 2];
         self.camera = camera_from(&sim.camera, aspect(ctx.size));
-        // Stage load is the only time music is read from the disc; the same track as on the previous
-        // floor just keeps playing.
+        // The loader read and started this stage's music; on a retry it is still playing. (Reading it
+        // here again is a no-op in both cases and keeps a state built without the loader correct.)
         self.audio
             .stage_music(self.request.bg, &mut |path| ctx.content.read(path));
+        // The pose the device is held in now is "level" for tilt steering.
+        crate::host::post(crate::host::Command::CalibrateTilt);
         self.sounds = Some(StageSounds::new(&sim, self.request.retry, &self.audio));
         self.sim = Some(sim);
         Ok(())
@@ -370,7 +426,15 @@ impl Game for PlayState {
 
     fn on_exit(&mut self, ctx: &mut GameCtx) {
         if let Some(scene) = self.scene.take() {
-            scene.unload(ctx.renderer);
+            match &self.park {
+                // Kept loaded: the menu underneath either retries on it or unloads it this frame.
+                Some(park) => {
+                    if let Some(older) = park.borrow_mut().replace(scene) {
+                        older.unload(ctx.renderer);
+                    }
+                }
+                None => scene.unload(ctx.renderer),
+            }
         }
         self.sim = None;
         self.sounds = None;
@@ -381,16 +445,43 @@ impl Game for PlayState {
         if self.sim.is_none() || self.scene.is_none() {
             return self.finish(PlayResult::Quit);
         }
-        let toggle = ctx.input.pressed(Action::Pause) || ctx.input.pressed(Action::Cancel);
+        // The pause screen's Back button resumes, like the keys that opened it.
+        let back = self.pause.is_some()
+            && self
+                .back
+                .update(ctx.input, back_button_rect(&ctx.layout), ctx.dt);
+        let toggle = back || ctx.input.pressed(Action::Pause) || ctx.input.pressed(Action::Cancel);
         if toggle {
-            self.pause = match self.pause {
-                Some(_) => None,
-                None => Some(ListState::new(PAUSE_CONTINUE)),
-            };
+            if self.quit_confirm.take().is_some() {
+                // Back out of the question to the pause menu, not out of the pause.
+            } else {
+                self.pause = match self.pause {
+                    Some(_) => None,
+                    None => Some(ListState::new(PAUSE_CONTINUE)),
+                };
+            }
         }
         ctx.input.request_virtual_controls(self.pause.is_none());
+        let retry_available = self.retry_available();
 
-        if let Some(list) = &mut self.pause {
+        if let (Some(confirm), true) = (&mut self.quit_confirm, self.pause.is_some()) {
+            if let Some(sounds) = self.sounds.as_mut() {
+                sounds.hold(&self.audio);
+            }
+            let layout = Self::confirm_layout(&ctx.layout);
+            let before = confirm.selected;
+            let chosen = confirm.update(ctx.input, &layout, &|_| true, ctx.dt);
+            if chosen.is_some() {
+                self.audio.play(Sfx::MenuConfirm);
+            } else if confirm.selected != before {
+                self.audio.play(Sfx::MenuMove);
+            }
+            match chosen {
+                Some(CONFIRM_QUIT) => return self.finish(PlayResult::Quit),
+                Some(_) => self.quit_confirm = None,
+                None => {}
+            }
+        } else if let Some(list) = &mut self.pause {
             // The simulation stands still: so does the roll. Music and running one-shots play on, as in
             // the reference.
             if let Some(sounds) = self.sounds.as_mut() {
@@ -398,7 +489,12 @@ impl Game for PlayState {
             }
             let layout = Self::pause_layout(&ctx.layout);
             let before = list.selected;
-            let chosen = list.update(ctx.input, &layout, &|_| true);
+            let chosen = list.update(
+                ctx.input,
+                &layout,
+                &|i| i != PAUSE_RETRY || retry_available,
+                ctx.dt,
+            );
             if chosen.is_some() {
                 self.audio.play(Sfx::MenuConfirm);
             } else if list.selected != before {
@@ -406,6 +502,8 @@ impl Game for PlayState {
             }
             match chosen {
                 Some(PAUSE_CONTINUE) => self.pause = None,
+                // The list never returns a disabled row; the guard keeps the rule in one visible place.
+                Some(PAUSE_RETRY) if !retry_available => {}
                 Some(PAUSE_RETRY) => match self.request.mode {
                     PlayMode::Practice => self.restart(),
                     // In course play giving the stage up costs a life, like falling out.
@@ -418,6 +516,10 @@ impl Game for PlayState {
                             .finish(PlayResult::Finished(StageOutcome::FallOut { bananas }));
                     }
                 },
+                Some(PAUSE_QUIT) if quit_needs_confirmation(self.request.mode) => {
+                    // The safe answer is the one under the cursor.
+                    self.quit_confirm = Some(ListState::new(CONFIRM_KEEP_PLAYING));
+                }
                 Some(PAUSE_QUIT) => return self.finish(PlayResult::Quit),
                 _ => {}
             }
@@ -488,10 +590,15 @@ impl Game for PlayState {
                 },
                 [0.0, 0.0, 0.05, 0.55],
             );
-            let s = fit_scale(&p, FontId::Asc72, "PAUSE", safe.w * 0.6, safe.h * 0.14);
+            let title = if self.quit_confirm.is_some() {
+                "QUIT?"
+            } else {
+                "PAUSE"
+            };
+            let s = fit_scale(&p, FontId::Asc72, title, safe.w * 0.6, safe.h * 0.14);
             p.text(
                 FontId::Asc72,
-                "PAUSE",
+                title,
                 safe.x + safe.w / 2.0,
                 safe.y + safe.h * 0.2,
                 s,
@@ -499,17 +606,52 @@ impl Game for PlayState {
                 rgb(0xffc800),
                 Align::Center,
             );
-            let layout = Self::pause_layout(&ctx.layout);
-            let retry = match self.request.mode {
-                PlayMode::Practice => "RETRY",
-                PlayMode::Course => "RETRY (LOSE A LIFE)",
-            };
-            let labels = ["CONTINUE", retry, "QUIT"];
-            draw_list(&mut p, &layout, list, &|i| Row {
-                label: labels[i],
-                detail: None,
-                enabled: true,
-            });
+            if let Some(confirm) = &self.quit_confirm {
+                let note = "THIS RUN WILL BE LOST";
+                let s = fit_scale(&p, FontId::Asc32, note, safe.w * 0.8, safe.h * 0.06);
+                p.text(
+                    FontId::Asc32,
+                    note,
+                    safe.x + safe.w / 2.0,
+                    safe.y + safe.h * 0.36,
+                    s,
+                    s,
+                    rgb(0xffffff),
+                    Align::Center,
+                );
+                let labels = ["KEEP PLAYING", "QUIT COURSE"];
+                draw_list(
+                    &mut p,
+                    &Self::confirm_layout(&ctx.layout),
+                    confirm,
+                    &|i| Row {
+                        label: labels[i],
+                        detail: None,
+                        enabled: true,
+                    },
+                    false,
+                );
+            } else {
+                let layout = Self::pause_layout(&ctx.layout);
+                let retry = match self.request.mode {
+                    PlayMode::Practice => "RETRY",
+                    PlayMode::Course if self.request.is_bonus_stage() => "RETRY",
+                    PlayMode::Course => "RETRY (LOSE A LIFE)",
+                };
+                let labels = ["CONTINUE", retry, "QUIT"];
+                draw_list(
+                    &mut p,
+                    &layout,
+                    list,
+                    &|i| Row {
+                        label: labels[i],
+                        detail: None,
+                        enabled: i != PAUSE_RETRY || retry_available,
+                    },
+                    false,
+                );
+            }
+            draw_back_button(&mut p, back_button_rect(&ctx.layout), self.back.down());
         } else if ctx.input.touch_active() {
             Self::draw_touch_controls(&mut p, &ctx.layout, ctx.input);
         }
@@ -524,11 +666,23 @@ impl Game for PlayState {
     fn status(&self) -> String {
         match &self.sim {
             Some(sim) => format!(
-                "stage {} {} | {:?} | tick {}",
-                self.request.stage_id, self.request.stage_label, sim.phase, self.ticks
+                "stage {} {} | {:?} | tick {}{}",
+                self.request.stage_id,
+                self.request.stage_label,
+                sim.phase,
+                self.ticks,
+                match (&self.pause, &self.quit_confirm) {
+                    (None, _) => "",
+                    (Some(_), None) => " | paused",
+                    (Some(_), Some(_)) => " | quit?",
+                }
             ),
             None => String::new(),
         }
+    }
+
+    fn nav_depth(&self) -> u32 {
+        1
     }
 
     fn play_view(&self) -> Option<PlayView<'_>> {
@@ -637,6 +791,36 @@ mod tests {
         assert!(pose(20.0, 0).is_cut_from(&pose(0.0, 0)));
         assert!(pose(0.0, 0x4000).is_cut_from(&pose(0.0, 0)));
         assert!(!pose(0.0, -0x7f00).is_cut_from(&pose(0.0, 0x7f00)));
+    }
+
+    #[test]
+    fn retry_is_offered_only_while_the_attempt_is_undecided() {
+        use Phase::{FallOut, Finished, GoalSequence, Intro, Playing, TimeOver};
+        for mode in [PlayMode::Course, PlayMode::Practice] {
+            for phase in [Intro, Playing] {
+                assert!(retry_available(mode, false, phase), "{mode:?} {phase:?}");
+            }
+            // Through the goal, falling, out of time, or already finished: the result stands.
+            for phase in [
+                GoalSequence,
+                FallOut,
+                TimeOver,
+                Finished(Outcome::Goal(mb_stage::GoalType::Blue)),
+                Finished(Outcome::BonusClear),
+                Finished(Outcome::FellOut),
+                Finished(Outcome::TimeOver),
+            ] {
+                for bonus in [false, true] {
+                    assert!(!retry_available(mode, bonus, phase), "{mode:?} {phase:?}");
+                }
+            }
+        }
+        // A bonus stage is one attempt in course play (a "retry" would skip it); practice may repeat it.
+        assert!(!retry_available(PlayMode::Course, true, Playing));
+        assert!(!retry_available(PlayMode::Course, true, Intro));
+        assert!(retry_available(PlayMode::Practice, true, Playing));
+        assert!(quit_needs_confirmation(PlayMode::Course));
+        assert!(!quit_needs_confirmation(PlayMode::Practice));
     }
 
     #[test]

@@ -935,6 +935,15 @@ impl Audio {
         inner.queue.push(Command::StopSounds);
     }
 
+    /// Whether [`Audio::stage_music`] would read the streams of background `bg` (a track other than the
+    /// loaded one, with the music volume up): the stage loader fetches them only then.
+    pub fn needs_music_files(&self, bg: &str) -> bool {
+        let inner = self.inner.borrow();
+        stage_music(bg)
+            .filter(|_| inner.volumes[Bus::Music as usize] > 0.0)
+            .is_some_and(|track| !inner.music.is_some_and(|m| m.key == track.key))
+    }
+
     /// Stage load: make sure the music for background `bg` is playing. The same track as before carries
     /// on untouched; a different one is read through `fetch`, decoded and started (intro, then loop).
     /// With the music volume at zero nothing is read or decoded.

@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Mutex;
 
-use mb_app::content::{source_from_path, Content};
+use mb_app::content::{open_disc_image, Content};
 use mb_app::headless::{Headless, FRAME};
 use mb_app::input::{Action, Axis};
 use mb_app::menu::Menu;
@@ -68,7 +68,7 @@ fn start(storage: &SharedStorage) -> Option<Headless> {
         eprintln!("skipped: no disc image (set MB_DISC)");
         return None;
     };
-    let content: Content = match source_from_path(&disc).open() {
+    let content: Content = match open_disc_image(&disc) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("skipped: {}: {e}", disc.display());

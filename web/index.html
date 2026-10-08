@@ -5,10 +5,18 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
 <meta name="color-scheme" content="dark">
 <meta name="theme-color" content="#10131a">
+<meta name="mobile-web-app-capable" content="yes">
 <!-- Everything this page needs is served next to it; it never talks to another host. -->
+<!--build:csp-->
 <meta http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; worker-src 'self' blob:">
+      content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; worker-src 'self'; manifest-src 'self'">
+<!--/build:csp-->
 <title>Monkey Ball (Rust)</title>
+<!--build:head-->
+<link rel="manifest" href="./manifest.webmanifest">
+<link rel="icon" href="./icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="./icon-192.png">
+<!--/build:head-->
 <style>
   :root {
     /* Safe-area insets in CSS pixels; crates/mb-web reads these to keep the HUD clear of notches. */
@@ -42,26 +50,30 @@
   h1 { font-size: 1.6rem; line-height: 1.2; margin: 0 0 .25em; }
   p { margin: .6em 0; color: var(--muted); }
   p strong { color: var(--text); font-weight: 600; }
+  ol { margin: .8em 0; padding-left: 1.4em; color: var(--muted); }
+  ol li { margin: .3em 0; }
+  ol strong { color: var(--text); font-weight: 600; }
 
   #drop {
-    margin: 20px 0 12px; padding: 28px 16px; text-align: center;
+    margin: 20px 0 12px; padding: 24px 16px; text-align: center;
     background: var(--panel); border: 2px dashed var(--line); border-radius: 14px;
     transition: border-color .12s, background-color .12s;
   }
   body.dragging #drop { border-color: var(--accent); background: #232a3a; }
-  #drop p { margin: 0 0 14px; }
   button {
     font: inherit; font-weight: 600; color: var(--accent-text); background: var(--accent);
     border: 0; border-radius: 10px; padding: 0 22px; min-height: 48px; min-width: 48px; cursor: pointer;
     touch-action: manipulation;
   }
+  button.quiet { color: var(--text); background: transparent; border: 1px solid var(--line); font-weight: 500; }
   button:disabled { opacity: .5; cursor: default; }
   button:focus-visible { outline: 3px solid #fff; outline-offset: 2px; }
+  .row { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; }
 
-  #progress { margin: 14px 0 0; }
-  #bar { height: 8px; background: var(--line); border-radius: 4px; overflow: hidden; }
+  #progress { margin: 16px 0 0; }
+  #bar { height: 10px; background: var(--line); border-radius: 5px; overflow: hidden; }
   #bar > div { height: 100%; width: 0; background: var(--accent); }
-  #status { min-height: 1.5em; margin: 8px 0 0; font-size: .95rem; }
+  #status { min-height: 1.5em; margin: 10px 0 0; font-size: .95rem; }
   .error { color: var(--error); white-space: pre-wrap; overflow-wrap: anywhere; }
   .small { font-size: .875rem; }
 
@@ -83,29 +95,41 @@
   }
   #fatal .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 20px; }
   #fatal h2 { margin: 0 0 .4em; font-size: 1.2rem; }
+  #fatal .row { justify-content: flex-start; margin-top: 14px; }
 </style>
 </head>
 <body>
   <main id="landing">
     <div class="card">
       <h1>Monkey Ball, Rust port</h1>
-      <p>This page contains only the engine. To play, open <strong>your own disc image</strong> of
-         Super Monkey Ball (GameCube): an <code>.rvz</code> or <code>.iso</code> file.</p>
+      <p>This page contains only the engine. To play you need <strong>your own disc image</strong> of
+         Super Monkey Ball (GameCube).</p>
+      <ol id="steps">
+        <li><strong>Choose the disc image</strong>: an <code>.rvz</code>, <code>.iso</code> or
+            <code>.gcm</code> file.</li>
+        <li>The page <strong>copies the game's files</strong> (about 145 MB) out of it into this browser's
+            storage on this device. That takes a moment and happens once.</li>
+        <li><strong>Play.</strong> From then on the game starts without asking for the file again.</li>
+      </ol>
 
       <div id="drop">
-        <p>Drop the disc image anywhere on this page, or</p>
-        <button id="pick" type="button" disabled>Choose disc image</button>
-        <input id="file" type="file" accept=".rvz,.iso,.gcm,.wia,.ciso,.wbfs,application/octet-stream" hidden>
+        <div class="row">
+          <button id="pick" type="button" disabled>Choose disc image</button>
+          <button id="cancel" type="button" class="quiet" hidden>Cancel</button>
+        </div>
+        <input id="file" type="file" accept=".rvz,.iso,.gcm" hidden>
         <div id="progress" hidden>
           <div id="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div></div></div>
         </div>
         <p id="status" role="status" aria-live="polite">Loading the engine...</p>
       </div>
 
-      <p><strong>The file never leaves your device.</strong> It is read inside this browser tab and nothing is
-         uploaded; the page works offline once it has loaded.</p>
-      <p class="small">The image is kept in memory while you play, so the tab needs about as much free memory as
-         the file is large (roughly 0.5 GB for an RVZ). Play with the keyboard, a mouse, touch or a gamepad.</p>
+      <p><strong>The file is read on this device and never uploaded.</strong> This page makes no network
+         requests; once it has loaded it works offline.</p>
+      <p id="storage-note" class="small"></p>
+      <div class="row" style="justify-content:flex-start">
+        <button id="remove" type="button" class="quiet" hidden>Remove imported game data</button>
+      </div>
       <noscript><p class="error">This page needs JavaScript and WebAssembly.</p></noscript>
     </div>
   </main>
@@ -116,10 +140,17 @@
     <div class="card">
       <h2 id="fatal-title">The game stopped</h2>
       <p id="fatal-text" class="error"></p>
-      <button id="reload" type="button">Reload the page</button>
+      <p class="small">Your progress is saved at every stage. Restarting returns to the title menu.</p>
+      <div class="row">
+        <button id="reload" type="button">Restart</button>
+        <button id="fatal-remove" type="button" class="quiet" hidden>Remove imported game data</button>
+      </div>
     </div>
   </div>
 
-  <script type="module" src="./main.js"></script>
+<!--build:scripts-->
+  <script src="./pkg/mb_web.js"></script>
+  <script src="./main.js"></script>
+<!--/build:scripts-->
 </body>
 </html>

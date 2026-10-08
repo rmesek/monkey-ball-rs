@@ -261,6 +261,9 @@ pub struct UiAssets {
     pub disc: Image,
 }
 
+/// The texture sheets [`UiAssets::load`] reads (`test/bmp/<name>.tpl`): fonts and HUD pieces.
+pub const UI_SHEETS: [&str; 2] = ["bmp_nml", "bmp_com"];
+
 const DISC_SIZE: usize = 64;
 
 /// Anti-aliased white disc with a slightly brighter rim.
@@ -285,14 +288,14 @@ fn disc_pixels() -> Vec<u8> {
 impl UiAssets {
     pub fn load(r: &mut Renderer, content: &Content) -> Result<Self, String> {
         let tpl = |name: &str| -> Result<mb_tpl::Tpl, String> {
-            let path = format!("smb1_content/test/bmp/{name}.tpl");
+            let path = crate::content::ui_sheet_path(name);
             let bytes = content
                 .read_maybe_lz(&path)
                 .map_err(|e| format!("{path}: {e}"))?;
             mb_tpl::parse(&bytes).map_err(|e| format!("{path}: {e}"))
         };
-        let nml = tpl("bmp_nml")?;
-        let com = tpl("bmp_com")?;
+        let nml = tpl(UI_SHEETS[0])?;
+        let com = tpl(UI_SHEETS[1])?;
         let mut image = |from_com: bool, index: usize| -> Result<Image, String> {
             let (t, name) = if from_com {
                 (&com, "bmp_com")

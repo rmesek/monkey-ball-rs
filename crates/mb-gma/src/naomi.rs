@@ -7,8 +7,14 @@
 use std::collections::HashMap;
 
 use crate::gx::{CullMode, Primitive, Vertices};
-use crate::reader::Reader;
+use crate::reader::{Budget, Reader};
 use crate::Error;
+use std::mem::size_of;
+
+/// Decoded bytes allowed per input byte (see [`Budget`]). The largest ratio on the retail disc is 3.5.
+const BUDGET_PER_BYTE: usize = 16;
+/// Decoded size of one vertex (all six attribute arrays) and of the indices one strip vertex can add.
+const VERTEX_COST: usize = 52 + 12;
 
 const VTX_SIZE: usize = 0x20;
 const VTX_OFFSET_DESC_SIZE: usize = 0x8;
@@ -156,6 +162,7 @@ fn push_vertex(r: &Reader, off: usize, kind: VertexKind, out: &mut Vertices) -> 
 
 fn parse_disp_lists(
     r: &Reader,
+    budget: &mut Budget,
     start: usize,
     size: usize,
     kind: VertexKind,
@@ -170,18 +177,21 @@ fn parse_disp_lists(
     while off < end {
         let flags = r.u32(off)?;
         let n = r.u32(off + 4)?;
-        let (prim, vtx_count) = if flags & dl_flags::TRIANGLE_STRIP != 0 {
-            (Primitive::TriangleStrip, n as usize)
+        let (prim, per_item) = if flags & dl_flags::TRIANGLE_STRIP != 0 {
+            (Primitive::TriangleStrip, 1)
         } else if flags & dl_flags::TRIANGLES != 0 {
-            (Primitive::Triangles, n as usize * 3)
+            (Primitive::Triangles, 3)
         } else if flags & dl_flags::QUADS != 0 {
-            (Primitive::Quads, n as usize * 4)
+            (Primitive::Quads, 4)
         } else {
             return Err(Error::Invalid("NL display list primitive type"));
         };
-        if vtx_count > r.data.len() {
-            return Err(Error::Invalid("NL display list vertex count"));
-        }
+        // Every vertex takes at least a reference record in the file.
+        let vtx_count = (n as usize)
+            .checked_mul(per_item)
+            .filter(|&c| c <= r.data.len() / VTX_OFFSET_DESC_SIZE)
+            .ok_or(Error::Invalid("NL display list vertex count"))?;
+        budget.charge_n(vtx_count, VERTEX_COST)?;
         first_flags.get_or_insert(flags);
         let base = out.len() as u32;
         let mut vo = off + DISP_LIST_HEADER_SIZE;
@@ -195,6 +205,7 @@ fn parse_disp_lists(
                 let actual = vo as i64 + rel + VTX_OFFSET_DESC_SIZE as i64;
                 let actual =
                     usize::try_from(actual).map_err(|_| Error::Invalid("NL vertex reference"))?;
+                r.bytes(actual, VTX_SIZE)?;
                 push_vertex(r, actual, kind, out)?;
                 vo += VTX_OFFSET_DESC_SIZE;
             }
@@ -205,18 +216,34 @@ fn parse_disp_lists(
     Ok(first_flags)
 }
 
-fn parse_mesh_list(r: &Reader, mut off: usize, kind: VertexKind) -> Result<Vec<NlMesh>, Error> {
+fn parse_mesh_list(
+    r: &Reader,
+    budget: &mut Budget,
+    mut off: usize,
+    kind: VertexKind,
+) -> Result<Vec<NlMesh>, Error> {
     let mut meshes = Vec::new();
     loop {
         let flags = r.u32(off)?;
         if flags == 0 {
             return Ok(meshes);
         }
+        // Also keeps the fixed offsets below from wrapping on 32-bit targets.
+        r.bytes(off, 0x50)?;
+        budget.charge(size_of::<NlMesh>())?;
         let tex_idx = r.i32(off + 0x20)?;
         let size = r.u32(off + 0x4c)? as usize;
         let mut vertices = Vertices::default();
         let mut indices = Vec::new();
-        let first = parse_disp_lists(r, off + 0x50, size, kind, &mut vertices, &mut indices)?;
+        let first = parse_disp_lists(
+            r,
+            budget,
+            off + 0x50,
+            size,
+            kind,
+            &mut vertices,
+            &mut indices,
+        )?;
         meshes.push(NlMesh {
             flags,
             tex_flags: r.u32(off + 8)?,
@@ -236,14 +263,23 @@ fn parse_mesh_list(r: &Reader, mut off: usize, kind: VertexKind) -> Result<Vec<N
             vertices,
             indices,
         });
-        off = off + 0x50 + size;
+        off = (off + 0x50)
+            .checked_add(size)
+            .ok_or(Error::Invalid("NL mesh size"))?;
     }
 }
 
-fn parse_model(r: &Reader, off: usize, id: usize) -> Result<Option<NlModel>, Error> {
+fn parse_model(
+    r: &Reader,
+    budget: &mut Budget,
+    off: usize,
+    id: usize,
+) -> Result<Option<NlModel>, Error> {
     if r.i32(off)? == -1 {
         return Ok(None);
     }
+    r.bytes(off, 0x18)?;
+    budget.charge(size_of::<NlModel>())?;
     let flags = r.u32(off + 4)?;
     // The reference's `ModelFlags.VtxTypeA` is the first enum member (value 0), so `flags & VtxTypeA` is always
     // false and every model is parsed as type B. Retail data agrees: bit 0 can be set on models whose vertices are
@@ -255,15 +291,16 @@ fn parse_model(r: &Reader, off: usize, id: usize) -> Result<Option<NlModel>, Err
         kind,
         bound_sphere_center: r.vec3(off + 8)?,
         bound_sphere_radius: r.f32(off + 0x14)?,
-        meshes: parse_mesh_list(r, off + 0x18, kind)?,
+        meshes: parse_mesh_list(r, budget, off + 0x18, kind)?,
     }))
 }
 
 /// Parse a decompressed NaomiLib archive (e.g. `init/common_p.lz`, `stNNN_p.lz`).
 pub fn parse_naomi_obj(bytes: &[u8]) -> Result<NlObj, Error> {
     let r = Reader::new(bytes);
+    let mut budget = Budget::new(bytes.len(), BUDGET_PER_BYTE);
     let mut obj = NlObj {
-        names: build_obj_name_map(bytes),
+        names: name_map(bytes, &mut budget)?,
         ..Default::default()
     };
     let mut off = 4;
@@ -272,7 +309,7 @@ pub fn parse_naomi_obj(bytes: &[u8]) -> Result<NlObj, Error> {
         if model_off == 0 {
             break;
         }
-        if let Some(m) = parse_model(&r, model_off, id)? {
+        if let Some(m) = parse_model(&r, &mut budget, model_off, id)? {
             obj.models.push(m);
         }
         off += 4;
@@ -282,9 +319,28 @@ pub fn parse_naomi_obj(bytes: &[u8]) -> Result<NlObj, Error> {
 
 /// Name -> model index map (names live in a 8-byte header before each model). `obj_`-prefixed
 /// names are registered with and without the prefix, like the reference.
+///
+/// A corrupt archive whose entries share one very long name yields the names read before the size cap was
+/// reached ([`parse_naomi_obj`] reports that case as an error).
 pub fn build_obj_name_map(bytes: &[u8]) -> HashMap<String, usize> {
-    let r = Reader::new(bytes);
+    let mut budget = Budget::new(bytes.len(), BUDGET_PER_BYTE);
     let mut map = HashMap::new();
+    let _ = fill_name_map(bytes, &mut budget, &mut map);
+    map
+}
+
+fn name_map(bytes: &[u8], budget: &mut Budget) -> Result<HashMap<String, usize>, Error> {
+    let mut map = HashMap::new();
+    fill_name_map(bytes, budget, &mut map)?;
+    Ok(map)
+}
+
+fn fill_name_map(
+    bytes: &[u8],
+    budget: &mut Budget,
+    map: &mut HashMap<String, usize>,
+) -> Result<(), Error> {
+    let r = Reader::new(bytes);
     let mut off = 4;
     for id in 0.. {
         let Ok(model_off) = r.u32(off) else { break };
@@ -311,12 +367,14 @@ pub fn build_obj_name_map(bytes: &[u8]) -> HashMap<String, usize> {
         if name.is_empty() {
             continue;
         }
+        // Two keys (with and without `obj_`), each with its map slot.
+        budget.charge_n(2, name.len() + size_of::<(String, usize)>())?;
         if let Some(short) = name.strip_prefix("obj_") {
             map.insert(short.to_string(), id);
         }
         map.insert(name, id);
     }
-    map
+    Ok(())
 }
 
 #[cfg(test)]

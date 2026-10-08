@@ -197,6 +197,20 @@ pub fn decode_display_list(data: &[u8], vtx_attrs: u32) -> Result<DecodedList, E
         let prim = Primitive::from_opcode(opcode).ok_or(Error::UnknownGxCommand(cmd))?;
         let count = r.u16(off)? as u32;
         off += 2;
+        if count > 0 {
+            if !has(attr::POS) {
+                // Without a position a vertex can be zero bytes long, and one 3-byte command would then
+                // expand to 65535 vertices.
+                return Err(Error::Invalid("display list vertices have no position"));
+            }
+            let need = count as usize * vertex_size(vtx_attrs, fmt);
+            if need > data.len() - off {
+                return Err(Error::OutOfBounds {
+                    offset: off,
+                    len: need,
+                });
+            }
+        }
         let base = out.vertices.len() as u32;
         for _ in 0..count {
             let mut pos = [0.0; 3];
@@ -256,6 +270,24 @@ pub fn decode_display_list(data: &[u8], vtx_attrs: u32) -> Result<DecodedList, E
         prim.triangulate(base, count, &mut out.indices);
     }
     Ok(out)
+}
+
+/// Bytes of one inline vertex with the attributes in `vtx_attrs`.
+fn vertex_size(vtx_attrs: u32, fmt: Fmt) -> usize {
+    let comp = if fmt == Fmt::F32 { 4 } else { 2 };
+    let has = |a: u32| vtx_attrs & (1 << a) != 0;
+    ATTR_ORDER
+        .iter()
+        .filter(|&&a| has(a))
+        .map(|&a| match a {
+            0..=8 => 1,
+            attr::POS => 3 * comp,
+            attr::NRM if has(attr::NBT) => 9 * comp,
+            attr::NRM => 3 * comp,
+            attr::CLR0 | attr::CLR1 => 4,
+            _ => 2 * comp,
+        })
+        .sum()
 }
 
 fn read_vec(r: &Reader, off: &mut usize, fmt: Fmt, n: usize) -> Result<[f32; 3], Error> {

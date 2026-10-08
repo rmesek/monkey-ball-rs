@@ -81,28 +81,16 @@ pub const BOWLING: BgInfo = bg("bg_bow", 0xffffffff, [0.6; 3], W, DEFAULT_ROT);
 pub const MASTER: BgInfo = bg("bg_mst", 0xffffcdff, [0.6; 3], W, DEFAULT_ROT);
 pub const ENDING: BgInfo = bg("bg_ending", 0xffffffff, [0.6; 3], W, DEFAULT_ROT);
 
-/// Background of a stage, or `None` for ids the reference has no entry for (e.g. 10, 19, 20, 30, ...).
+/// Background of a stage, or `None` for ids the game does not offer (see
+/// [`mb_game::stages::is_playable_stage`]). Which stage uses which background is decided in one place,
+/// `mb_game::stages::bg_name` (the reference's `STAGE_BG_NAMES`); this module only adds how each
+/// background is lit.
 pub fn bg_for_stage(id: u32) -> Option<&'static BgInfo> {
-    Some(match id {
-        1..=4 | 11..=14 | 41..=44 | 99 | 133 | 143 | 150 | 161..=178 => &JUNGLE,
-        5..=9 | 15..=18 | 139 => &SUNSET,
-        21..=29 | 45..=48 | 135 | 137 => &NIGHT,
-        31..=40 | 51..=59 | 136 | 142 => &WATER,
-        61..=69 | 132 | 138 => &SAND,
-        71..=79 | 134 | 144 => &ICE,
-        81..=90 => &STORM,
-        91..=95 | 197 => &BONUS,
-        101..=113 | 131 | 140 | 141 | 145 => &SPACE,
-        115..=130 => &MASTER,
-        151..=155 => &TARGET,
-        179 => &BOWLING,
-        198 => &ENDING,
-        _ => return None,
-    })
+    mb_game::stages::bg_name(id).and_then(bg_by_name)
 }
 
-/// Like [`bg_for_stage`] but falls back to the nearest lower listed stage (then the jungle), so arcade-only
-/// ids that the reference omits still load with a plausible backdrop.
+/// Like [`bg_for_stage`] but falls back to the nearest lower listed stage (then the jungle). Only for the
+/// developer stage viewer, which can open the arcade leftovers the game itself does not offer.
 pub fn bg_for_stage_or_nearest(id: u32) -> &'static BgInfo {
     (1..=id).rev().find_map(bg_for_stage).unwrap_or(&JUNGLE)
 }
@@ -128,6 +116,43 @@ mod tests {
         assert_eq!(bg_for_stage(21).unwrap().file_name, "bg_nig");
         assert_eq!(bg_for_stage(91).unwrap().file_name, "bg_bns");
         assert!(bg_for_stage(10).is_none());
+    }
+
+    /// One table decides the background of a stage (`mb_game`); every name in it must be one this module
+    /// can light, or the stage would fall back to another backdrop without anyone noticing.
+    #[test]
+    fn every_background_the_game_names_is_known_here() {
+        let mut playable = 0;
+        for id in 0..=300 {
+            match mb_game::stages::bg_name(id) {
+                Some(name) => {
+                    let bg = bg_for_stage(id).unwrap_or_else(|| panic!("stage {id}: {name}"));
+                    assert_eq!(bg.file_name, name, "stage {id}");
+                    assert!(mb_game::stages::is_playable_stage(id));
+                    playable += 1;
+                }
+                None => {
+                    assert!(bg_for_stage(id).is_none(), "stage {id}");
+                    assert!(!mb_game::stages::is_playable_stage(id));
+                }
+            }
+        }
+        assert_eq!(playable, 168);
+        // Ids the two former tables disagreed on: the game's own table has them.
+        for (id, name) in [
+            (146, "bg_spa"),
+            (149, "bg_spa"),
+            (156, "bg_pil"),
+            (160, "bg_pil"),
+            (199, "bg_jun"),
+        ] {
+            assert_eq!(bg_for_stage(id).unwrap().file_name, name);
+        }
+        for d in mb_game::Difficulty::ALL {
+            for e in mb_game::course::stage_list(d) {
+                assert!(bg_for_stage(e.id).is_some(), "{} stage {}", d.key(), e.id);
+            }
+        }
     }
 
     #[test]

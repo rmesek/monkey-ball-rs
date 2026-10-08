@@ -69,10 +69,21 @@ pub trait Game {
     fn play_view(&self) -> Option<PlayView<'_>> {
         None
     }
+
+    /// A message this state is showing to the player about something that went wrong (drivers, tests).
+    fn notice(&self) -> Option<String> {
+        None
+    }
+
+    /// How many "back" steps lead from here to the title screen's top level (0 there). Shells with a
+    /// system back gesture (browser history, Android) keep it inside the game while this is not zero.
+    fn nav_depth(&self) -> u32 {
+        0
+    }
 }
 
 /// Most state changes handled in one frame (menu -> play -> ... loops would otherwise never draw).
-const MAX_TRANSITIONS_PER_FRAME: usize = 4;
+const MAX_TRANSITIONS_PER_FRAME: usize = 6;
 
 #[derive(Default)]
 pub struct GameStack {

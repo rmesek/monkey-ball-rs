@@ -1,10 +1,7 @@
-//! Pack providers: where content bytes come from. Mirrors WebMonkeyBall `PackProvider` /
-//! `fetchWithCache` in `src/pack.ts`. Zip and HTTP backends are added once their crates are chosen.
+//! Pack providers: where content bytes come from. Mirrors WebMonkeyBall's `PackProvider` in `src/pack.ts`.
 
 use std::collections::HashMap;
 use std::io;
-use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
 
 /// Normalize a pack path: strip leading `./` and `/`, use forward slashes.
 pub fn normalize_path(path: &str) -> String {
@@ -14,35 +11,23 @@ pub fn normalize_path(path: &str) -> String {
         .to_string()
 }
 
+/// Disc path of a content-root path: `smb1_content/test/x` and `test/x` both name `test/x`.
+pub fn disc_path(path: &str) -> String {
+    let norm = normalize_path(path);
+    match norm.split_once('/') {
+        Some((first, rest)) if first.ends_with("_content") => rest.to_string(),
+        _ => norm,
+    }
+}
+
 pub trait PackProvider: Send + Sync {
+    /// The bytes of `path`; `ErrorKind::NotFound` when the source has no such file.
     fn fetch(&self, path: &str) -> io::Result<Vec<u8>>;
+    /// Whether the source has `path`, without reading it.
+    fn contains(&self, path: &str) -> bool;
 }
 
-/// Reads files below a content root directory.
-pub struct DirPack {
-    root: PathBuf,
-}
-
-impl DirPack {
-    pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into() }
-    }
-}
-
-impl PackProvider for DirPack {
-    fn fetch(&self, path: &str) -> io::Result<Vec<u8>> {
-        let norm = normalize_path(path);
-        if norm.split('/').any(|c| c == "..") {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "path escapes content root",
-            ));
-        }
-        std::fs::read(self.root.join(norm))
-    }
-}
-
-/// In-memory pack (tests, user-picked files on wasm).
+/// In-memory pack keyed by disc path (tests; the browser's prepared files).
 #[derive(Default)]
 pub struct MemoryPack {
     files: HashMap<String, Vec<u8>>,
@@ -50,88 +35,64 @@ pub struct MemoryPack {
 
 impl MemoryPack {
     pub fn insert(&mut self, path: &str, bytes: Vec<u8>) {
-        self.files.insert(normalize_path(path), bytes);
+        self.files.insert(disc_path(path), bytes);
+    }
+
+    pub fn remove(&mut self, path: &str) -> Option<Vec<u8>> {
+        self.files.remove(&disc_path(path))
+    }
+
+    pub fn len(&self) -> usize {
+        self.files.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.files.is_empty()
+    }
+
+    /// Total size of the files held.
+    pub fn bytes(&self) -> usize {
+        self.files.values().map(Vec::len).sum()
     }
 }
 
 impl PackProvider for MemoryPack {
     fn fetch(&self, path: &str) -> io::Result<Vec<u8>> {
-        let norm = normalize_path(path);
-        self.files.get(&norm).cloned().ok_or_else(|| {
+        let key = disc_path(path);
+        self.files.get(&key).cloned().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::NotFound,
-                format!("missing pack entry: {norm}"),
+                format!("missing pack entry: {key}"),
             )
         })
     }
-}
 
-/// Caches fetched files by normalized path so repeated loads (stage + prefetch) hit the provider once.
-pub struct CachedPack<P: PackProvider> {
-    inner: P,
-    cache: Mutex<HashMap<String, Arc<Vec<u8>>>>,
-}
-
-impl<P: PackProvider> CachedPack<P> {
-    pub fn new(inner: P) -> Self {
-        Self {
-            inner,
-            cache: Mutex::new(HashMap::new()),
-        }
-    }
-
-    pub fn get(&self, path: &str) -> io::Result<Arc<Vec<u8>>> {
-        let key = normalize_path(path);
-        if let Some(hit) = self.cache.lock().unwrap().get(&key) {
-            return Ok(hit.clone());
-        }
-        let bytes = Arc::new(self.inner.fetch(&key)?);
-        self.cache.lock().unwrap().insert(key, bytes.clone());
-        Ok(bytes)
-    }
-
-    /// Best-effort warm-up of upcoming files; errors are ignored like `prefetchPackSlice`.
-    pub fn prefetch<'a>(&self, paths: impl IntoIterator<Item = &'a str>) {
-        for p in paths {
-            let _ = self.get(p);
-        }
+    fn contains(&self, path: &str) -> bool {
+        self.files.contains_key(&disc_path(path))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    struct Counting(MemoryPack, Arc<AtomicUsize>);
-    impl PackProvider for Counting {
-        fn fetch(&self, path: &str) -> io::Result<Vec<u8>> {
-            self.1.fetch_add(1, Ordering::SeqCst);
-            self.0.fetch(path)
-        }
-    }
 
     #[test]
     fn normalizes() {
         assert_eq!(normalize_path("./a\\b/c"), "a/b/c");
         assert_eq!(normalize_path("/a/b"), "a/b");
+        assert_eq!(disc_path("smb1_content/test/a"), "test/a");
+        assert_eq!(disc_path("./test/a"), "test/a");
     }
 
     #[test]
-    fn cache_fetches_once() {
+    fn memory_pack_serves_by_disc_path() {
         let mut m = MemoryPack::default();
-        m.insert("x/y.bin", vec![1, 2, 3]);
-        let n = Arc::new(AtomicUsize::new(0));
-        let c = CachedPack::new(Counting(m, n.clone()));
-        assert_eq!(*c.get("./x/y.bin").unwrap(), vec![1, 2, 3]);
-        assert_eq!(*c.get("x/y.bin").unwrap(), vec![1, 2, 3]);
-        assert_eq!(n.load(Ordering::SeqCst), 1);
-        assert!(c.get("nope").is_err());
-    }
-
-    #[test]
-    fn dir_pack_rejects_traversal() {
-        let d = DirPack::new(".");
-        assert!(d.fetch("../secret").is_err());
+        m.insert("smb1_content/x/y.bin", vec![1, 2, 3]);
+        assert_eq!(m.fetch("x/y.bin").unwrap(), vec![1, 2, 3]);
+        assert!(m.contains("./x/y.bin") && !m.contains("nope"));
+        assert_eq!((m.len(), m.bytes()), (1, 3));
+        assert_eq!(m.fetch("nope").unwrap_err().kind(), io::ErrorKind::NotFound);
+        assert_eq!(m.remove("x/y.bin"), Some(vec![1, 2, 3]));
+        assert!(m.is_empty());
     }
 }

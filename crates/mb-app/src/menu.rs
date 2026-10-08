@@ -6,12 +6,19 @@
 //! unlocks), saves, and either pushes the next floor or shows game over / course complete.
 //!
 //! Every screen is a title, a few info lines and one list of big rows (`widgets`), so keys, gamepad, mouse
-//! and touch all work the same way everywhere.
+//! and touch all work the same way everywhere. Every screen but the title has a Back button in the top-left
+//! corner; long lists scroll by dragging, by the wheel or with the page arrows beside them.
+//!
+//! Stages are started through `loading::StageLoad`, which shows progress and comes back here with a
+//! message when a stage cannot be loaded (shown as a notice; the session goes on). A stage that ends leaves
+//! its scene parked: when the run's next step is a retry of the same floor the scene is played again as it
+//! is, otherwise it is unloaded before the next screen or stage.
 
 use std::rc::Rc;
 
 use glam::Vec3;
 use mb_game::course::stage_list;
+use mb_game::progress::ControlMode;
 use mb_game::run::{Floor, Step};
 use mb_game::stages::{bg_name, DEFAULT_STAGE_TIME};
 use mb_game::{
@@ -21,16 +28,29 @@ use mb_render::Camera;
 
 use crate::audio::{Audio, Sfx};
 use crate::game::{Game, GameCtx, Transition};
+use crate::host;
 use crate::input::Action;
+use crate::loading::{LoadOutcome, StageLoad, StageShared};
 use crate::play::PlayState;
+use crate::play_scene::PlayScene;
 use crate::text::{rgb, Align, Color, FontId, Painter, UiAssets, WHITE};
 use crate::ui::Rect;
-use crate::widgets::{draw_list, fit_scale, ListLayout, ListState, Row};
+use crate::widgets::{
+    back_button_rect, draw_back_button, draw_list, draw_rail, fit_scale, ListLayout, ListState,
+    Row, Tap,
+};
 
 const BACKGROUND: [f64; 4] = [0.02, 0.07, 0.24, 1.0];
+/// The same colour for the rectangles that back the menu and cover rows scrolled out of the list.
+const BACKDROP: Color = [0.02, 0.07, 0.24, 1.0];
+const HEADER_BAND: Color = [0.0, 0.02, 0.1, 0.55];
 const TITLE_COLOR: Color = rgb(0xffc800);
 const INFO_COLOR: Color = rgb(0xd8e6ff);
 const GOOD_COLOR: Color = rgb(0x60ff60);
+const NOTICE_COLOR: Color = rgb(0xff8c60);
+/// A notice is wrapped to lines of about this many characters, at most [`NOTICE_LINES`] of them.
+const NOTICE_WIDTH: usize = 30;
+const NOTICE_LINES: usize = 4;
 
 /// Jump straight into a stage or course when the menu opens (developer command line, autoplay).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -117,6 +137,57 @@ fn next_volume(percent: u8) -> u8 {
 
 const MAIN_COURSES: [Difficulty; 7] = Difficulty::ALL;
 
+/// The rows of the options screen. Which ones exist depends on the platform ([`host::caps`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OptionRow {
+    UnlockAll,
+    StickCurve,
+    Music,
+    Sound,
+    Announcer,
+    Controls,
+    TiltRange,
+    Fullscreen,
+    RemoveData,
+    Back,
+}
+
+/// Break `text` into lines of at most `width` characters at spaces (longer words are cut).
+fn wrap(text: &str, width: usize, max_lines: usize) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    for word in text.split_whitespace() {
+        let mut word = word;
+        loop {
+            let fits = lines
+                .last()
+                .is_some_and(|l| l.chars().count() + 1 + word.chars().count() <= width);
+            if fits {
+                let last = lines.last_mut().unwrap();
+                last.push(' ');
+                last.push_str(word);
+                break;
+            }
+            if word.chars().count() <= width {
+                lines.push(word.to_string());
+                break;
+            }
+            let cut = word
+                .char_indices()
+                .nth(width)
+                .map_or(word.len(), |(i, _)| i);
+            lines.push(word[..cut].to_string());
+            word = &word[cut..];
+        }
+    }
+    if lines.len() > max_lines {
+        lines.truncate(max_lines);
+        if let Some(last) = lines.last_mut() {
+            last.push_str("...");
+        }
+    }
+    lines
+}
+
 pub struct Menu {
     storage: Box<dyn Storage>,
     profile: Profile,
@@ -131,6 +202,17 @@ pub struct Menu {
     /// Texture count before the UI textures were uploaded (to free them when the menu itself is left).
     texture_base: usize,
     audio: Audio,
+    /// Shared with the loading and gameplay states: the parked scene, the parsed-file cache and the
+    /// outcome of a load that did not reach its stage.
+    shared: StageShared,
+    /// The scene of the stage that just ended, for this frame only: a retry takes it, anything else
+    /// unloads it.
+    parked: Option<PlayScene>,
+    back_tap: Tap,
+    /// Scroll the list to its selection at the next layout (a screen just opened).
+    reveal: bool,
+    /// "Remove game data" was chosen once; choosing it again does it.
+    confirm_remove: bool,
 }
 
 impl Menu {
@@ -149,7 +231,56 @@ impl Menu {
             allow_quit: cfg!(not(any(target_arch = "wasm32", target_os = "android"))),
             texture_base: 0,
             audio: Audio::silent(),
+            shared: StageShared::default(),
+            parked: None,
+            back_tap: Tap::default(),
+            reveal: true,
+            confirm_remove: false,
         }
+    }
+
+    /// What this menu shares with the stages it starts (tests look at the cache and the parked scene).
+    pub fn shared(&self) -> &StageShared {
+        &self.shared
+    }
+
+    /// Tell the platform how the player wants to steer.
+    fn apply_controls(&self) {
+        let s = &self.profile.settings;
+        host::post(host::Command::Tilt {
+            enabled: host::caps().tilt && s.control_mode == ControlMode::Tilt,
+            range_deg: f32::from(s.tilt_range_deg),
+        });
+    }
+
+    fn option_rows(&self) -> Vec<OptionRow> {
+        let caps = host::caps();
+        let mut rows = vec![
+            OptionRow::UnlockAll,
+            OptionRow::StickCurve,
+            OptionRow::Music,
+            OptionRow::Sound,
+            OptionRow::Announcer,
+        ];
+        if caps.tilt {
+            rows.push(OptionRow::Controls);
+            if self.profile.settings.control_mode == ControlMode::Tilt {
+                rows.push(OptionRow::TiltRange);
+            }
+        }
+        if caps.fullscreen {
+            rows.push(OptionRow::Fullscreen);
+        }
+        if caps.remove_data {
+            rows.push(OptionRow::RemoveData);
+        }
+        rows.push(OptionRow::Back);
+        rows
+    }
+
+    /// Every screen but the title can be left with Back.
+    fn has_back(&self) -> bool {
+        self.screen != Screen::Title
     }
 
     /// Give the game a voice (the default is silence). The platform driver keeps a clone for
@@ -205,6 +336,8 @@ impl Menu {
     fn go(&mut self, screen: Screen, selected: usize) {
         self.screen = screen;
         self.list = ListState::new(selected);
+        self.reveal = true;
+        self.confirm_remove = false;
     }
 
     fn unlock_all(&self) -> bool {
@@ -230,8 +363,17 @@ impl Menu {
         }
     }
 
-    /// Info lines under the title.
+    /// Info lines under the title: the screen's own, then the notice (a save or load problem).
     fn info(&self) -> Vec<(String, Color)> {
+        let mut lines = self.screen_info();
+        if let Some(notice) = &self.notice {
+            let wrapped = wrap(notice, NOTICE_WIDTH, NOTICE_LINES);
+            lines.extend(wrapped.into_iter().map(|l| (l, NOTICE_COLOR)));
+        }
+        lines
+    }
+
+    fn screen_info(&self) -> Vec<(String, Color)> {
         match &self.screen {
             Screen::GameOver {
                 score,
@@ -333,22 +475,46 @@ impl Menu {
             }
             Screen::Options => {
                 let s = &self.profile.settings;
-                vec![
-                    row_with(
-                        "UNLOCK ALL STAGES",
-                        if s.unlock_all { "ON" } else { "OFF" },
-                        true,
-                    ),
-                    row_with(
-                        "STICK CURVE",
-                        format!("{}.{:02}", s.input_falloff / 100, s.input_falloff % 100),
-                        true,
-                    ),
-                    row_with("MUSIC VOLUME", volume_label(s.music_volume), true),
-                    row_with("SOUND VOLUME", volume_label(s.sfx_volume), true),
-                    row_with("ANNOUNCER VOLUME", volume_label(s.announcer_volume), true),
-                    row("BACK"),
-                ]
+                let on_off = |on: bool| if on { "ON" } else { "OFF" };
+                self.option_rows()
+                    .into_iter()
+                    .map(|r| match r {
+                        OptionRow::UnlockAll => {
+                            row_with("UNLOCK ALL STAGES", on_off(s.unlock_all), true)
+                        }
+                        OptionRow::StickCurve => row_with(
+                            "STICK CURVE",
+                            format!("{}.{:02}", s.input_falloff / 100, s.input_falloff % 100),
+                            true,
+                        ),
+                        OptionRow::Music => {
+                            row_with("MUSIC VOLUME", volume_label(s.music_volume), true)
+                        }
+                        OptionRow::Sound => {
+                            row_with("SOUND VOLUME", volume_label(s.sfx_volume), true)
+                        }
+                        OptionRow::Announcer => {
+                            row_with("ANNOUNCER VOLUME", volume_label(s.announcer_volume), true)
+                        }
+                        OptionRow::Controls => row_with(
+                            "CONTROLS",
+                            match s.control_mode {
+                                ControlMode::Stick => "STICK",
+                                ControlMode::Tilt => "TILT",
+                            },
+                            true,
+                        ),
+                        OptionRow::TiltRange => {
+                            row_with("TILT RANGE", format!("{} DEG", s.tilt_range_deg), true)
+                        }
+                        OptionRow::Fullscreen => {
+                            row_with("FULLSCREEN", on_off(host::is_fullscreen()), true)
+                        }
+                        OptionRow::RemoveData if self.confirm_remove => row("TAP AGAIN TO REMOVE"),
+                        OptionRow::RemoveData => row("REMOVE GAME DATA"),
+                        OptionRow::Back => row("BACK"),
+                    })
+                    .collect()
             }
             Screen::GameOver { continues_left, .. } => vec![
                 RowData {
@@ -384,14 +550,43 @@ impl Menu {
             .then_some((d, next))
     }
 
+    /// Start `request`: on the scene the previous attempt left behind when this is a retry of the same
+    /// stage (nothing is read or built again), otherwise through the loading state.
     fn push_play(&mut self, request: PlayRequest) -> Transition {
-        match &self.ui {
-            Some(ui) => Transition::Push(Box::new(PlayState::new(
-                request,
-                ui.clone(),
-                self.audio.clone(),
-            ))),
-            None => Transition::None,
+        let Some(ui) = self.ui.clone() else {
+            return Transition::None;
+        };
+        let same_stage = |s: &PlayScene| s.stage_id() == request.stage_id;
+        if request.retry && self.parked.as_ref().is_some_and(same_stage) {
+            if let Some(scene) = self.parked.take() {
+                return Transition::Push(Box::new(PlayState::new(
+                    request,
+                    ui,
+                    self.audio.clone(),
+                    scene,
+                    Some(self.shared.park.clone()),
+                )));
+            }
+        }
+        Transition::Push(Box::new(StageLoad::new(
+            request,
+            ui,
+            self.audio.clone(),
+            self.shared.clone(),
+        )))
+    }
+
+    /// A stage load ended without a stage: back to where it was started from, with the reason if it failed.
+    fn on_load_ended(&mut self, outcome: LoadOutcome) {
+        match self.active.take() {
+            Some(Active::Run(run)) if run.mode() == PlayMode::Practice => {
+                let index = run.floor().floor.saturating_sub(1) as usize;
+                self.go(Screen::StageSelect(run.difficulty()), index);
+            }
+            _ => self.go(Screen::Title, 0),
+        }
+        if let LoadOutcome::Failed(reason) = outcome {
+            self.notice = Some(format!("COULD NOT LOAD {reason}").to_uppercase());
         }
     }
 
@@ -446,6 +641,8 @@ impl Menu {
                 });
                 match found {
                     Some((d, i)) => self.start_run(CourseRun::practice(d, i)),
+                    // An id the game does not offer (no background of its own): stay on the title.
+                    None if !mb_game::stages::is_playable_stage(id) => Transition::None,
                     None => self.start_direct(id, false),
                 }
             }
@@ -563,20 +760,50 @@ impl Menu {
                 self.go(Screen::PracticeCourse, back);
             }
             Screen::Options => {
+                let chosen = self.option_rows().get(index).copied();
+                let confirming = std::mem::take(&mut self.confirm_remove);
                 let s = &mut self.profile.settings;
-                match index {
-                    0 => s.unlock_all = !s.unlock_all,
-                    1 => {
+                match chosen {
+                    Some(OptionRow::UnlockAll) => s.unlock_all = !s.unlock_all,
+                    Some(OptionRow::StickCurve) => {
                         s.input_falloff = if s.input_falloff >= 200 {
                             100
                         } else {
                             s.input_falloff + 25
                         }
                     }
-                    2 => s.music_volume = next_volume(s.music_volume),
-                    3 => s.sfx_volume = next_volume(s.sfx_volume),
-                    4 => s.announcer_volume = next_volume(s.announcer_volume),
-                    _ => {
+                    Some(OptionRow::Music) => s.music_volume = next_volume(s.music_volume),
+                    Some(OptionRow::Sound) => s.sfx_volume = next_volume(s.sfx_volume),
+                    Some(OptionRow::Announcer) => {
+                        s.announcer_volume = next_volume(s.announcer_volume)
+                    }
+                    Some(OptionRow::Controls) => {
+                        s.control_mode = match s.control_mode {
+                            ControlMode::Stick => ControlMode::Tilt,
+                            ControlMode::Tilt => ControlMode::Stick,
+                        }
+                    }
+                    Some(OptionRow::TiltRange) => {
+                        s.tilt_range_deg = if s.tilt_range_deg >= 25 {
+                            10
+                        } else {
+                            s.tilt_range_deg + 5
+                        }
+                    }
+                    Some(OptionRow::Fullscreen) => {
+                        host::post(host::Command::SetFullscreen(!host::is_fullscreen()));
+                        return Transition::None;
+                    }
+                    Some(OptionRow::RemoveData) => {
+                        // Deleting what took a minute to import wants a second tap.
+                        if confirming {
+                            host::post(host::Command::RemoveGameData);
+                        } else {
+                            self.confirm_remove = true;
+                        }
+                        return Transition::None;
+                    }
+                    Some(OptionRow::Back) | None => {
                         self.go(Screen::Title, 2);
                         return Transition::None;
                     }
@@ -585,9 +812,10 @@ impl Menu {
                 self.save();
                 // Applied at once; a sample of the changed category lets the level be heard.
                 self.apply_volumes();
-                match index {
-                    3 => self.audio.play(Sfx::Banana),
-                    4 => self.audio.play(Sfx::Ready),
+                self.apply_controls();
+                match chosen {
+                    Some(OptionRow::Sound) => self.audio.play(Sfx::Banana),
+                    Some(OptionRow::Announcer) => self.audio.play(Sfx::Ready),
                     _ => {}
                 }
             }
@@ -657,30 +885,57 @@ impl Menu {
         };
         let safe = ctx.layout.safe_rect();
         let scale = ctx.layout.hud_scale();
+        let (width, height) = (ctx.size.0 as f32, ctx.size.1 as f32);
+        let back = back_button_rect(&ctx.layout);
         let mut p = Painter {
             r: ctx.renderer,
             ui: &ui,
         };
-        // Header band.
-        p.rect(
-            Rect {
-                x: 0.0,
-                y: 0.0,
-                w: ctx.size.0 as f32,
-                h: safe.y + safe.h * title_h * 0.96,
+        let full = |y: f32, h: f32| Rect {
+            x: 0.0,
+            y,
+            w: width,
+            h,
+        };
+        p.rect(full(0.0, height), BACKDROP);
+        // The rows first, including ones that are only partly inside the list's window; what sticks out
+        // above and below is then painted over, and the header and footer are drawn on top of that.
+        draw_list(
+            &mut p,
+            layout,
+            &self.list,
+            &|i| Row {
+                label: &rows[i].label,
+                detail: rows[i].detail.as_deref().filter(|d| !d.is_empty()),
+                enabled: rows[i].enabled,
             },
-            [0.0, 0.02, 0.1, 0.55],
+            true,
         );
+        let list_bottom = layout.area.y + layout.area.h;
+        p.rect(full(0.0, layout.area.y), BACKDROP);
+        p.rect(full(list_bottom, height - list_bottom), BACKDROP);
+        // Header band.
+        p.rect(full(0.0, safe.y + safe.h * title_h * 0.96), HEADER_BAND);
+        draw_rail(&mut p, layout, &self.list);
+        if self.has_back() {
+            draw_back_button(&mut p, back, self.back_tap.down());
+        }
         let info = self.info();
         let title = self.title();
         let line_h = safe.h * 0.055;
         let title_box = safe.h * title_h - info.len() as f32 * line_h - safe.h * 0.05;
         let title_y = safe.y + safe.h * 0.03 + title_box / 2.0;
+        // The title is centred; with a Back button it keeps clear of it (and of its mirror image).
+        let title_w = if self.has_back() {
+            (safe.w - 2.0 * (back.x - safe.x + back.w) - back.h * 0.4).max(safe.w * 0.3)
+        } else {
+            safe.w * 0.78
+        };
         let s = fit_scale(
             &p,
             FontId::Asc72,
             &title,
-            safe.w * 0.78,
+            title_w,
             title_box.min(96.0 * scale),
         );
         p.text(
@@ -720,18 +975,8 @@ impl Menu {
             );
             y += line_h;
         }
-        draw_list(&mut p, layout, &self.list, &|i| Row {
-            label: &rows[i].label,
-            detail: rows[i].detail.as_deref().filter(|d| !d.is_empty()),
-            enabled: rows[i].enabled,
-        });
-        let footer = match &self.notice {
-            Some(n) => Some((n.as_str(), rgb(0xff8c60))),
-            None if !ctx.input.touch_active() => {
-                Some(("ARROWS / STICK: SELECT   ENTER: OK   ESC: BACK", INFO_COLOR))
-            }
-            None => None,
-        };
+        let footer = (!ctx.input.touch_active())
+            .then_some(("ARROWS / STICK: SELECT   ENTER: OK   ESC: BACK", INFO_COLOR));
         if let Some((text, color)) = footer {
             let h = safe.h * 0.028;
             let s = fit_scale(&p, FontId::Asc16, text, safe.w * 0.95, h);
@@ -763,17 +1008,26 @@ impl Game for Menu {
         let (profile, message) = Profile::load(self.storage.as_mut());
         self.profile = profile;
         self.notice = message.map(|m| m.to_uppercase());
+        // The stages run on the game's own trig tables, read from the executable.
+        ctx.content.install_trig_tables();
         // Sound effects are read and decoded here, once, before anything is played.
         let dol = ctx.content.main_dol();
-        self.audio.ensure_sfx(
-            &mut |path| ctx.content.read(path),
-            dol.as_ref().map(|d| d.as_slice()),
-        );
+        self.audio
+            .ensure_sfx(&mut |path| ctx.content.read(path), dol.as_deref());
         self.apply_volumes();
+        self.apply_controls();
+        // The start-up files are parsed and decoded now; where they were fetched into memory, free it.
+        ctx.content.release(&crate::content::boot_files());
         Ok(())
     }
 
     fn on_exit(&mut self, ctx: &mut GameCtx) {
+        let parked = self.parked.take();
+        let left = self.shared.park.borrow_mut().take();
+        for scene in parked.into_iter().chain(left) {
+            scene.unload(ctx.renderer);
+        }
+        self.shared.cache.borrow_mut().clear();
         if self.ui.take().is_some() {
             ctx.renderer.truncate_textures(self.texture_base);
         }
@@ -784,11 +1038,20 @@ impl Game for Menu {
         ctx.renderer.clear_color = BACKGROUND;
         ctx.renderer.fog = None;
 
+        // The scene of a stage that ended this frame: a retry of that stage plays on it.
+        self.parked = self.shared.park.borrow_mut().take();
         let mut transition = Transition::None;
-        if let Some(auto) = self.autostart.take() {
+        let load_ended = self.shared.outcome.borrow_mut().take();
+        if let Some(outcome) = load_ended {
+            self.on_load_ended(outcome);
+        } else if let Some(auto) = self.autostart.take() {
             transition = self.start_auto(auto);
         } else if let Some(result) = self.report.take() {
             transition = self.on_result(result);
+        }
+        // Not taken by a retry: the stage is over, free it before anything else is shown or loaded.
+        if let Some(scene) = self.parked.take() {
+            scene.unload(ctx.renderer);
         }
         if !matches!(transition, Transition::None) {
             return transition;
@@ -799,15 +1062,23 @@ impl Game for Menu {
         let rows = self.rows();
         let title_h = 0.24 + self.info().len() as f32 * 0.055;
         let layout = ListLayout::column(&ctx.layout, rows.len(), title_h);
+        if std::mem::take(&mut self.reveal) {
+            self.list.reveal(&layout);
+        }
         let enabled = |i: usize| rows.get(i).is_some_and(|r| r.enabled);
         let before = self.list.selected;
-        if let Some(i) = self.list.update(ctx.input, &layout, &enabled) {
+        let back = self.has_back()
+            && self
+                .back_tap
+                .update(ctx.input, back_button_rect(&ctx.layout), ctx.dt);
+        if back || ctx.input.pressed(Action::Cancel) {
+            self.notice = None;
+            self.audio.play(Sfx::MenuCancel);
+            transition = self.back();
+        } else if let Some(i) = self.list.update(ctx.input, &layout, &enabled, ctx.dt) {
             self.notice = None;
             self.audio.play(Sfx::MenuConfirm);
             transition = self.activate(i);
-        } else if ctx.input.pressed(Action::Cancel) {
-            self.audio.play(Sfx::MenuCancel);
-            transition = self.back();
         } else if self.list.selected != before {
             self.audio.play(Sfx::MenuMove);
         }
@@ -819,7 +1090,9 @@ impl Game for Menu {
         let title_h = 0.24 + self.info().len() as f32 * 0.055;
         let layout = ListLayout::column(&ctx.layout, rows.len(), title_h);
         self.list.selected = self.list.selected.min(rows.len().saturating_sub(1));
-        self.list.reveal(&layout);
+        if std::mem::take(&mut self.reveal) {
+            self.list.reveal(&layout);
+        }
         self.draw(ctx, &layout, &rows, title_h);
         self.audio.flush();
         Transition::None
@@ -831,6 +1104,14 @@ impl Game for Menu {
 
     fn status(&self) -> String {
         format!("menu: {}", self.screen_name())
+    }
+
+    fn nav_depth(&self) -> u32 {
+        self.has_back() as u32
+    }
+
+    fn notice(&self) -> Option<String> {
+        self.notice.clone()
     }
 }
 

@@ -1,25 +1,17 @@
 [package]
 name = "mb-assets"
-description = "Content-root layout, pack loading and file-format parsers (no GPU deps)"
+description = "Disc image and RVZ readers, LZSS, pack providers and the on-device game pack (no GPU deps)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
 
-[features]
-default = ["disc"]
-# Read RVZ/ISO/etc. directly. Uses the `nod` crate (MIT/Apache-2.0); on wasm32 the RVZ container itself is
-# decoded by `src/rvz.rs` (see there for why).
-disc = ["dep:nod", "dep:ruzstd"]
-
 [dependencies]
-# No default features: they pull vendored C libs (bzip2/lzma/zlib/zstd) and worker threads, which do not build or run
-# on wasm32. Native targets re-enable them below. Without them nod still reads ISO/GCM, CISO, WBFS and
-# the plain containers (ISO/GCM, CISO, WBFS, TGC).
-nod = { version = "2.0.0-alpha.9", optional = true, default-features = false }
-# Pure-Rust Zstandard decoder for the built-in RVZ reader (`src/rvz.rs`): Dolphin compresses RVZ images with
-# Zstandard by default, and the C library nod uses does not build for wasm32 without a C toolchain.
-ruzstd = { version = "0.8", optional = true }
+# Pure-Rust Zstandard decoder for the RVZ reader (`src/rvz.rs`): Dolphin compresses RVZ images with Zstandard
+# by default. No C toolchain needed on any target, including wasm32.
+ruzstd = "0.8"
 
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-nod = { version = "2.0.0-alpha.9", optional = true, default-features = true }
+[dev-dependencies]
+# Reference disc reader, tests only: `tests/disc.rs` proves the built-in readers (`src/disc.rs`, `src/rvz.rs`)
+# list and read the same files. Not part of any shipped binary.
+nod = "2.0.0-alpha.9"

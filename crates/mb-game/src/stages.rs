@@ -18,6 +18,15 @@ pub fn bg_name(stage_id: u32) -> Option<&'static str> {
     STAGE_BG_NAMES.get(stage_id as usize).copied().flatten()
 }
 
+/// Whether the game can offer this stage. The reference's table has no background for the ids no course
+/// uses (10, 19, 20, 30, 49, 50, 60, 70, 80, 96..=98, 100, 114, 180..=196, 200: leftovers of the arcade
+/// version, drawn there with a sky that is not on the disc under a name the reference knows), so they
+/// would have to be shown on a guessed backdrop with no music. Menus and the command line refuse them;
+/// only the developer stage viewer opens them, with the backdrop it is told to use.
+pub fn is_playable_stage(stage_id: u32) -> bool {
+    bg_name(stage_id).is_some()
+}
+
 /// `ST_005_SLOPES` -> 5 (0 when the name has no `ST_nnn`).
 pub fn stage_id_from_name(name: &str) -> u32 {
     name.strip_prefix("ST_")
@@ -58,6 +67,38 @@ mod tests {
         assert_eq!(bg_name(91), Some("bg_bns"));
         assert_eq!(bg_name(121), Some("bg_mst"));
         assert_eq!(bg_name(100_000), None);
+    }
+
+    #[test]
+    fn playable_stages_are_exactly_those_with_a_background() {
+        let playable = (0..=250).filter(|&id| is_playable_stage(id)).count();
+        assert_eq!(playable, 168);
+        for id in [
+            0,
+            10,
+            19,
+            20,
+            30,
+            49,
+            50,
+            60,
+            70,
+            80,
+            96,
+            100,
+            114,
+            180,
+            200,
+            201,
+            u32::MAX,
+        ] {
+            assert!(!is_playable_stage(id), "{id}");
+        }
+        for d in crate::course::Difficulty::ALL {
+            for e in crate::course::stage_list(d) {
+                assert!(is_playable_stage(e.id), "{} floor {}", d.key(), e.id);
+            }
+        }
     }
 
     #[test]

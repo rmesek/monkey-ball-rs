@@ -1,19 +1,19 @@
 //! Pure-Rust reader for GameCube RVZ disc images: presents the original ISO bytes of an `.rvz` file as a
 //! random-access stream, decoding groups on demand.
 //!
-//! Why this exists next to `nod`: nod's WIA/RVZ reader calls `std::time::Instant::now()`, which panics on
-//! `wasm32-unknown-unknown`, and its Zstandard support is the C library. In the browser the RVZ container is
-//! therefore decoded here (Zstandard through `ruzstd`) and nod only sees a plain ISO stream, whose code path
-//! needs neither. Native builds keep using nod for everything; the tests compare the two byte for byte.
+//! This is the only RVZ reader of the project, on every target (pure Rust, Zstandard through `ruzstd`); the
+//! `nod` crate is used by tests and `xtask check-rvz` only, to prove this reader yields the same disc.
 //!
 //! Supported: RVZ of a GameCube disc, compression "none" or Zstandard, including RVZ-packed junk data.
 //! Not supported: Wii discs (partition data and hash exceptions), the older WIA variant, bzip2/LZMA/LZMA2/purge.
-//! The SHA-1 hashes stored in the headers are not checked; sizes and offsets are validated instead.
+//! The SHA-1 hashes stored in the headers are not checked. Sizes and offsets are: nothing is allocated or
+//! read on the file's say-so beyond what the format allows and the file can hold, and decompression stops
+//! at the size the tables promise.
 //!
 //! Format reference (CC0): Dolphin's `docs/WiaAndRvz.md`; the lagged Fibonacci generator for junk data follows
 //! Dolphin's `LaggedFibonacciGenerator.cpp` as described there.
 
-use crate::disc::DiscStream;
+use crate::disc::{DiscStream, MAX_DISC_SIZE};
 use std::io::{self, Read};
 use std::sync::Arc;
 
@@ -26,9 +26,18 @@ const GROUP_LEN: usize = 0x0C;
 /// Highest `version_compatible` this reader understands (RVZ 1.0).
 const RVZ_VERSION: u32 = 0x0100_0000;
 const TOP_BIT: u32 = 0x8000_0000;
-/// Decoded groups kept per reader, by total size. nod caches what it reads as well; this only has to make
-/// neighbouring small reads inside one group cheap.
+/// Decoded groups kept per reader, by total size: makes neighbouring small reads inside one group cheap.
 const CACHE_BYTES: usize = 4 << 20;
+/// Largest chunk size accepted. Dolphin writes 32 KiB to 2 MiB; a group is decoded into one allocation of
+/// this size, so the bound is also the reader's memory bound.
+const MAX_CHUNK_SIZE: u64 = 8 << 20;
+/// Most raw data entries accepted (a GameCube image has two).
+const MAX_RAW_ENTRIES: usize = 1 << 12;
+/// RVZ packing adds a 4-byte header per record and a 68-byte seed per junk run; a packed or compressed
+/// group that claims to be larger than this relative to its chunk is not something a writer produces.
+fn max_stored(chunk_size: u64) -> u64 {
+    chunk_size * 2 + 4096
+}
 
 fn invalid(msg: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, msg.into())
@@ -58,7 +67,8 @@ struct Group {
     offset: u64,
     size: u32,
     compressed: bool,
-    packed: bool,
+    /// Size of the RVZ-packed data (after decompression, before unpacking); 0 = not packed.
+    packed: u32,
 }
 
 struct Meta {
@@ -70,11 +80,10 @@ struct Meta {
     groups: Vec<Group>,
 }
 
-/// The ISO contents of an RVZ file. Cloning is cheap (tables are shared; each clone has its own small cache).
-#[derive(Clone)]
-pub struct RvzReader {
-    inner: Box<dyn DiscStream>,
-    meta: Arc<Meta>,
+/// The ISO contents of an RVZ file.
+pub struct RvzReader<S: DiscStream> {
+    inner: S,
+    meta: Meta,
     /// Most recently used first: (group index, decoded bytes).
     cache: Vec<(u32, Arc<[u8]>)>,
 }
@@ -85,15 +94,24 @@ fn read_vec(inner: &mut dyn DiscStream, offset: u64, len: usize) -> io::Result<V
     Ok(v)
 }
 
-fn zstd_decode(data: &[u8], size_hint: usize) -> io::Result<Vec<u8>> {
-    let mut out = Vec::with_capacity(size_hint);
+/// Decompress `data` (one or more Zstandard frames), which must not yield more than `limit` bytes: the
+/// output is never allowed to grow past what the tables say it is.
+fn zstd_decode(data: &[u8], limit: usize) -> io::Result<Vec<u8>> {
+    let mut out = Vec::new();
     let mut src = data;
     while !src.is_empty() {
         let mut decoder = ruzstd::decoding::StreamingDecoder::new(&mut src)
             .map_err(|e| invalid(format!("Zstandard frame: {e}")))?;
-        decoder
+        let room = (limit - out.len()) as u64 + 1;
+        (&mut decoder)
+            .take(room)
             .read_to_end(&mut out)
             .map_err(|e| invalid(format!("Zstandard data: {e}")))?;
+        if out.len() > limit {
+            return Err(invalid(format!(
+                "Zstandard data decodes to more than the expected {limit} bytes"
+            )));
+        }
     }
     Ok(out)
 }
@@ -114,6 +132,12 @@ fn read_table(
     {
         return Err(invalid(format!("RVZ {what} table lies outside the file")));
     }
+    // An uncompressed table is exactly as long as its entries; a compressed one is never much longer.
+    if (!zstd && stored as usize != len) || stored as usize > len + 4096 {
+        return Err(invalid(format!(
+            "RVZ {what} table is stored in {stored} bytes, expected about {len}"
+        )));
+    }
     let data = read_vec(inner, offset, stored as usize)?;
     let table = if zstd { zstd_decode(&data, len)? } else { data };
     if table.len() != len {
@@ -125,14 +149,14 @@ fn read_table(
     Ok(table)
 }
 
-impl RvzReader {
+impl<S: DiscStream> RvzReader<S> {
     /// Parse the headers and tables of the RVZ file behind `inner`.
-    pub fn open(mut inner: Box<dyn DiscStream>) -> io::Result<Self> {
+    pub fn open(mut inner: S) -> io::Result<Self> {
         let file_len = inner.stream_len()?;
         if file_len < (FILE_HEAD_LEN + 0x10) as u64 {
             return Err(invalid("file too small for an RVZ image"));
         }
-        let head = read_vec(inner.as_mut(), 0, FILE_HEAD_LEN)?;
+        let head = read_vec(&mut inner, 0, FILE_HEAD_LEN)?;
         if &head[..4] != b"RVZ\x01" {
             return Err(invalid("not an RVZ image"));
         }
@@ -144,8 +168,13 @@ impl RvzReader {
         }
         let disc_len = be32(&head, 0x0C) as usize;
         let iso_size = be64(&head, 0x24);
+        if iso_size == 0 || iso_size > MAX_DISC_SIZE {
+            return Err(invalid(format!(
+                "RVZ header gives a disc size of {iso_size} bytes, which is not a GameCube disc"
+            )));
+        }
         // Older writers may store a shorter struct; missing fields read as zero.
-        let mut disc = read_vec(inner.as_mut(), FILE_HEAD_LEN as u64, disc_len.min(DISC_LEN))?;
+        let mut disc = read_vec(&mut inner, FILE_HEAD_LEN as u64, disc_len.min(DISC_LEN))?;
         disc.resize(DISC_LEN, 0);
 
         if be32(&disc, 0x00) != 1 || be32(&disc, 0x90) != 0 {
@@ -165,7 +194,7 @@ impl RvzReader {
         let chunk_size = u64::from(be32(&disc, 0x0C));
         let small_ok = chunk_size >= SECTOR && chunk_size.is_power_of_two();
         let large_ok = chunk_size >= (2 << 20) && chunk_size % (2 << 20) == 0;
-        if !(small_ok || large_ok) || chunk_size > (64 << 20) {
+        if !(small_ok || large_ok) || chunk_size > MAX_CHUNK_SIZE {
             return Err(invalid(format!("invalid RVZ chunk size {chunk_size:#x}")));
         }
         let mut disc_head = [0u8; DISC_HEAD_LEN];
@@ -173,11 +202,13 @@ impl RvzReader {
 
         let num_raw = be32(&disc, 0xB4) as usize;
         let num_groups = be32(&disc, 0xC4) as usize;
-        if num_raw == 0 || num_raw > 1 << 16 || num_groups > 1 << 24 {
+        // Every raw data entry needs at most its share of the disc in groups, plus one for rounding.
+        let max_groups = iso_size.div_ceil(chunk_size) as usize + 2 * num_raw.min(MAX_RAW_ENTRIES);
+        if num_raw == 0 || num_raw > MAX_RAW_ENTRIES || num_groups > max_groups {
             return Err(invalid("implausible RVZ table sizes"));
         }
         let raw_table = read_table(
-            inner.as_mut(),
+            &mut inner,
             "raw data",
             be64(&disc, 0xB8),
             be32(&disc, 0xC0),
@@ -186,7 +217,7 @@ impl RvzReader {
             file_len,
         )?;
         let group_table = read_table(
-            inner.as_mut(),
+            &mut inner,
             "group",
             be64(&disc, 0xC8),
             be32(&disc, 0xD0),
@@ -201,7 +232,8 @@ impl RvzReader {
             let start = offset / SECTOR * SECTOR;
             let end = offset
                 .checked_add(be64(e, 8))
-                .ok_or_else(|| invalid("RVZ raw data size overflows"))?;
+                .filter(|end| *end <= MAX_DISC_SIZE)
+                .ok_or_else(|| invalid(format!("RVZ raw data {i} is larger than a disc")))?;
             let (group_index, count) = (be32(e, 16), be32(e, 20));
             let needed = (end - start).div_ceil(chunk_size);
             if u64::from(count) < needed || u64::from(group_index) + needed > num_groups as u64 {
@@ -224,23 +256,29 @@ impl RvzReader {
             if size != 0 && offset + u64::from(size) > file_len {
                 return Err(invalid(format!("RVZ group {i} lies outside the file")));
             }
+            let packed = be32(e, 8);
+            if u64::from(size).max(u64::from(packed)) > max_stored(chunk_size) {
+                return Err(invalid(format!(
+                    "RVZ group {i} is larger than its chunk allows"
+                )));
+            }
             groups.push(Group {
                 offset,
                 size,
                 compressed: size_and_flag & TOP_BIT != 0,
-                packed: be32(e, 8) != 0,
+                packed,
             });
         }
         Ok(Self {
             inner,
-            meta: Arc::new(Meta {
+            meta: Meta {
                 iso_size,
                 chunk_size,
                 zstd,
                 disc_head,
                 raw,
                 groups,
-            }),
+            },
             cache: Vec::new(),
         })
     }
@@ -257,14 +295,23 @@ impl RvzReader {
             self.cache.insert(0, hit.clone());
             return Ok(hit.1);
         }
-        let meta = self.meta.clone();
-        let group = meta.groups[index as usize];
+        let meta = &self.meta;
+        let group = *meta
+            .groups
+            .get(index as usize)
+            .ok_or_else(|| invalid(format!("RVZ group {index} does not exist")))?;
+        // `size` is at most the chunk size, which `open` bounded.
         let mut out = vec![0u8; size];
         // A stored size of zero means the whole group is zeros.
         if group.size != 0 {
-            let stored = read_vec(self.inner.as_mut(), group.offset, group.size as usize)?;
+            let stored = read_vec(&mut self.inner, group.offset, group.size as usize)?;
+            let limit = if group.packed != 0 {
+                group.packed as usize
+            } else {
+                size
+            };
             let data = match (group.compressed, meta.zstd) {
-                (true, true) => zstd_decode(&stored, size)?,
+                (true, true) => zstd_decode(&stored, limit)?,
                 (true, false) => {
                     return Err(invalid(format!(
                         "RVZ group {index} is compressed in an uncompressed image"
@@ -272,7 +319,7 @@ impl RvzReader {
                 }
                 (false, _) => stored,
             };
-            if group.packed {
+            if group.packed != 0 {
                 unpack(&data, &mut out, start)
                     .map_err(|e| invalid(format!("RVZ group {index}: {e}")))?;
             } else if data.len() == size {
@@ -297,17 +344,18 @@ impl RvzReader {
     }
 }
 
-impl DiscStream for RvzReader {
+impl<S: DiscStream> DiscStream for RvzReader<S> {
     fn read_exact_at(&mut self, buf: &mut [u8], offset: u64) -> io::Result<()> {
-        let meta = self.meta.clone();
         let end = offset
             .checked_add(buf.len() as u64)
-            .filter(|end| *end <= meta.iso_size)
+            .filter(|end| *end <= self.meta.iso_size)
             .ok_or(io::ErrorKind::UnexpectedEof)?;
         let mut pos = offset;
         while pos < end {
+            let meta = &self.meta;
             let out = &mut buf[(pos - offset) as usize..];
-            let Some(rd) = meta.raw.iter().find(|r| r.start <= pos && pos < r.end) else {
+            let found = meta.raw.iter().find(|r| r.start <= pos && pos < r.end);
+            let Some(rd) = found.copied() else {
                 // Not covered by any raw data entry: zeros up to the next entry (or the end of the read).
                 let next = meta
                     .raw
@@ -321,10 +369,11 @@ impl DiscStream for RvzReader {
                 pos = next;
                 continue;
             };
-            let rel = (pos - rd.start) / meta.chunk_size;
+            let chunk_size = meta.chunk_size;
+            let rel = (pos - rd.start) / chunk_size;
             debug_assert!(rel < u64::from(rd.num_groups));
-            let group_start = rd.start + rel * meta.chunk_size;
-            let group_size = (rd.end - group_start).min(meta.chunk_size) as usize;
+            let group_start = rd.start + rel * chunk_size;
+            let group_size = (rd.end - group_start).min(chunk_size) as usize;
             let data = self.decode_group(rd.group_index + rel as u32, group_start, group_size)?;
             let within = (pos - group_start) as usize;
             let n = (group_size - within).min((end - pos) as usize);
@@ -436,44 +485,6 @@ impl Lfg {
     }
 }
 
-/// Compare this reader with nod on the RVZ file at `path`: the decoded disc is read through both in 1 MiB
-/// blocks and every `stride`-th block is compared (1 = the whole disc). Returns the number of bytes compared.
-/// Host only: this is the check that the browser's decoder yields exactly the disc nod yields.
-#[cfg(not(target_arch = "wasm32"))]
-pub fn verify_against_nod(path: &std::path::Path, stride: u64) -> io::Result<u64> {
-    use std::io::Seek;
-    const BLOCK: u64 = 1 << 20;
-    let mut reference = nod::read::DiscReader::new(path, &nod::read::DiscOptions::default())
-        .map_err(|e| io::Error::other(e.to_string()))?;
-    let mut reader = RvzReader::open(Box::new(crate::disc::FileStream::open(path)?))?;
-    let size = reader.iso_size();
-    if reference.disc_size() != size {
-        return Err(invalid(format!(
-            "disc size differs: nod {} / built-in {size}",
-            reference.disc_size()
-        )));
-    }
-    let (mut a, mut b) = (vec![0u8; BLOCK as usize], vec![0u8; BLOCK as usize]);
-    let mut compared = 0;
-    for offset in (0..size)
-        .step_by(BLOCK as usize)
-        .step_by(stride.max(1) as usize)
-    {
-        let n = BLOCK.min(size - offset) as usize;
-        reference.seek(io::SeekFrom::Start(offset))?;
-        reference.read_exact(&mut a[..n])?;
-        reader.read_exact_at(&mut b[..n], offset)?;
-        if let Some(at) = a[..n].iter().zip(&b[..n]).position(|(x, y)| x != y) {
-            return Err(invalid(format!(
-                "built-in RVZ reader differs from nod at disc offset {:#x}",
-                offset + at as u64
-            )));
-        }
-        compared += n as u64;
-    }
-    Ok(compared)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -544,7 +555,7 @@ mod tests {
     }
 
     fn read_all(file: Vec<u8>) -> io::Result<Vec<u8>> {
-        let mut r = RvzReader::open(Box::new(Arc::<[u8]>::from(file)))?;
+        let mut r = RvzReader::open(file)?;
         let mut out = vec![0xEEu8; r.iso_size() as usize];
         r.read_exact_at(&mut out, 0)?;
         Ok(out)
@@ -590,15 +601,11 @@ mod tests {
         let raw = [(0x80, 2 * chunk as u64 - 0x80, 0, 2)];
         let groups = vec![(a.clone(), false, 0), (b.clone(), false, 0)];
         let file = build_rvz(2 * chunk as u64, chunk as u32, false, &raw, &groups);
-        let mut r = RvzReader::open(Box::new(Arc::<[u8]>::from(file))).unwrap();
+        let mut r = RvzReader::open(file).unwrap();
         let mut buf = [0u8; 64];
         r.read_exact_at(&mut buf, chunk as u64 - 32).unwrap();
         assert_eq!(&buf[..32], &a[chunk - 32..]);
         assert_eq!(&buf[32..], &b[..32]);
-        // A clone reads independently.
-        let mut r2 = r.clone();
-        r2.read_exact_at(&mut buf, chunk as u64).unwrap();
-        assert_eq!(&buf[..], &b[..64]);
         assert!(r.read_exact_at(&mut buf, 2 * chunk as u64 - 10).is_err());
         assert_eq!(r.stream_len().unwrap(), 2 * chunk as u64);
     }
@@ -716,5 +723,143 @@ mod tests {
             .to_string()
             .contains("missing groups"));
         assert!(read_all(vec![0u8; 16]).is_err());
+    }
+
+    /// Everything a reader can be made to do with one image: open it and read the whole disc.
+    /// The disc is read in blocks (a flipped size bit may claim a gigabyte of it), at most 256 KiB of it.
+    fn exercise(file: Vec<u8>) -> (io::Result<u64>, usize) {
+        crate::test_alloc::peak_during(|| {
+            let mut r = RvzReader::open(file)?;
+            let mut block = [0u8; 0x4000];
+            let size = r.iso_size();
+            let mut at = 0u64;
+            while at < size.min(256 << 10) {
+                let n = (size - at).min(block.len() as u64) as usize;
+                r.read_exact_at(&mut block[..n], at)?;
+                at += n as u64;
+            }
+            Ok(at)
+        })
+    }
+
+    /// Truncated, bit-flipped and hostile-size images: an error or data, never a panic, and never an
+    /// allocation sized by what the file claims instead of what it holds.
+    #[test]
+    fn damaged_and_hostile_images_do_not_panic_or_balloon() {
+        let chunk = 0x8000usize;
+        let enc = |d: &[u8]| {
+            ruzstd::encoding::compress_to_vec(d, ruzstd::encoding::CompressionLevel::Fastest)
+        };
+        let raw = [(0x80, 2 * chunk as u64 - 0x80, 0, 2)];
+        let plain = build_rvz(
+            2 * chunk as u64,
+            chunk as u32,
+            false,
+            &raw,
+            &[(pattern(chunk, 1), false, 0), (pattern(chunk, 2), false, 0)],
+        );
+        let packed = build_rvz(
+            2 * chunk as u64,
+            chunk as u32,
+            true,
+            &raw,
+            &[(enc(&pattern(chunk, 1)), true, 0), (Vec::new(), false, 0)],
+        );
+        // What a valid read of these needs: the disc itself plus a few decoded groups.
+        const BUDGET: usize = 1 << 20;
+        for good in [&plain, &packed] {
+            assert!(exercise(good.clone()).0.is_ok());
+            // Cut anywhere in the headers, and at a spread of points in the data and tables.
+            let cuts = (0..FILE_HEAD_LEN + DISC_LEN + 8).chain((0..good.len()).step_by(977));
+            for len in cuts {
+                let (result, peak) = exercise(good[..len].to_vec());
+                assert!(result.is_err(), "cut to {len} was accepted");
+                assert!(peak < BUDGET, "cut to {len}: allocated {peak}");
+            }
+            // Every bit of the headers and of the tables at the end of the file.
+            let tables = good.len() - 96;
+            for at in (0..FILE_HEAD_LEN + DISC_LEN).chain(tables..good.len()) {
+                for bit in 0..8 {
+                    let mut f = good.clone();
+                    f[at] ^= 1 << bit;
+                    let (_, peak) = exercise(f);
+                    assert!(peak < BUDGET, "byte {at} bit {bit}: allocated {peak}");
+                }
+            }
+        }
+
+        let d = FILE_HEAD_LEN;
+        let with = |base: &Vec<u8>, at: usize, bytes: &[u8]| {
+            let mut f = base.clone();
+            f[at..at + bytes.len()].copy_from_slice(bytes);
+            f
+        };
+        let hostile = [
+            (
+                "disc size 2^62",
+                with(&plain, 0x24, &(1u64 << 62).to_be_bytes()),
+            ),
+            ("disc size 0", with(&plain, 0x24, &0u64.to_be_bytes())),
+            (
+                "16 million groups",
+                with(&plain, d + 0xC4, &0x00FF_FFFFu32.to_be_bytes()),
+            ),
+            (
+                "65536 raw entries",
+                with(&plain, d + 0xB4, &0x0001_0000u32.to_be_bytes()),
+            ),
+            (
+                "group table of 2 GiB",
+                with(&plain, d + 0xD0, &0x7FFF_FFFFu32.to_be_bytes()),
+            ),
+            (
+                "raw table of 2 GiB",
+                with(&packed, d + 0xC0, &0x7FFF_FFFFu32.to_be_bytes()),
+            ),
+            (
+                "64 MiB chunks",
+                with(&plain, d + 0x0C, &0x0400_0000u32.to_be_bytes()),
+            ),
+        ];
+        for (what, file) in hostile {
+            let (result, peak) = exercise(file);
+            assert!(result.is_err(), "{what} was accepted");
+            assert!(peak < BUDGET, "{what}: allocated {peak}");
+        }
+
+        // A group that decompresses to far more than its chunk (16 MiB of zeros in a few kilobytes), plain
+        // and marked as packed: decoding stops at the size the tables allow.
+        let bomb = enc(&vec![0u8; 16 << 20]);
+        assert!(bomb.len() < 64 << 10);
+        for packed_size in [0u32, 0x8010] {
+            let file = build_rvz(
+                2 * chunk as u64,
+                chunk as u32,
+                true,
+                &raw,
+                &[(bomb.clone(), true, packed_size), (Vec::new(), false, 0)],
+            );
+            let (result, peak) = exercise(file);
+            assert!(
+                result.is_err(),
+                "bomb (packed size {packed_size}) was accepted"
+            );
+            assert!(peak < BUDGET, "bomb: allocated {peak}");
+        }
+        // A group claiming more stored or packed bytes than a chunk can need.
+        let file = build_rvz(
+            2 * chunk as u64,
+            chunk as u32,
+            true,
+            &raw,
+            &[
+                (enc(&pattern(chunk, 1)), true, 0x00FF_FFFF),
+                (Vec::new(), false, 0),
+            ],
+        );
+        assert!(read_all(file)
+            .unwrap_err()
+            .to_string()
+            .contains("larger than its chunk"));
     }
 }

@@ -3,10 +3,14 @@
 use std::collections::HashMap;
 
 use crate::gx::{self, attr, CullMode, DecodedList};
-use crate::reader::Reader;
+use crate::reader::{Budget, Reader};
 use crate::Error;
+use std::mem::size_of;
 
 const SHAPE_BASE_SIZE: usize = 0x60;
+
+/// Decoded bytes allowed per input byte (see [`Budget`]). The largest ratio on the retail disc is 1.3.
+const BUDGET_PER_BYTE: usize = 8;
 
 /// `Material::flags` bits.
 pub mod material_flags {
@@ -387,13 +391,23 @@ fn parse_material(r: &Reader, o: usize) -> Result<Material, Error> {
     })
 }
 
-fn dlist_bytes(r: &Reader, off: usize, size: i32) -> Result<Vec<u8>, Error> {
+fn dlist_bytes(r: &Reader, budget: &mut Budget, off: usize, size: i32) -> Result<Vec<u8>, Error> {
     let size = usize::try_from(size).map_err(|_| Error::Invalid("negative display list size"))?;
-    Ok(r.bytes(off, size)?.to_vec())
+    let bytes = r.bytes(off, size)?;
+    budget.charge(size + size_of::<Dlist>())?;
+    Ok(bytes.to_vec())
 }
 
 /// Returns the shape and its total byte size.
-fn parse_shape(r: &Reader, o: usize, translucent: bool) -> Result<(Shape, usize), Error> {
+fn parse_shape(
+    r: &Reader,
+    budget: &mut Budget,
+    o: usize,
+    translucent: bool,
+) -> Result<(Shape, usize), Error> {
+    // Also keeps the fixed offsets below from wrapping on 32-bit targets.
+    r.bytes(o, SHAPE_BASE_SIZE)?;
+    budget.charge(size_of::<Shape>())?;
     let material = parse_material(r, o)?;
     let dlist_flags = r.u8(o + 0x13)?;
     let front_size = r.i32(o + 0x28)?;
@@ -405,7 +419,7 @@ fn parse_shape(r: &Reader, o: usize, translucent: bool) -> Result<(Shape, usize)
 
     if dlist_flags & 1 != 0 {
         dlists.push(Dlist {
-            data: dlist_bytes(r, cur, front_size)?,
+            data: dlist_bytes(r, budget, cur, front_size)?,
             cull: if double_sided {
                 CullMode::None
             } else {
@@ -416,7 +430,7 @@ fn parse_shape(r: &Reader, o: usize, translucent: bool) -> Result<(Shape, usize)
     }
     if dlist_flags & 2 != 0 {
         dlists.push(Dlist {
-            data: dlist_bytes(r, cur, back_size)?,
+            data: dlist_bytes(r, budget, cur, back_size)?,
             cull: if double_sided {
                 CullMode::None
             } else {
@@ -430,12 +444,12 @@ fn parse_shape(r: &Reader, o: usize, translucent: bool) -> Result<(Shape, usize)
         let extra_back = r.i32(cur + 0x0c)?;
         cur += 0x20;
         dlists.push(Dlist {
-            data: dlist_bytes(r, cur, extra_front)?,
+            data: dlist_bytes(r, budget, cur, extra_front)?,
             cull: CullMode::Front,
         });
         cur += extra_front as usize;
         dlists.push(Dlist {
-            data: dlist_bytes(r, cur, extra_back)?,
+            data: dlist_bytes(r, budget, cur, extra_back)?,
             cull: CullMode::Back,
         });
         cur += extra_back as usize;
@@ -451,7 +465,13 @@ fn parse_shape(r: &Reader, o: usize, translucent: bool) -> Result<(Shape, usize)
     ))
 }
 
-fn parse_model(r: &Reader, o: usize, name: String, id: usize) -> Result<Model, Error> {
+fn parse_model(
+    r: &Reader,
+    budget: &mut Budget,
+    o: usize,
+    name: String,
+    id: usize,
+) -> Result<Model, Error> {
     if r.bytes(o, 4)? != b"GCMF" {
         return Err(Error::Invalid("bad GCMF tag"));
     }
@@ -465,6 +485,9 @@ fn parse_model(r: &Reader, o: usize, name: String, id: usize) -> Result<Model, E
         return Err(Error::Invalid("negative count in GCMF header"));
     }
     let (opaque, translucent) = (opaque as usize, translucent as usize);
+    budget.charge(size_of::<Model>())?;
+    budget.charge_n(tev_count as usize, size_of::<TevLayer>())?;
+    budget.charge_n(mtx_count as usize, size_of::<[f32; 12]>())?;
 
     let mut cur = o + 0x40;
     let mut tev_layers = Vec::new();
@@ -478,11 +501,13 @@ fn parse_model(r: &Reader, o: usize, name: String, id: usize) -> Result<Model, E
         cur += 0x30;
     }
 
-    let mut shape_off = o + tex_mtx_size;
+    let mut shape_off = o
+        .checked_add(tex_mtx_size)
+        .ok_or(Error::Invalid("GCMF shape offset"))?;
     let mut shapes = Vec::new();
     let mut skipped_nbt_shapes = 0;
     for i in 0..opaque + translucent {
-        let (shape, size) = parse_shape(r, shape_off, i >= opaque)?;
+        let (shape, size) = parse_shape(r, budget, shape_off, i >= opaque)?;
         shape_off += size;
         if shape.material.has_attr(attr::NBT) {
             skipped_nbt_shapes += 1;
@@ -522,6 +547,7 @@ pub fn parse_gma(bytes: &[u8]) -> Result<Gma, Error> {
         return Err(Error::Invalid("GMA header offsets"));
     }
     let mut gma = Gma::default();
+    let mut budget = Budget::new(bytes.len(), BUDGET_PER_BYTE);
     for i in 0..count {
         let gcmf_offs = r.i32(8 + i * 8)?;
         let name_offs = r.i32(8 + i * 8 + 4)?;
@@ -533,16 +559,20 @@ pub fn parse_gma(bytes: &[u8]) -> Result<Gma, Error> {
         } else {
             String::new()
         };
+        budget.charge(name.len())?;
         let model_off = usize::try_from(gcmf_offs)
             .ok()
             .and_then(|g| g.checked_add(gcmf_base))
             .ok_or(Error::Invalid("negative GCMF offset"))?;
+        // Also keeps every `model_off + field` below from wrapping on 32-bit targets.
+        r.bytes(model_off, 0x40)?;
         let flags = r.u32(model_off + 4)?;
         if flags & (model_flags::STITCHING | model_flags::SKIN | model_flags::EFFECTIVE) != 0 {
+            budget.charge(size_of::<SkippedModel>())?;
             gma.skipped.push(SkippedModel { id: i, name, flags });
             continue;
         }
-        let model = parse_model(&r, model_off, name, i)?;
+        let model = parse_model(&r, &mut budget, model_off, name, i)?;
         if model.opaque_shape_count + model.translucent_shape_count < 1 {
             continue;
         }

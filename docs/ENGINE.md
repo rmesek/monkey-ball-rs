@@ -25,6 +25,16 @@ fall-out and at goal end; `Sim` just continues/finishes), confetti/effects, audi
 tape anchor height uses the reference's fallback constant unless `SimConfig::goal_tape_anchor_y` is set; the
 fly-in bounds come from collision triangles unless `SimConfig::bound_sphere` is set (camera fly-in only).
 
+## Broken stages
+`Sim` takes whatever `mb-stage` parsed. It never panics or loops on it: grid cells that name missing
+triangles are dropped when the stage is converted (`StageGeom::from_stage`; the parser cannot produce them),
+empty stages, missing start positions, degenerate triangles, zero-keyframe or zero-length animations and
+non-finite numbers are all simulated as they are. Two rules are not in the reference and cannot trigger on a
+valid stage: a ball whose position is not a finite number has fallen out (it would otherwise never cross the
+fall-out plane), and it cannot enter a goal. A stage whose fall-out height is NaN simply has no fall-out
+plane; the stage clock ends the attempt. `tests/robust.rs` builds stages in code, encodes them as stagedefs
+and corrupts every field with NaN / infinity / extreme values.
+
 ## Tests
 `cargo test -p mb-engine --release`: unit tests (math, collision, rng, keyframes, quantization), synthetic-stage
 sim tests, and disc-backed tests that skip cleanly without a disc image / Deno / reference checkout

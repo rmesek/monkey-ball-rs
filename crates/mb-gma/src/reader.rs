@@ -59,3 +59,31 @@ impl<'a> Reader<'a> {
         String::from_utf8_lossy(&slice[..end]).into_owned()
     }
 }
+
+/// Cap on decoded output. Models are found through offsets, so a corrupt archive can make thousands of table
+/// entries share one model (or one long name); without a cap the decoded size grows with the square of the
+/// file size. Each parser charges what it is about to allocate and fails once the cap is passed.
+pub struct Budget {
+    left: usize,
+}
+
+impl Budget {
+    /// `per_byte` decoded bytes for every input byte, plus 64 KiB so tiny files are not special.
+    pub fn new(input_len: usize, per_byte: usize) -> Self {
+        Self {
+            left: input_len.saturating_mul(per_byte).saturating_add(0x1_0000),
+        }
+    }
+
+    pub fn charge(&mut self, bytes: usize) -> Result<(), Error> {
+        self.left = self.left.checked_sub(bytes).ok_or(Error::Invalid(
+            "entries overlap: the file describes more data than it can hold",
+        ))?;
+        Ok(())
+    }
+
+    /// `count` records of `size` bytes each.
+    pub fn charge_n(&mut self, count: usize, size: usize) -> Result<(), Error> {
+        self.charge(count.saturating_mul(size))
+    }
+}

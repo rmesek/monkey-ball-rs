@@ -1,37 +1,30 @@
 use mb_assets::disc::DiscPack;
-use mb_assets::layout::{stage_files, GameSource};
 use mb_assets::lzss;
 use mb_assets::pack::PackProvider;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+mod bundle;
+mod check_rvz;
 mod serve;
 
 const USAGE: &str = "usage:
-  xtask check-content [content_root] [stage_id] [bg_name]
-  xtask disc-info <disc image>                       (RVZ, ISO, GCM, CISO, ...)
-  xtask check-disc <disc image> [stage_id] [bg_name] (stage files + LZSS test, read in place)
-  xtask disc-ls <disc image> [path prefix]
+  xtask disc-info <disc image>                       (RVZ none/Zstandard, ISO, GCM)
+  xtask disc-ls <disc image> [path prefix]           (sizes and paths)
   xtask disc-cat <disc image> <disc path> <out file> [--lz]
-  xtask check-rvz <rvz image>                        (compare the built-in RVZ reader, used by the browser
-                                                      build, with nod over the whole disc)
-  xtask serve-web [port] [--disc <disc image>] [--root <dir>]
-                                                     (serve web/ on http://localhost:8080; with --disc the
-                                                      page opened with ?dev-disc=1 loads that image)";
+  xtask check-rvz <disc image>                       (compare the built-in disc and RVZ readers with the
+                                                      nod crate: every disc byte, the file list, every file)
+  xtask bundle-web [--single] [--pkg <dir>] [--out <dir>] [--wasm-gz <file>]
+                                                     (assemble web/dist from web/ and the wasm-bindgen
+                                                      output; scripts/build-web runs it)
+  xtask serve-web [port] [--root <dir>] [--lan] [--disc <disc image>]
+                                                     (developer tool: serve web/dist on
+                                                      http://localhost:8080; --lan for a phone on the same
+                                                      network; see docs/WEB.md)";
 
 fn main() {
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
-        Some("check-content") => {
-            let root = PathBuf::from(args.next().unwrap_or_else(|| "content".into()));
-            let stage: u32 = args.next().and_then(|s| s.parse().ok()).unwrap_or(1);
-            let bg = args.next().unwrap_or_else(|| "bg_jun".into());
-            let missing: Vec<_> = stage_files(GameSource::Smb1, stage, &bg, false)
-                .into_iter()
-                .filter(|f| !root.join(f).is_file())
-                .collect();
-            report_missing(stage, &missing, &root.display().to_string());
-        }
         Some("disc-info") => {
             let disc = open(args.next());
             println!("game id: {}", disc.game_id());
@@ -49,30 +42,16 @@ fn main() {
                 println!("  {d}: {n}");
             }
         }
-        Some("check-disc") => {
-            let disc = open(args.next());
-            let stage: u32 = args.next().and_then(|s| s.parse().ok()).unwrap_or(1);
-            let bg = args.next().unwrap_or_else(|| "bg_jun".into());
-            let missing: Vec<_> = stage_files(GameSource::Smb1, stage, &bg, false)
-                .into_iter()
-                .filter(|f| disc.fetch(f).is_err())
-                .collect();
-            report_missing(stage, &missing, "disc");
-            let path = format!("smb1_content/test/st{stage:03}/STAGE{stage:03}.lz");
-            match disc.fetch(&path).map(|b| (b.len(), lzss::decompress(&b))) {
-                Ok((n, Ok(out))) => {
-                    println!("{path}: {n} bytes -> {} bytes decompressed", out.len())
-                }
-                Ok((_, Err(e))) => println!("{path}: LZSS error: {e}"),
-                Err(e) => println!("{path}: {e}"),
-            }
-        }
         Some("disc-ls") => {
             let disc = open(args.next());
             let prefix = args.next().unwrap_or_default();
+            let mut total = 0u64;
             for f in disc.list().into_iter().filter(|f| f.starts_with(&prefix)) {
-                println!("{f}");
+                let len = disc.file_len(f).unwrap_or(0);
+                total += u64::from(len);
+                println!("{len:>10}  {f}");
             }
+            println!("{total:>10}  total");
         }
         Some("disc-cat") => {
             // Dump one file from the disc (optionally LZSS-decompressed) for local comparison.
@@ -93,14 +72,21 @@ fn main() {
                 eprintln!("{USAGE}");
                 std::process::exit(2)
             };
-            match mb_assets::rvz::verify_against_nod(std::path::Path::new(&path), 1) {
-                Ok(n) => {
-                    println!("{path}: {n} bytes identical through nod and the built-in reader")
-                }
+            match check_rvz::compare(std::path::Path::new(&path)) {
+                Ok(report) => println!("{path}: {report}"),
                 Err(e) => {
                     eprintln!("{path}: {e}");
                     std::process::exit(1);
                 }
+            }
+        }
+        Some("bundle-web") => {
+            let web = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("..")
+                .join("web");
+            if let Err(e) = bundle::parse_args(args, web).and_then(bundle::run) {
+                eprintln!("bundle-web: {e}");
+                std::process::exit(2);
             }
         }
         Some("serve-web") => {
@@ -127,16 +113,4 @@ fn open(path: Option<String>) -> DiscPack {
         eprintln!("cannot open {path}: {e}");
         std::process::exit(2)
     })
-}
-
-fn report_missing(stage: u32, missing: &[String], where_: &str) {
-    if missing.is_empty() {
-        println!("stage {stage:03}: all files present in {where_}");
-    } else {
-        println!("stage {stage:03}: {} missing file(s):", missing.len());
-        for f in missing {
-            println!("  {f}");
-        }
-        std::process::exit(1);
-    }
 }

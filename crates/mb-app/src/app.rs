@@ -458,23 +458,28 @@ impl ApplicationHandler for App {
                 });
             }
             WindowEvent::Focused(false) => {
-                // Keys released while another window has focus never send their "up".
+                // Keys released while another window has focus never send their "up"; neither do fingers.
                 self.input.release_all();
+                self.touch.cancel_all(&mut self.input);
             }
             WindowEvent::Touch(t) => {
-                if let Some(layout) = self.layout() {
-                    let phase = match t.phase {
-                        winit::event::TouchPhase::Started => TouchPhase::Started,
-                        winit::event::TouchPhase::Moved => TouchPhase::Moved,
-                        _ => TouchPhase::Ended,
-                    };
-                    self.touch.touch(
+                let phase = match t.phase {
+                    winit::event::TouchPhase::Started => Some(TouchPhase::Started),
+                    winit::event::TouchPhase::Moved => Some(TouchPhase::Moved),
+                    winit::event::TouchPhase::Ended => Some(TouchPhase::Ended),
+                    winit::event::TouchPhase::Cancelled => None,
+                };
+                match (phase, self.layout()) {
+                    (Some(phase), Some(layout)) => self.touch.touch(
                         t.id,
                         phase,
                         (t.location.x as f32, t.location.y as f32),
                         &layout,
                         &mut self.input,
-                    );
+                    ),
+                    // The system took the touch away: let go without activating anything.
+                    (None, _) => self.touch.cancel(t.id, &mut self.input),
+                    _ => {}
                 }
             }
             WindowEvent::RedrawRequested => self.frame(event_loop),

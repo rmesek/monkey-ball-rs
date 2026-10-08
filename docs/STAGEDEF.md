@@ -29,6 +29,16 @@ stages: sums match).
 The triangle count is not stored: it is the highest index referenced by any grid cell plus one. Grid cells are
 `ptr` to an `i16` list terminated by a negative value; NULL = empty. Cell (x, z) = `cells[z * count_x + x]`.
 
+## Corrupt input
+The disc reader does not verify hashes, so any bytes can arrive here. Every read is bounds-checked and returns
+`StageError`; nothing panics. Because lists are found through pointers, a corrupt file can make thousands of
+records share one long list (decoded size growing with the square of the file size), so the parser keeps a
+budget of 24 decoded bytes per input byte plus 64 KiB (the retail maximum is 3.4) and fails with
+`StageError::Invalid` once it is spent. `tests/robust.rs` runs truncation at every length, every single-byte
+change, hostile words at every offset and 20,000 seeded random corruptions under a counting allocator, and
+repeats the campaign on real stagedefs when a disc is present; `tests/golden.rs` pins the parse of all 200
+retail stagedefs to a hash recorded before the hardening.
+
 ## Not implemented
 SMB2 stagedefs (detected via magic `0, 0x447a0000|0x42c80000`) return `StageError::Unsupported`. Fog,
 texture-scroll and wormhole/switch data are SMB2-only in the reference and are not parsed.

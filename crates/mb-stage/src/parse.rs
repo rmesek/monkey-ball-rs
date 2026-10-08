@@ -1,7 +1,9 @@
 //! Big-endian stagedef reader. Mirrors `StageParser` in WebMonkeyBall `src/stage.ts`.
 
 use crate::types::*;
+use std::cell::Cell;
 use std::fmt;
+use std::mem::size_of;
 
 pub const START_POS_SIZE: usize = 0x14;
 pub const ANIM_GROUP_SIZE: usize = 0xc4;
@@ -58,11 +60,43 @@ impl std::error::Error for StageError {}
 
 type Res<T> = Result<T, StageError>;
 
+/// Decoded bytes a stagedef may produce per input byte, plus [`BUDGET_SLACK`]. Lists in a stagedef are found
+/// through pointers, so a corrupt file can make thousands of records share one long list; without a cap the
+/// decoded size grows with the square of the file size. The largest ratio on the retail disc is 3.4.
+const BUDGET_PER_BYTE: usize = 24;
+const BUDGET_SLACK: usize = 0x1_0000;
+
 struct Reader<'a> {
     d: &'a [u8],
+    /// Decoded bytes still allowed (see [`BUDGET_PER_BYTE`]).
+    budget: Cell<usize>,
 }
 
 impl<'a> Reader<'a> {
+    fn new(d: &'a [u8]) -> Self {
+        Reader {
+            d,
+            budget: Cell::new(
+                d.len()
+                    .saturating_mul(BUDGET_PER_BYTE)
+                    .saturating_add(BUDGET_SLACK),
+            ),
+        }
+    }
+
+    /// Account for `bytes` of decoded output before producing it.
+    fn charge(&self, bytes: usize) -> Res<()> {
+        match self.budget.get().checked_sub(bytes) {
+            Some(left) => {
+                self.budget.set(left);
+                Ok(())
+            }
+            None => Err(StageError::Invalid(
+                "lists overlap: the file describes more data than it can hold".into(),
+            )),
+        }
+    }
+
     fn bytes(&self, off: usize, len: usize) -> Res<&'a [u8]> {
         off.checked_add(len)
             .and_then(|end| self.d.get(off..end))
@@ -139,15 +173,18 @@ impl<'a> Reader<'a> {
             .get(o..)
             .ok_or(StageError::OutOfBounds { offset: o, len: 1 })?;
         let end = tail.iter().position(|&b| b == 0).unwrap_or(tail.len());
+        self.charge(end)?;
         Ok(String::from_utf8_lossy(&tail[..end]).into_owned())
     }
 
-    /// Validate that `count` records of `size` bytes at `off` fit, returning the usable count.
-    fn list(&self, off: Option<usize>, count: i32, size: usize) -> Res<(usize, usize)> {
+    /// Validate that `count` records of `size` bytes at `off` fit, returning the usable count. `T` is the
+    /// decoded record, charged to the budget.
+    fn list<T>(&self, off: Option<usize>, count: i32, size: usize) -> Res<(usize, usize)> {
         match off {
             Some(o) if count > 0 => {
                 let n = count as usize;
                 self.bytes(o, n.saturating_mul(size))?;
+                self.charge(n.saturating_mul(size_of::<T>()))?;
                 Ok((o, n))
             }
             _ => Ok((0, 0)),
@@ -165,6 +202,7 @@ impl<'a> Reader<'a> {
         let mut names = Vec::new();
         let Some(mut cur) = off else { return Ok(names) };
         while let Some(p) = self.ptr_lenient(cur)? {
+            self.charge(size_of::<String>())?;
             names.push(self.string(p)?);
             cur += 4;
         }
@@ -172,7 +210,7 @@ impl<'a> Reader<'a> {
     }
 
     fn mirror_names(&self, off: Option<usize>, count: i32) -> Res<Vec<String>> {
-        let (base, n) = self.list(off, count, MIRROR_ENTRY_SIZE)?;
+        let (base, n) = self.list::<String>(off, count, MIRROR_ENTRY_SIZE)?;
         let mut names = Vec::new();
         for i in 0..n {
             if let Some(p) = self.ptr(base + i * MIRROR_ENTRY_SIZE)? {
@@ -183,7 +221,8 @@ impl<'a> Reader<'a> {
     }
 
     fn keyframes(&self, off: Option<usize>, count: u32) -> Res<Vec<Keyframe>> {
-        let (base, n) = self.list(off, count.min(i32::MAX as u32) as i32, KEYFRAME_SIZE)?;
+        let (base, n) =
+            self.list::<Keyframe>(off, count.min(i32::MAX as u32) as i32, KEYFRAME_SIZE)?;
         (0..n)
             .map(|i| {
                 let b = base + i * KEYFRAME_SIZE;
@@ -239,7 +278,8 @@ impl<'a> Reader<'a> {
         let Some(o) = off else { return Ok(None) };
         self.bytes(o, FLIPBOOK_SIZE)?;
         let nw_count = self.i32(o)?;
-        let (nw, n) = self.list(self.ptr(o + 4)?, nw_count, NIGHT_WINDOW_SIZE)?;
+        let (nw, n) =
+            self.list::<NightWindowAnim>(self.ptr(o + 4)?, nw_count, NIGHT_WINDOW_SIZE)?;
         let night_window_anims = (0..n)
             .map(|i| {
                 let b = nw + i * NIGHT_WINDOW_SIZE;
@@ -251,7 +291,7 @@ impl<'a> Reader<'a> {
             })
             .collect::<Res<Vec<_>>>()?;
         let sf_count = self.i32(o + 8)?;
-        let (sf, n) = self.list(self.ptr(o + 0xc)?, sf_count, STORM_FIRE_SIZE)?;
+        let (sf, n) = self.list::<StormFireAnim>(self.ptr(o + 0xc)?, sf_count, STORM_FIRE_SIZE)?;
         let storm_fire_anims = (0..n)
             .map(|i| {
                 let b = sf + i * STORM_FIRE_SIZE;
@@ -268,7 +308,7 @@ impl<'a> Reader<'a> {
     }
 
     fn bg_objects(&self, off: Option<usize>, count: i32) -> Res<Vec<BgObject>> {
-        let (base, n) = self.list(off, count, BG_OBJECT_SIZE)?;
+        let (base, n) = self.list::<BgObject>(off, count, BG_OBJECT_SIZE)?;
         (0..n)
             .map(|i| {
                 let b = base + i * BG_OBJECT_SIZE;
@@ -287,7 +327,7 @@ impl<'a> Reader<'a> {
     }
 
     fn goals(&self, off: Option<usize>, count: i32) -> Res<Vec<Goal>> {
-        let (base, n) = self.list(off, count, GOAL_SIZE)?;
+        let (base, n) = self.list::<Goal>(off, count, GOAL_SIZE)?;
         (0..n)
             .map(|i| {
                 let b = base + i * GOAL_SIZE;
@@ -303,7 +343,7 @@ impl<'a> Reader<'a> {
     }
 
     fn bumpers(&self, off: Option<usize>, count: i32) -> Res<Vec<Bumper>> {
-        let (base, n) = self.list(off, count, BUMPER_SIZE)?;
+        let (base, n) = self.list::<Bumper>(off, count, BUMPER_SIZE)?;
         (0..n)
             .map(|i| {
                 let b = base + i * BUMPER_SIZE;
@@ -317,7 +357,7 @@ impl<'a> Reader<'a> {
     }
 
     fn jamabars(&self, off: Option<usize>, count: i32) -> Res<Vec<Jamabar>> {
-        let (base, n) = self.list(off, count, JAMABAR_SIZE)?;
+        let (base, n) = self.list::<Jamabar>(off, count, JAMABAR_SIZE)?;
         (0..n)
             .map(|i| {
                 let b = base + i * JAMABAR_SIZE;
@@ -331,7 +371,7 @@ impl<'a> Reader<'a> {
     }
 
     fn bananas(&self, off: Option<usize>, count: i32) -> Res<Vec<Banana>> {
-        let (base, n) = self.list(off, count, BANANA_SIZE)?;
+        let (base, n) = self.list::<Banana>(off, count, BANANA_SIZE)?;
         (0..n)
             .map(|i| {
                 let b = base + i * BANANA_SIZE;
@@ -344,7 +384,7 @@ impl<'a> Reader<'a> {
     }
 
     fn cones(&self, off: Option<usize>, count: i32) -> Res<Vec<ColiCone>> {
-        let (base, n) = self.list(off, count, CONE_SIZE)?;
+        let (base, n) = self.list::<ColiCone>(off, count, CONE_SIZE)?;
         (0..n)
             .map(|i| {
                 let b = base + i * CONE_SIZE;
@@ -359,7 +399,7 @@ impl<'a> Reader<'a> {
     }
 
     fn spheres(&self, off: Option<usize>, count: i32) -> Res<Vec<ColiSphere>> {
-        let (base, n) = self.list(off, count, SPHERE_SIZE)?;
+        let (base, n) = self.list::<ColiSphere>(off, count, SPHERE_SIZE)?;
         (0..n)
             .map(|i| {
                 let b = base + i * SPHERE_SIZE;
@@ -373,7 +413,7 @@ impl<'a> Reader<'a> {
     }
 
     fn cylinders(&self, off: Option<usize>, count: i32) -> Res<Vec<ColiCylinder>> {
-        let (base, n) = self.list(off, count, CYLINDER_SIZE)?;
+        let (base, n) = self.list::<ColiCylinder>(off, count, CYLINDER_SIZE)?;
         (0..n)
             .map(|i| {
                 let b = base + i * CYLINDER_SIZE;
@@ -389,7 +429,7 @@ impl<'a> Reader<'a> {
     }
 
     fn models(&self, off: Option<usize>, count: i32) -> Res<Vec<AnimGroupModel>> {
-        let (base, n) = self.list(off, count, ANIM_GROUP_MODEL_SIZE)?;
+        let (base, n) = self.list::<AnimGroupModel>(off, count, ANIM_GROUP_MODEL_SIZE)?;
         (0..n)
             .map(|i| {
                 let b = base + i * ANIM_GROUP_MODEL_SIZE;
@@ -403,7 +443,7 @@ impl<'a> Reader<'a> {
     }
 
     fn fallout_boxes(&self, off: Option<usize>, count: i32) -> Res<Vec<FalloutBox>> {
-        let (base, n) = self.list(off, count, FALLOUT_BOX_SIZE)?;
+        let (base, n) = self.list::<FalloutBox>(off, count, FALLOUT_BOX_SIZE)?;
         (0..n)
             .map(|i| {
                 let b = base + i * FALLOUT_BOX_SIZE;
@@ -417,7 +457,8 @@ impl<'a> Reader<'a> {
     }
 
     fn triangles(&self, off: Option<usize>, count: usize) -> Res<Vec<ColiTri>> {
-        let (base, n) = self.list(off, count.min(i32::MAX as usize) as i32, TRIANGLE_SIZE)?;
+        let (base, n) =
+            self.list::<ColiTri>(off, count.min(i32::MAX as usize) as i32, TRIANGLE_SIZE)?;
         (0..n)
             .map(|i| {
                 let b = base + i * TRIANGLE_SIZE;
@@ -457,6 +498,7 @@ impl<'a> Reader<'a> {
             .checked_mul(grid.cell_count_z as usize)
             .ok_or_else(|| StageError::Invalid("grid cell count overflow".into()))?;
         self.bytes(table, n.saturating_mul(4))?;
+        self.charge(n.saturating_mul(size_of::<Vec<u16>>()))?;
         let mut cells = Vec::with_capacity(n);
         for i in 0..n {
             let mut list = Vec::new();
@@ -467,6 +509,7 @@ impl<'a> Reader<'a> {
                     if idx < 0 {
                         break;
                     }
+                    self.charge(size_of::<u16>())?;
                     max_index = max_index.max(idx as i64);
                     list.push(idx as u16);
                 }
@@ -519,6 +562,7 @@ impl<'a> Reader<'a> {
                 count = ((f - o) / START_POS_SIZE).max(1);
             }
         }
+        self.charge(count.saturating_mul(size_of::<StartPos>()))?;
         (0..count)
             .map(|i| {
                 let b = o + i * START_POS_SIZE;
@@ -557,7 +601,7 @@ pub fn parse_stagedef_smb1(bytes: &[u8]) -> Result<Stage, StageError> {
             len: HEADER_MIN,
         });
     }
-    let r = Reader { d: bytes };
+    let r = Reader::new(bytes);
 
     let group_count = r.i32(0x08)?;
     let groups_ptr = r.ptr(0x0c)?;
@@ -567,6 +611,7 @@ pub fn parse_stagedef_smb1(bytes: &[u8]) -> Result<Stage, StageError> {
     let mut anim_groups = Vec::new();
     if let Some(base) = groups_ptr {
         for i in 0..group_count.max(0) as usize {
+            r.charge(size_of::<AnimGroup>())?;
             anim_groups.push(r.anim_group(base + i * ANIM_GROUP_SIZE)?);
         }
     }

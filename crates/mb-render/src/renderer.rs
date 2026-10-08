@@ -543,22 +543,29 @@ impl Renderer {
     pub fn upload_tpl(&mut self, tpl: &mb_tpl::Tpl) -> TextureSet {
         let mut set: TextureSet = Vec::new();
         for tex in tpl.textures() {
-            let started = Instant::now();
-            let Ok(levels) = tex.decode_all() else {
+            let Some(id) = self.upload_tpl_texture(tex) else {
                 continue;
             };
-            self.load_stats.texture_decode_ms += ms_since(started);
-            let refs: Vec<(u32, u32, &[u8])> = levels
-                .iter()
-                .map(|l| (l.width as u32, l.height as u32, l.rgba.as_slice()))
-                .collect();
-            let id = self.upload_rgba_mips(&refs);
             if set.len() <= tex.index {
                 set.resize(tex.index + 1, None);
             }
             set[tex.index] = Some(id);
         }
         set
+    }
+
+    /// Decode and upload one TPL texture with its mip chain; `None` when it cannot be decoded. Callers
+    /// that know which textures their models use upload just those (a stage shows a fraction of the
+    /// textures in the background and shared containers).
+    pub fn upload_tpl_texture(&mut self, tex: &mb_tpl::Texture) -> Option<TextureId> {
+        let started = Instant::now();
+        let levels = tex.decode_all().ok()?;
+        self.load_stats.texture_decode_ms += ms_since(started);
+        let refs: Vec<(u32, u32, &[u8])> = levels
+            .iter()
+            .map(|l| (l.width as u32, l.height as u32, l.rgba.as_slice()))
+            .collect();
+        Some(self.upload_rgba_mips(&refs))
     }
 
     pub fn texture(&self, id: TextureId) -> &GpuTexture {

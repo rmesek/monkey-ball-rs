@@ -1189,6 +1189,34 @@ mod tests {
         assert!(info.time_bonus && info.floor_score == info.clear_score * 2);
     }
 
+    /// The banner's score lines are a third statement of the goal-score rule (after the engine's and the
+    /// course flow's); what it shows must be what the player is given.
+    #[test]
+    fn goal_banner_prices_the_floor_like_the_course_flow() {
+        let rules = mb_game::Rules::default();
+        for goal in [GoalType::Blue, GoalType::Green, GoalType::Red] {
+            for limit in [0, 1, 60, 1800, 3600, 7200] {
+                for elapsed in [
+                    0, 1, 59, 60, 899, 900, 901, 1799, 1800, 1801, 3599, 3600, 9000,
+                ] {
+                    let mut hud = Hud::new(false, 0);
+                    let mut f = frame();
+                    f.time_limit = limit;
+                    f.stage_timer = elapsed;
+                    f.goal_timer = 360;
+                    f.goal = Some(goal);
+                    hud.tick(&f);
+                    let left = (limit - elapsed).max(0) as u32;
+                    assert_eq!(
+                        hud.goal_score.unwrap().floor_score,
+                        rules.goal_score(goal, left, limit as u32),
+                        "{goal:?}, {left} of {limit} frames left"
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn score_counts_up_to_the_target() {
         let mut hud = Hud::new(false, 0);

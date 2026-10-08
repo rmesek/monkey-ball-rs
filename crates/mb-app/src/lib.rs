@@ -1,6 +1,9 @@
 //! Application shell: windowing, input, game flow, platform glue.
 //!
-//! * [`content`]: where game files come from (disc image / directory).
+//! * [`content`]: where game files come from (a disc image read in place, or imported game data that is
+//!   prepared before it is read) and the lists of files the game needs.
+//! * [`loading`]: the stage loading state (fetch, parse, build, with a progress screen).
+//! * [`host`] / [`tilt`]: the seam to platform features (fullscreen, removing imported data, device tilt).
 //! * [`game`]: `Game` state trait and the state stack.
 //! * [`input`]: logical actions, axes, the steering vector and the pointer; shells only feed it.
 //! * [`menu`]: title menu, course / stage select, options and the course flow (root state).
@@ -27,9 +30,12 @@ pub mod gpu;
 // Offscreen capture reads pixels back by blocking on the GPU, which the browser cannot do.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod headless;
+pub mod host;
 pub mod hud;
 pub mod image;
+pub mod import;
 pub mod input;
+pub mod loading;
 pub mod menu;
 pub mod perf;
 pub mod play;
@@ -38,6 +44,7 @@ pub mod shell;
 pub mod stage_info;
 pub mod stage_scene;
 pub mod text;
+pub mod tilt;
 pub mod ui;
 pub mod viewer;
 pub mod widgets;

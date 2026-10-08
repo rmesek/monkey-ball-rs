@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex};
 use mb_render::Renderer;
 use web_time::Instant;
 use winit::application::ApplicationHandler;
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowAttributes, WindowId};
@@ -43,8 +43,12 @@ pub trait Platform: 'static {
     fn insets(&mut self, _window: &Window) -> Insets {
         Insets::default()
     }
-    /// Per-frame polling of non-event input: gamepads, accelerometer.
+    /// Per-frame polling of non-event input: gamepads, device tilt, a system "back" gesture. This is also
+    /// where a shell handles what game states asked of it (`crate::host::drain`).
     fn poll_input(&mut self, _input: &mut InputState) {}
+    /// Called every frame with the top state's [`Game::nav_depth`]: while it is not zero a system "back"
+    /// should go back inside the game instead of leaving it.
+    fn on_nav_depth(&mut self, _depth: u32) {}
     /// Drive a future to completion. Native blocks; the web shell spawns it on the JS event loop.
     fn run_local(&mut self, fut: Pin<Box<dyn Future<Output = ()>>>) {
         pollster::block_on(fut);
@@ -58,6 +62,17 @@ pub trait Platform: 'static {
     /// `render_scale` is the value [`Platform::render_scale`] last returned.
     fn ui_scale(&mut self, window: &Window, render_scale: f32) -> f32 {
         window.scale_factor() as f32 * render_scale
+    }
+    /// Map a pointer position from winit (window physical pixels) to surface pixels. `render_scale` is the
+    /// value [`Platform::render_scale`] last returned, which is all it takes where winit's physical pixels
+    /// are the window's real pixels.
+    fn pointer_position(
+        &mut self,
+        _window: &Window,
+        pos: (f32, f32),
+        render_scale: f32,
+    ) -> (f32, f32) {
+        (pos.0 * render_scale, pos.1 * render_scale)
     }
     /// Browser only: the backends to choose from. WebGPU is used when the browser really provides an adapter,
     /// WebGL2 otherwise; a shell can narrow this (e.g. to force WebGL2 on a machine with a bad WebGPU driver).
@@ -97,6 +112,8 @@ struct Live {
 
 /// Id used when the left mouse button drives the touch controls (real touch ids are small numbers).
 const MOUSE_TOUCH_ID: u64 = u64::MAX;
+/// Pixels a list scrolls per wheel notch (wheels that report lines).
+const WHEEL_LINE: f32 = 60.0;
 
 struct Shell<P: Platform> {
     platform: P,
@@ -242,7 +259,7 @@ impl<P: Platform> Shell<P> {
             insets,
             self.platform.ui_scale(&st.window, self.scale),
         );
-        let pos = (pos.0 * self.scale, pos.1 * self.scale);
+        let pos = self.platform.pointer_position(&st.window, pos, self.scale);
         self.touch.touch(id, phase, pos, &layout, &mut self.input);
     }
 
@@ -277,10 +294,10 @@ impl<P: Platform> Shell<P> {
             self.input.set_action(action, false);
         }
         self.input.set_mouse_look(false);
-        if std::mem::take(&mut self.mouse_touch) {
-            let pos = self.cursor.unwrap_or_default();
-            self.pointer(MOUSE_TOUCH_ID, TouchPhase::Ended, pos);
-        }
+        // Fingers and the mouse-as-touch: their ends will not arrive either. Cancelled, not ended, so
+        // nothing under them is activated.
+        self.mouse_touch = false;
+        self.touch.cancel_all(&mut self.input);
     }
 
     /// Finish setup once the (possibly asynchronous) GPU init has landed.
@@ -412,6 +429,7 @@ impl<P: Platform> Shell<P> {
         let Some(top) = self.stack.top() else {
             return;
         };
+        self.platform.on_nav_depth(top.nav_depth());
         let camera = top.camera();
         let animating = top.play_view().is_some_and(|v| !v.paused);
         let ticks = match (tick_before, top.play_view().map(|v| v.sim.tick)) {
@@ -495,6 +513,7 @@ impl<P: Platform> ApplicationHandler for Shell<P> {
     }
 
     fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
+        self.release_held();
         if let Some(st) = self.live.as_mut() {
             st.surface = None;
         }
@@ -573,6 +592,13 @@ impl<P: Platform> ApplicationHandler for Shell<P> {
                 }
                 self.cursor = Some(pos);
             }
+            // The wheel scrolls lists (physical pixels, like the pointer).
+            WindowEvent::MouseWheel { delta, .. } => {
+                self.input.add_scroll(match delta {
+                    MouseScrollDelta::LineDelta(_, y) => y * WHEEL_LINE * self.scale,
+                    MouseScrollDelta::PixelDelta(p) => p.y as f32 * self.scale,
+                });
+            }
             WindowEvent::CursorLeft { .. } => {
                 if std::mem::take(&mut self.mouse_touch) {
                     let pos = self.cursor.unwrap_or_default();
@@ -582,11 +608,18 @@ impl<P: Platform> ApplicationHandler for Shell<P> {
             }
             WindowEvent::Touch(t) => {
                 let phase = match t.phase {
-                    winit::event::TouchPhase::Started => TouchPhase::Started,
-                    winit::event::TouchPhase::Moved => TouchPhase::Moved,
-                    _ => TouchPhase::Ended,
+                    winit::event::TouchPhase::Started => Some(TouchPhase::Started),
+                    winit::event::TouchPhase::Moved => Some(TouchPhase::Moved),
+                    winit::event::TouchPhase::Ended => Some(TouchPhase::Ended),
+                    // The system took the touch (a gesture, a palm): let go, activate nothing.
+                    winit::event::TouchPhase::Cancelled => None,
                 };
-                self.pointer(t.id, phase, (t.location.x as f32, t.location.y as f32));
+                match phase {
+                    Some(phase) => {
+                        self.pointer(t.id, phase, (t.location.x as f32, t.location.y as f32))
+                    }
+                    None => self.touch.cancel(t.id, &mut self.input),
+                }
             }
             WindowEvent::RedrawRequested => {
                 self.frame(event_loop);

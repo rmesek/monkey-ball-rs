@@ -22,9 +22,9 @@ use mb_render::{Layer, ModelId, ObjectId, Renderer};
 use web_time::Instant;
 
 use crate::anim::{interpolate, loop_wrap};
-use crate::content::Content;
-use crate::stage_info::BgInfo;
-use crate::stage_scene::{ItemKind, LoadTimings, StageAssets, StageScene, S16_TO_RADIANS};
+use crate::stage_scene::{
+    ItemKind, LazyTextures, LoadTimings, StageAssets, StageScene, S16_TO_RADIANS,
+};
 
 /// `STAGE_TILT_SCALE`: how much of the simulated tilt is shown.
 const STAGE_TILT_SCALE: f32 = 0.6;
@@ -201,6 +201,7 @@ struct Clock {
 }
 
 pub struct PlayScene {
+    stage_id: u32,
     pub assets: PlayAssets,
     pub scene: StageScene,
     /// Poses of the last two simulation ticks (`[previous, current]`).
@@ -273,24 +274,20 @@ fn tape_model(template: &mb_gma::NlModel, segments: usize) -> Option<mb_gma::NlM
 }
 
 impl PlayScene {
-    /// Parse and upload everything `stage_id` needs. `bg` overrides the stage's usual backdrop.
-    pub fn load(
-        r: &mut Renderer,
-        content: &Content,
-        stage_id: u32,
-        bg: Option<BgInfo>,
-    ) -> Result<Self, String> {
-        let mut timings = LoadTimings::default();
-        let started = Instant::now();
-        let assets = StageAssets::load_timed(content, stage_id, bg, &mut timings)
-            .map_err(|e| format!("stage {stage_id}: {e}"))?;
+    /// Upload everything the parsed `assets` need and create the objects. `timings` carries what reading
+    /// and parsing cost; the GPU side is added and the whole is published for `mbPerf.lastLoad()`.
+    pub fn build(r: &mut Renderer, assets: StageAssets, mut timings: LoadTimings) -> Self {
         let loaded = Instant::now();
         r.load_stats = Default::default();
-        let scene = StageScene::build(r, &assets);
+        let mut scene = StageScene::build(r, &assets);
 
-        let common = |r: &mut Renderer, name: &str| -> Option<ModelId> {
-            let model = assets.common_gma.model(name)?;
-            r.upload_model(model, &scene.common_set).ok()
+        let mut common = |r: &mut Renderer, name: &str| -> Option<ModelId> {
+            let model = assets.common.gma.model(name)?;
+            let textures = scene
+                .common_set
+                .for_model(r, &assets.common.tpl, model)
+                .to_vec();
+            r.upload_model(model, &textures).ok()
         };
         let mut ball = Vec::new();
         for (name, depth) in BALL_MODELS {
@@ -331,18 +328,18 @@ impl PlayScene {
 
         // Goal tape and clock digits live in the common NaomiLib archive. Missing files only cost the
         // decoration, never the stage.
-        let nl = Self::load_common_nl(content);
         let mut tapes = Vec::new();
         let mut clocks = Vec::new();
         let mut goal_tape_anchor_y = None;
-        if let Some((obj, tpl)) = &nl {
-            let set = r.upload_tpl(tpl);
+        if let Some((obj, tpl)) = &assets.common.nl {
+            let mut set = LazyTextures::default();
             if let Some(template) = obj.model(NL_GOAL_TAPE) {
                 goal_tape_anchor_y = Some(template.bound_sphere_center[1] as f64);
                 let segments = 7;
                 if let Some(model) = tape_model(template, segments) {
+                    let textures = set.for_nl_model(r, tpl, &model).to_vec();
                     for _ in 0..goal_count {
-                        let id = r.upload_nl_model(&model, &set);
+                        let id = r.upload_nl_model(&model, &textures);
                         let vertices = model.meshes[0].vertices.clone();
                         tapes.push(Tape {
                             model: id,
@@ -353,8 +350,13 @@ impl PlayScene {
                     }
                 }
             }
-            let digit_models = |r: &mut Renderer, first: usize| -> [Option<ModelId>; 10] {
-                std::array::from_fn(|d| obj.model(first + d).map(|m| r.upload_nl_model(m, &set)))
+            let mut digit_models = |r: &mut Renderer, first: usize| -> [Option<ModelId>; 10] {
+                std::array::from_fn(|d| {
+                    obj.model(first + d).map(|m| {
+                        let textures = set.for_nl_model(r, tpl, m).to_vec();
+                        r.upload_nl_model(m, &textures)
+                    })
+                })
             };
             let small = digit_models(r, NL_LCD_SMALL_0);
             let large = digit_models(r, NL_LCD_LARGE_0);
@@ -415,15 +417,17 @@ impl PlayScene {
         timings.textures = stats.textures;
         timings.mesh_ms = stats.mesh_ms;
         timings.gpu_total_ms = (Instant::now() - loaded).as_secs_f64() * 1000.0;
-        timings.total_ms = (Instant::now() - started).as_secs_f64() * 1000.0;
-        timings.stage_id = stage_id;
+        timings.total_ms =
+            timings.disc_read_ms + timings.lzss_ms + timings.parse_ms + timings.gpu_total_ms;
         crate::perf::set_last_load(timings);
 
         // The parsed archives are on the GPU now; only the stagedef is needed from here on.
+        let stage_id = assets.id;
         let assets = PlayAssets {
             stagedef: assets.stagedef,
         };
-        Ok(Self {
+        Self {
+            stage_id,
             assets,
             scene,
             poses: [Pose::default(), Pose::default()],
@@ -436,22 +440,18 @@ impl PlayScene {
             clocks,
             goal_tape_anchor_y,
             bound_sphere,
-        })
+        }
+    }
+
+    /// The stage this scene shows.
+    pub fn stage_id(&self) -> u32 {
+        self.stage_id
     }
 
     /// Forget the recorded ticks: the next [`PlayScene::sync`] starts a new motion (stage start, retry), so
     /// nothing is blended across the jump.
     pub fn reset_pose(&mut self) {
         self.blend = false;
-    }
-
-    fn load_common_nl(content: &Content) -> Option<(mb_gma::NlObj, mb_tpl::Tpl)> {
-        let obj = content.read_lz("smb1_content/test/init/common_p.lz").ok()?;
-        let tpl = content.read_lz("smb1_content/test/init/common.lz").ok()?;
-        Some((
-            mb_gma::parse_naomi_obj(&obj).ok()?,
-            mb_tpl::parse(&tpl).ok()?,
-        ))
     }
 
     /// Free the scene's models, objects and textures.

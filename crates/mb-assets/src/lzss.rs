@@ -10,6 +10,8 @@ use std::fmt;
 pub enum LzssError {
     TooShort,
     BadHeader,
+    /// The header promises more output than the input could ever expand to, or than any game file needs.
+    TooLarge,
 }
 
 impl fmt::Display for LzssError {
@@ -17,13 +19,25 @@ impl fmt::Display for LzssError {
         match self {
             LzssError::TooShort => write!(f, "lzss: input shorter than 8-byte header"),
             LzssError::BadHeader => write!(f, "lzss: compressed size exceeds input"),
+            LzssError::TooLarge => write!(f, "lzss: declared size is impossible for this input"),
         }
     }
 }
 
 impl std::error::Error for LzssError {}
 
-/// Decompress `.lz` data. A header with a zero size yields an empty buffer, like the reference.
+/// Largest output accepted (the game's biggest `.lz` file expands to a few megabytes).
+pub const MAX_OUTPUT: usize = 64 << 20;
+
+/// Most bytes `payload_len` bytes of LZSS data can expand to: a flag byte and eight two-byte references of
+/// eighteen bytes each.
+fn max_expansion(payload_len: usize) -> usize {
+    payload_len.div_ceil(17) * 8 * 18
+}
+
+/// Decompress `.lz` data. A header with a zero size yields an empty buffer, like the reference. The output
+/// buffer is sized by the header, so a header that asks for more than the payload can produce is refused
+/// instead of allocated.
 pub fn decompress(input: &[u8]) -> Result<Vec<u8>, LzssError> {
     if input.len() < 8 {
         return Err(LzssError::TooShort);
@@ -37,6 +51,9 @@ pub fn decompress(input: &[u8]) -> Result<Vec<u8>, LzssError> {
         return Err(LzssError::BadHeader);
     }
     let src = &input[8..src_size];
+    if dest_size > MAX_OUTPUT || dest_size > max_expansion(src.len()) {
+        return Err(LzssError::TooLarge);
+    }
     let mut dest = vec![0u8; dest_size];
     let mut ring = [0u8; 4096];
     let mut buf_pos = 4078usize;
@@ -130,5 +147,42 @@ mod tests {
             decompress(&[99, 0, 0, 0, 4, 0, 0, 0]),
             Err(LzssError::BadHeader)
         );
+    }
+
+    #[test]
+    fn hostile_sizes_are_refused_without_allocating() {
+        // 4 GiB promised from four bytes of payload.
+        let bomb = wrap(&[0xFF, 1, 2, 3], u32::MAX);
+        let (result, peak) = crate::test_alloc::peak_during(|| decompress(&bomb));
+        assert_eq!(result, Err(LzssError::TooLarge));
+        assert!(peak < 1 << 16, "allocated {peak} bytes");
+        // Just over what the payload can expand to.
+        let payload = [0u8; 17];
+        assert!(decompress(&wrap(&payload, 8 * 18)).is_ok());
+        assert_eq!(
+            decompress(&wrap(&payload, 8 * 18 + 1)),
+            Err(LzssError::TooLarge)
+        );
+        // Every truncation and every bit flip of a valid stream: a result, never a panic.
+        let good = wrap(
+            &[
+                0x07, b'a', b'b', b'c', 0xEE, 0xF0, 0xFF, 1, 2, 3, 4, 5, 6, 7, 8,
+            ],
+            14,
+        );
+        for len in 0..good.len() {
+            let _ = decompress(&good[..len]);
+        }
+        for at in 0..good.len() {
+            for bit in 0..8 {
+                let mut f = good.clone();
+                f[at] ^= 1 << bit;
+                let (_, peak) = crate::test_alloc::peak_during(|| decompress(&f));
+                assert!(
+                    peak < 1 << 20,
+                    "byte {at} bit {bit}: allocated {peak} bytes"
+                );
+            }
+        }
     }
 }

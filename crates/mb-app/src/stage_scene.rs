@@ -6,15 +6,19 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::fmt;
 use std::io;
+use std::rc::Rc;
 
 use glam::{Mat4, Vec3};
-use mb_render::{Layer, ModelId, ObjectId, Renderer, TextureSet};
+use mb_render::{Layer, ModelId, ObjectId, Renderer, TextureId, TextureSet};
 use mb_stage::{S16Vec, Stage};
 use web_time::Instant;
 
 use crate::anim::world_from_group;
-use crate::content::Content;
-use crate::stage_info::{bg_for_stage_or_nearest, BgInfo};
+use crate::content::{
+    common_files, stage_bg, Content, StageFiles, Wanted, COMMON_GMA, COMMON_NL_OBJ, COMMON_NL_TPL,
+    COMMON_TPL,
+};
+use crate::stage_info::BgInfo;
 
 pub const S16_TO_RADIANS: f32 = std::f32::consts::PI / 32768.0;
 
@@ -50,6 +54,56 @@ pub struct NaomiStage {
     pub tpl: mb_tpl::Tpl,
 }
 
+/// The files every stage shares, parsed once: ball, bananas and goal bag (`common.gma` / `.tpl`), goal
+/// tape and clock digits (the common NaomiLib archive; missing files only cost that decoration).
+pub struct CommonAssets {
+    pub gma: mb_gma::Gma,
+    pub tpl: mb_tpl::Tpl,
+    pub nl: Option<(mb_gma::NlObj, mb_tpl::Tpl)>,
+}
+
+/// One parsed background.
+pub struct BgAssets {
+    pub file_name: &'static str,
+    pub gma: mb_gma::Gma,
+    pub tpl: mb_tpl::Tpl,
+}
+
+/// Parsed files kept between stage loads so they are not read and parsed again: the shared files (always)
+/// and the background of the last stage (consecutive floors of a course nearly always share it).
+///
+/// Budget: what is held is the parsed form of four small shared files (about 1.2 MB on the USA disc) and one
+/// background (0.5 to 3.5 MB); nothing else accumulates. Uploaded textures and meshes are not kept here:
+/// a stage uploads only the textures its models use (see [`LazyTextures`]).
+#[derive(Default)]
+pub struct AssetCache {
+    common: Option<Rc<CommonAssets>>,
+    bg: Option<Rc<BgAssets>>,
+}
+
+impl AssetCache {
+    /// What a load of `files` will read, given what is cached (music excluded: the audio system knows
+    /// whether it needs the streams).
+    pub fn wanted(&self, files: &StageFiles) -> Vec<Wanted> {
+        let mut v = files.stage_wanted();
+        if !self.has_bg(files.bg.file_name) {
+            v.extend(files.bg_wanted());
+        }
+        if self.common.is_none() {
+            v.extend(common_files());
+        }
+        v
+    }
+
+    fn has_bg(&self, file_name: &str) -> bool {
+        self.bg.as_ref().is_some_and(|b| b.file_name == file_name)
+    }
+
+    pub fn clear(&mut self) {
+        *self = Self::default();
+    }
+}
+
 /// Every parsed file a stage needs. Pure CPU data, no GPU.
 pub struct StageAssets {
     pub id: u32,
@@ -58,10 +112,8 @@ pub struct StageAssets {
     /// Absent for pure-NaomiLib stages.
     pub stage_gma: Option<(mb_gma::Gma, mb_tpl::Tpl)>,
     pub naomi: Option<NaomiStage>,
-    pub common_gma: mb_gma::Gma,
-    pub common_tpl: mb_tpl::Tpl,
-    pub bg_gma: mb_gma::Gma,
-    pub bg_tpl: mb_tpl::Tpl,
+    pub common: Rc<CommonAssets>,
+    pub backdrop: Rc<BgAssets>,
 }
 
 fn io_err(what: &str, e: io::Error) -> LoadError {
@@ -119,14 +171,22 @@ impl LoadTimings {
 impl StageAssets {
     /// `bg` overrides the background normally chosen from the stage id.
     pub fn load(content: &Content, stage_id: u32, bg: Option<BgInfo>) -> Result<Self, LoadError> {
-        Self::load_timed(content, stage_id, bg, &mut LoadTimings::default())
+        let name = mb_game::stages::bg_name(stage_id).unwrap_or_default();
+        let files = StageFiles::new(stage_id, bg.unwrap_or(stage_bg(stage_id, name)), name);
+        Self::load_timed(
+            content,
+            &files,
+            &mut AssetCache::default(),
+            &mut LoadTimings::default(),
+        )
     }
 
-    /// [`StageAssets::load`], recording where the time went.
+    /// Read and parse the files of a stage, taking the shared files and the background from `cache`
+    /// when they are there (and leaving them there for the next stage). Records where the time went.
     pub fn load_timed(
         content: &Content,
-        stage_id: u32,
-        bg: Option<BgInfo>,
+        files: &StageFiles,
+        cache: &mut AssetCache,
         timings: &mut LoadTimings,
     ) -> Result<Self, LoadError> {
         let started = Instant::now();
@@ -156,8 +216,9 @@ impl StageAssets {
                 other => other,
             }
         };
-        let result = Self::load_with(stage_id, bg, &read_lz, &read_maybe_lz);
+        let result = Self::load_with(files, cache, &read_lz, &read_maybe_lz);
         let (disc_ms, disc_bytes, lzss_ms, lzss_bytes) = io_time.get();
+        timings.stage_id = files.stage_id;
         timings.disc_read_ms = disc_ms;
         timings.disc_bytes = disc_bytes;
         timings.lzss_ms = lzss_ms;
@@ -167,23 +228,20 @@ impl StageAssets {
     }
 
     fn load_with(
-        stage_id: u32,
-        bg: Option<BgInfo>,
+        files: &StageFiles,
+        cache: &mut AssetCache,
         read_lz: &dyn Fn(&str) -> io::Result<Vec<u8>>,
         read_maybe_lz: &dyn Fn(&str) -> io::Result<Vec<u8>>,
     ) -> Result<Self, LoadError> {
-        let bg = bg.unwrap_or(*bg_for_stage_or_nearest(stage_id));
-        let base = "smb1_content/test";
-        let id = format!("{stage_id:03}");
         let get = |path: &str| -> Result<Vec<u8>, LoadError> {
             read_maybe_lz(path).map_err(|e| io_err(path, e))
         };
         let get_lz = |path: &str| -> Result<Vec<u8>, LoadError> {
             read_lz(path).map_err(|e| io_err(path, e))
         };
-        let stagedef_bytes = get_lz(&format!("{base}/st{id}/STAGE{id}.lz"))?;
+        let stagedef_bytes = get_lz(&files.stagedef)?;
         let stagedef = mb_stage::parse_stagedef_smb1(&stagedef_bytes)
-            .map_err(|e| LoadError::Parse(format!("stagedef: {e:?}")))?;
+            .map_err(|e| LoadError::Parse(format!("{}: {e:?}", files.stagedef)))?;
 
         let parse_gma = |path: &str| -> Result<mb_gma::Gma, LoadError> {
             mb_gma::parse_gma(&get(path)?).map_err(|e| LoadError::Parse(format!("{path}: {e}")))
@@ -193,39 +251,67 @@ impl StageAssets {
         };
         let tpl = |path: &str| -> Result<mb_tpl::Tpl, LoadError> { parse_tpl(get(path)?, path) };
 
-        let gma_path = format!("{base}/st{id}/st{id}.gma");
         // Parsed straight from the probe read (the file used to be read and decompressed twice).
-        let stage_gma = match read_maybe_lz(&gma_path) {
+        let stage_gma = match read_maybe_lz(&files.gma) {
             Ok(bytes) => Some((
                 mb_gma::parse_gma(&bytes)
-                    .map_err(|e| LoadError::Parse(format!("{gma_path}: {e}")))?,
-                tpl(&format!("{base}/st{id}/st{id}.tpl"))?,
+                    .map_err(|e| LoadError::Parse(format!("{}: {e}", files.gma)))?,
+                tpl(&files.tpl)?,
             )),
-            Err(e) if e.kind() == io::ErrorKind::NotFound && is_naomi_stage(stage_id) => None,
-            Err(e) => return Err(io_err(&gma_path, e)),
+            Err(e) if e.kind() == io::ErrorKind::NotFound && files.naomi => None,
+            Err(e) => return Err(io_err(&files.gma, e)),
         };
-        let naomi = if is_naomi_stage(stage_id) {
-            let obj_path = format!("{base}/st{id}/st{id}_p.lz");
-            let tpl_path = format!("{base}/st{id}/st{id}.lz");
-            let obj = mb_gma::parse_naomi_obj(&get_lz(&obj_path)?)
-                .map_err(|e| LoadError::Parse(format!("{obj_path}: {e}")))?;
+        let naomi = if files.naomi {
+            let obj = mb_gma::parse_naomi_obj(&get_lz(&files.naomi_obj)?)
+                .map_err(|e| LoadError::Parse(format!("{}: {e}", files.naomi_obj)))?;
             Some(NaomiStage {
                 obj,
-                tpl: parse_tpl(get_lz(&tpl_path)?, &tpl_path)?,
+                tpl: parse_tpl(get_lz(&files.naomi_tpl)?, &files.naomi_tpl)?,
             })
         } else {
             None
         };
+        let common = match &cache.common {
+            Some(c) => c.clone(),
+            None => {
+                // The goal tape and clock digits are decoration: a disc without them still plays.
+                let nl = || -> Option<(mb_gma::NlObj, mb_tpl::Tpl)> {
+                    let obj = read_lz(COMMON_NL_OBJ).ok()?;
+                    let tpl = read_lz(COMMON_NL_TPL).ok()?;
+                    Some((
+                        mb_gma::parse_naomi_obj(&obj).ok()?,
+                        mb_tpl::parse(&tpl).ok()?,
+                    ))
+                };
+                let c = Rc::new(CommonAssets {
+                    gma: parse_gma(COMMON_GMA)?,
+                    tpl: tpl(COMMON_TPL)?,
+                    nl: nl(),
+                });
+                cache.common = Some(c.clone());
+                c
+            }
+        };
+        let backdrop = match &cache.bg {
+            Some(b) if b.file_name == files.bg.file_name => b.clone(),
+            _ => {
+                let b = Rc::new(BgAssets {
+                    file_name: files.bg.file_name,
+                    gma: parse_gma(&files.bg_gma)?,
+                    tpl: tpl(&files.bg_tpl)?,
+                });
+                cache.bg = Some(b.clone());
+                b
+            }
+        };
         Ok(Self {
-            id: stage_id,
-            bg,
+            id: files.stage_id,
+            bg: files.bg,
             stagedef,
             stage_gma,
             naomi,
-            common_gma: parse_gma(&format!("{base}/init/common.gma"))?,
-            common_tpl: tpl(&format!("{base}/init/common.tpl"))?,
-            bg_gma: parse_gma(&format!("{base}/bg/{}.gma", bg.file_name))?,
-            bg_tpl: tpl(&format!("{base}/bg/{}.tpl", bg.file_name))?,
+            common,
+            backdrop,
         })
     }
 }
@@ -252,8 +338,9 @@ pub struct StageScene {
     /// For each entry of `bg_objects` / `fg_objects`: its index in the stagedef list.
     pub bg_sources: Vec<usize>,
     pub fg_sources: Vec<usize>,
-    /// The uploaded `common.tpl`, for states that add more `common.gma` models (ball, goal bag).
-    pub common_set: TextureSet,
+    /// The `common.tpl` textures uploaded so far, for states that add more `common.gma` models (ball,
+    /// goal bag).
+    pub common_set: LazyTextures,
     pub start: Vec3,
     /// Model names that could not be found in any source.
     pub missing_models: Vec<String>,
@@ -300,12 +387,65 @@ enum Src {
     Common,
 }
 
+/// The textures of one TPL, uploaded on first use: a stage decodes and uploads only what its models
+/// reference (the background and shared TPLs hold many textures no single stage shows).
+#[derive(Default)]
+pub struct LazyTextures {
+    set: TextureSet,
+    /// Indices already tried (uploaded, or undecodable and left to the white fallback).
+    tried: Vec<bool>,
+}
+
+impl LazyTextures {
+    /// Make sure texture `index` of `tpl` is on the GPU.
+    pub fn ensure(&mut self, r: &mut Renderer, tpl: &mb_tpl::Tpl, index: usize) {
+        if self.tried.get(index).copied().unwrap_or(false) {
+            return;
+        }
+        if self.tried.len() <= index {
+            self.tried.resize(index + 1, false);
+            self.set.resize(index + 1, None);
+        }
+        self.tried[index] = true;
+        self.set[index] = tpl.get(index).and_then(|tex| r.upload_tpl_texture(tex));
+    }
+
+    /// Upload what `model` samples and return the set to hand to `Renderer::upload_model`.
+    pub fn for_model(
+        &mut self,
+        r: &mut Renderer,
+        tpl: &mb_tpl::Tpl,
+        model: &mb_gma::Model,
+    ) -> &[Option<TextureId>] {
+        for layer in &model.tev_layers {
+            if let Ok(index) = usize::try_from(layer.tex_idx) {
+                self.ensure(r, tpl, index);
+            }
+        }
+        &self.set
+    }
+
+    pub fn for_nl_model(
+        &mut self,
+        r: &mut Renderer,
+        tpl: &mb_tpl::Tpl,
+        model: &mb_gma::NlModel,
+    ) -> &[Option<TextureId>] {
+        for mesh in &model.meshes {
+            if let Some(index) = mesh.tex_idx {
+                self.ensure(r, tpl, index as usize);
+            }
+        }
+        &self.set
+    }
+}
+
 struct ModelLoader<'a> {
     assets: &'a StageAssets,
-    stage_set: TextureSet,
-    bg_set: TextureSet,
-    nl_set: TextureSet,
-    common_set: TextureSet,
+    stage_set: LazyTextures,
+    bg_set: LazyTextures,
+    nl_set: LazyTextures,
+    common_set: LazyTextures,
     cache: HashMap<(Src, String), Option<ModelId>>,
     nl_cache: HashMap<String, Option<ModelId>>,
 }
@@ -315,17 +455,20 @@ impl ModelLoader<'_> {
         if let Some(hit) = self.cache.get(&(src, name.to_string())) {
             return *hit;
         }
-        let (gma, set) = match src {
-            Src::Stage => (
-                self.assets.stage_gma.as_ref().map(|s| &s.0),
-                &self.stage_set,
-            ),
-            Src::Bg => (Some(&self.assets.bg_gma), &self.bg_set),
-            Src::Common => (Some(&self.assets.common_gma), &self.common_set),
+        let a = self.assets;
+        let source = match src {
+            Src::Stage => a
+                .stage_gma
+                .as_ref()
+                .map(|(gma, tpl)| (gma, tpl, &mut self.stage_set)),
+            Src::Bg => Some((&a.backdrop.gma, &a.backdrop.tpl, &mut self.bg_set)),
+            Src::Common => Some((&a.common.gma, &a.common.tpl, &mut self.common_set)),
         };
-        let id = gma
-            .and_then(|g| g.model(name))
-            .and_then(|m| r.upload_model(m, set).ok());
+        let id = source.and_then(|(gma, tpl, set)| {
+            let model = gma.model(name)?;
+            let textures = set.for_model(r, tpl, model).to_vec();
+            r.upload_model(model, &textures).ok()
+        });
         self.cache.insert((src, name.to_string()), id);
         id
     }
@@ -350,7 +493,8 @@ impl ModelLoader<'_> {
                 })
                 .copied()?;
             let model = n.obj.model(idx)?;
-            Some(r.upload_nl_model(model, &self.nl_set))
+            let textures = self.nl_set.for_nl_model(r, &n.tpl, model).to_vec();
+            Some(r.upload_nl_model(model, &textures))
         });
         self.nl_cache.insert(name.to_string(), id);
         id
@@ -362,8 +506,8 @@ impl ModelLoader<'_> {
         for src in [Src::Stage, Src::Bg, Src::Common] {
             let gma = match src {
                 Src::Stage => self.assets.stage_gma.as_ref().map(|s| &s.0),
-                Src::Bg => Some(&self.assets.bg_gma),
-                Src::Common => Some(&self.assets.common_gma),
+                Src::Bg => Some(&self.assets.backdrop.gma),
+                Src::Common => Some(&self.assets.common.gma),
             };
             let name = gma.and_then(|g| {
                 g.names()
@@ -381,8 +525,8 @@ impl ModelLoader<'_> {
         for src in [Src::Stage, Src::Bg, Src::Common] {
             let gma = match src {
                 Src::Stage => self.assets.stage_gma.as_ref().map(|s| &s.0),
-                Src::Bg => Some(&self.assets.bg_gma),
-                Src::Common => Some(&self.assets.common_gma),
+                Src::Bg => Some(&self.assets.backdrop.gma),
+                Src::Common => Some(&self.assets.common.gma),
             };
             let name = gma.and_then(|g| {
                 g.names()
@@ -437,18 +581,10 @@ impl StageScene {
         r.clear_color = a.bg.clear_color.map(|c| c as f64);
         let mut loader = ModelLoader {
             assets: a,
-            stage_set: a
-                .stage_gma
-                .as_ref()
-                .map(|s| r.upload_tpl(&s.1))
-                .unwrap_or_default(),
-            bg_set: r.upload_tpl(&a.bg_tpl),
-            common_set: r.upload_tpl(&a.common_tpl),
-            nl_set: a
-                .naomi
-                .as_ref()
-                .map(|n| r.upload_tpl(&n.tpl))
-                .unwrap_or_default(),
+            stage_set: LazyTextures::default(),
+            bg_set: LazyTextures::default(),
+            common_set: LazyTextures::default(),
+            nl_set: LazyTextures::default(),
             cache: HashMap::new(),
             nl_cache: HashMap::new(),
         };
@@ -552,7 +688,7 @@ impl StageScene {
             fg_objects,
             bg_sources,
             fg_sources,
-            common_set: loader.common_set.clone(),
+            common_set: loader.common_set,
             start,
             missing_models: missing,
             texture_base,

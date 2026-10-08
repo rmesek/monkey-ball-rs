@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use glam::Vec3;
 use mb_app::app::WindowOptions;
 use mb_app::audio::Audio;
-use mb_app::content::{source_from_path, Content};
+use mb_app::content::{open_disc_image, Content};
 use mb_app::game::Game;
 use mb_app::headless::{autoplay, AutoplayOptions};
 use mb_app::menu::{Autostart, Menu};
@@ -123,6 +123,19 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Args, String> {
     if p.next().is_some() {
         return Err("too many positional arguments".into());
     }
+    // Stages no course uses have no background of their own; only the viewer opens them.
+    let played = if out.viewer || out.screenshot.is_some() {
+        None
+    } else {
+        out.stage
+    };
+    for id in [played, out.autoplay].into_iter().flatten() {
+        if !mb_game::stages::is_playable_stage(id) {
+            return Err(format!(
+                "stage {id} is not part of the game (no course uses it); the stage viewer can open it: --viewer {id}"
+            ));
+        }
+    }
     Ok(out)
 }
 
@@ -181,20 +194,14 @@ fn remembered_disc(storage: &dyn Storage) -> Option<PathBuf> {
 fn pick_disc() -> Option<PathBuf> {
     rfd::FileDialog::new()
         .set_title("Open your Super Monkey Ball disc image")
-        .add_filter(
-            "GameCube disc image",
-            &["rvz", "iso", "gcm", "ciso", "gcz", "wia"],
-        )
+        .add_filter("GameCube disc image", &["rvz", "iso", "gcm"])
         .add_filter("All files", &["*"])
         .pick_file()
 }
 
 fn open_content(path: &Path) -> Result<Content, String> {
-    let source = source_from_path(path);
-    eprintln!("opening {}", source.describe());
-    source
-        .open()
-        .map_err(|e| format!("{}: {e}", source.describe()))
+    eprintln!("opening disc image {}", path.display());
+    open_disc_image(path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// Find and open the game content: explicit path, else the remembered image, else a file dialog (which

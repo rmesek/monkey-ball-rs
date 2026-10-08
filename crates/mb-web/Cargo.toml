@@ -1,6 +1,6 @@
 [package]
 name = "mb-web"
-description = "Browser (wasm32) entry point: canvas, file-picker content source, gamepad"
+description = "Browser (wasm32) entry point: disc import, on-device game data, canvas, gamepad, tilt"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -26,6 +26,8 @@ js-sys = "0.3"
 web-sys = { version = "0.3", features = [
     "Window", "Document", "Element", "HtmlElement", "HtmlCanvasElement", "Navigator",
     "Gamepad", "GamepadButton", "CssStyleDeclaration", "Storage", "console",
+    # The imported game pack is a Blob (a file in the Origin Private File System) read in slices.
+    "Blob",
     # Web Audio (crates/mb-web/src/audio.rs).
     "AudioContext", "BaseAudioContext", "AudioContextState", "AudioBuffer", "AudioBufferSourceNode",
     "AudioScheduledSourceNode", "AudioNode", "AudioParam", "AudioDestinationNode", "GainNode",

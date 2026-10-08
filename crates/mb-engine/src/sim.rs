@@ -246,6 +246,13 @@ impl Sim {
         if self.ball.pos.y < self.geom.fallout_y {
             return true;
         }
+        // Not in the reference: a position that is no longer a number (only a corrupt stage produces one)
+        // compares false against every bound, so the ball would never fall out and the attempt would hang
+        // until the clock ends it, or forever on a stage without a time limit.
+        let p = &self.ball.pos;
+        if !(p.x.is_finite() && p.y.is_finite() && p.z.is_finite()) {
+            return true;
+        }
         let mut phys = PhysBall::new();
         phys.pos = self.ball.pos;
         phys.prev_pos = self.ball.prev_pos;
@@ -384,7 +391,11 @@ impl Sim {
     fn begin_goal_sequence(&mut self, hit: GoalHit) {
         self.goal_hit = Some(hit);
         self.finished = true;
-        let remaining = (self.cfg.time_limit_frames - self.stage_timer_frames).max(0);
+        let remaining = self
+            .cfg
+            .time_limit_frames
+            .saturating_sub(self.stage_timer_frames)
+            .max(0);
         self.score = (self.score
             + compute_goal_score(hit.goal_type, remaining, self.cfg.time_limit_frames))
         .min(999_999_999);
@@ -546,7 +557,11 @@ impl Sim {
             if self.intro_timer == 0 {
                 self.camera
                     .init_for_stage(&self.ball, self.ball.start_rot_y);
-                self.phase = Phase::Playing;
+                // The ball is live for the last frames of the intro (the drop), so a sequence can already
+                // have begun on a broken stage; do not report that as normal play.
+                if self.phase == Phase::Intro {
+                    self.phase = Phase::Playing;
+                }
             }
         }
 
@@ -592,8 +607,13 @@ impl Sim {
             return;
         }
 
+        // A position that is not a number fails every "outside the goal" test, so it would count as a goal.
+        let ball_is_somewhere = self.ball.pos.x.is_finite()
+            && self.ball.pos.y.is_finite()
+            && self.ball.pos.z.is_finite();
         if stage_input_enabled
             && !self.finished
+            && ball_is_somewhere
             && self.ball.flags & ball_flags::INVISIBLE == 0
             && self.ball.state == ball_states::PLAY
         {

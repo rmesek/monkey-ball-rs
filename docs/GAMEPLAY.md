@@ -36,8 +36,12 @@ Menu (title -> Course Play | Practice | Options | Quit)
   whole number of ticks per frame the accumulator eases to 0.85 of a tick, so the picture stays within a
   sixth of a tick of the newest state.
   The game's own trig tables are installed from `main.dol` first (`Content::install_trig_tables`).
-- Pause freezes the simulation and offers Continue, Retry, Quit. Retry restarts in place in practice;
-  in course play it gives the attempt up as a fall-out (one life). Quit reports `PlayResult::Quit`.
+- Pause freezes the simulation in any phase and offers Continue, Retry, Quit. Retry restarts in place in
+  practice; in course play it gives the attempt up as a fall-out (one life). Retry is disabled once the
+  attempt is decided (goal sequence, fall-out, time over: the result on screen stands) and on bonus stages
+  in course play (a bonus stage is one attempt; a fall-out there advances the course, so a retry would skip
+  it): `play::retry_available`. Quit reports `PlayResult::Quit`; in course play it first asks
+  `QUIT? / THIS RUN WILL BE LOST` with `KEEP PLAYING` selected, and Esc / Back returns to the pause menu.
 - `GameStack::update` updates the state that is on top after a push or pop in the same frame, with `dt = 0`
   and the frame's input edges removed, so there is never a blank frame and one key press acts once.
 

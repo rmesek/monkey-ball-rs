@@ -9,7 +9,8 @@
 //! has no continues, and it zeroes the banana counter on every stage load so bananas never give a life.
 //! Those three gaps are filled with the original game's rules: the run is over when the last life is lost,
 //! a continue restores the lives and resets the score, and the banana counter carries across floors and
-//! pays one life per 100.
+//! pays one life per 100. Two details of the continue (the score restarting at 0, the banana counter being
+//! kept) are written from memory of the original: the reference has no continues to check them against.
 //!
 //! Score has one source of truth here: the outcome carries what happened (goal colour, frames left, bananas
 //! collected) and this module prices it. [`Rules::goal_score`] is the reference's `computeGoalScore`, the
@@ -158,14 +159,15 @@ impl Rules {
     /// `computeGoalScore`: 100 points per second left (integer division on frames), plus the goal colour
     /// bonus, doubled when more than half of the time limit is left.
     pub fn goal_score(&self, goal: GoalType, time_left: u32, time_limit: u32) -> u64 {
+        // Saturating: `Rules` is public, and a rule set with absurd bonuses must not overflow.
         let mut score = u64::from(time_left) * 100 / 60;
-        score += match goal {
+        score = score.saturating_add(match goal {
             GoalType::Blue => 0,
             GoalType::Green => self.green_goal_score,
             GoalType::Red => self.red_goal_score,
-        };
+        });
         if time_limit > 0 && time_left > time_limit >> 1 {
-            score *= 2;
+            score = score.saturating_mul(2);
         }
         score
     }
@@ -425,12 +427,12 @@ impl CourseRun {
         let difficulty = self.course.difficulty();
         progress.mark_reached(difficulty, stage_id);
 
-        let mut gained = u64::from(outcome.bananas()) * self.rules.banana_score;
+        let mut gained = u64::from(outcome.bananas()).saturating_mul(self.rules.banana_score);
         if let StageOutcome::Goal {
             goal, time_left, ..
         } = outcome
         {
-            gained += self.rules.goal_score(goal, time_left, time_limit);
+            gained = gained.saturating_add(self.rules.goal_score(goal, time_left, time_limit));
         }
         self.score = self.score.saturating_add(gained).min(MAX_SCORE);
         self.add_bananas(outcome.bananas());

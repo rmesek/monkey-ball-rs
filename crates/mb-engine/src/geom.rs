@@ -92,8 +92,13 @@ impl Grid {
         if cell_z < 0.0 || cell_z >= self.count_z as f64 {
             return None;
         }
+        // Saturating: a hand-built grid may claim more cells than `usize` can index on 32-bit targets.
         self.cells
-            .get(cell_z as usize * self.count_x as usize + cell_x as usize)
+            .get(
+                (cell_z as usize)
+                    .saturating_mul(self.count_x as usize)
+                    .saturating_add(cell_x as usize),
+            )
             .map(|v| v.as_slice())
     }
 }
@@ -163,7 +168,19 @@ impl StageGeom {
                     step_z: g.grid.step_z as f64,
                     count_x: g.grid.cell_count_x,
                     count_z: g.grid.cell_count_z,
-                    cells: g.grid.cells.clone(),
+                    // The parser derives the triangle count from these indices, so on a parsed stage
+                    // nothing is dropped; a hand-built stage must not index past its triangles either.
+                    cells: g
+                        .grid
+                        .cells
+                        .iter()
+                        .map(|cell| {
+                            cell.iter()
+                                .copied()
+                                .filter(|&t| (t as usize) < g.triangles.len())
+                                .collect()
+                        })
+                        .collect(),
                 },
                 cones: g
                     .cones

@@ -57,7 +57,21 @@ type A: pos/color/uv, else type B: pos/normal/uv), bound sphere, mesh list (unti
 8-byte relative reference to an earlier/later real vertex. Cull comes from the first list; all lists of a mesh are merged
 into one vertex/index buffer.
 
+## Corrupt input
+Nothing here panics on bad bytes; every failure is an `Error`.
+- Decoded size is capped per input byte (GMA 8, NaomiLib 16, plus 64 KiB; retail maxima 1.3 and 3.5), because
+  table entries are offsets and thousands of them can point at one model or one name:
+  `Error::Invalid("entries overlap: ...")`.
+- A display list is rejected when its vertices carry no position (`Error::Invalid`: a vertex could then be
+  zero bytes long and one 3-byte command would expand to 65535 vertices) or when a draw command claims more
+  vertices than the buffer holds (`Error::OutOfBounds`, before anything is decoded).
+- Offsets are validated before fixed fields are added to them, so nothing wraps on 32-bit targets (wasm32).
+
 ## Tools / tests
+- `tests/robust.rs`: mutation campaigns (truncation, single bytes, hostile words, seeded random corruption) on
+  synthetic GMA / NaomiLib / display-list inputs under a counting allocator, repeated on real archives when a
+  disc is present. `tests/golden.rs`: a hash over every parsed model and decoded mesh of the disc, recorded
+  before the hardening.
 - `cargo run --release -p mb-gma --example gma_to_obj -- in.gma out.obj [model]` (write outside the repo).
 - `crates/mb-gma/tests/disc.rs`: parses every GMA (incl. `.gma.lz`) and NaomiLib archive on the disc; compares triangle
   counts and position checksums against the TypeScript reference (via `deno`, `tests/ref/gma_ref.ts`) for 9 files.

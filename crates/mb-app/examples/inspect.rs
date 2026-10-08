@@ -5,7 +5,7 @@
 //! `cargo run --release -p mb-app --example inspect -- <disc> tpl <path> <out.png> [index]`: contact sheet of a
 //! TPL (or one texture at full size) composited over grey, for working out HUD sprites. Write it outside the repo.
 
-use mb_app::content::source_from_path;
+use mb_app::content::open_disc_image;
 
 /// All textures in a grid (136 px cells, shrunk to fit), or texture `only` at its native size.
 fn tpl_sheet(tpl: &mb_tpl::Tpl, only: Option<usize>) -> (usize, usize, Vec<u8>) {
@@ -62,7 +62,7 @@ fn main() {
             println!("{f}");
         }
     } else if args[1] == "tpl" {
-        let content = source_from_path(&args[0]).open().expect("open");
+        let content = open_disc_image(&args[0]).expect("open");
         let tpl = mb_tpl::parse(&content.read_maybe_lz(&args[2]).expect("read tpl")).expect("tpl");
         let only: Option<usize> = args.get(4).and_then(|s| s.parse().ok());
         let (w, h, img) = tpl_sheet(&tpl, only);
@@ -75,7 +75,7 @@ fn main() {
             println!("{:3} {:?} {}x{}", t.index, t.format, t.width, t.height);
         }
     } else if args[1] == "stage" {
-        let content = source_from_path(&args[0]).open().expect("open");
+        let content = open_disc_image(&args[0]).expect("open");
         let id: u32 = args[2].parse().expect("stage id");
         let a = mb_app::stage_scene::StageAssets::load(&content, id, None).expect("load stage");
         println!(
@@ -104,7 +104,7 @@ fn main() {
             );
         }
     } else if args[1] == "model" {
-        let content = source_from_path(&args[0]).open().expect("open");
+        let content = open_disc_image(&args[0]).expect("open");
         let bytes = content.read_maybe_lz(&args[2]).expect("read gma");
         let gma = mb_gma::parse_gma(&bytes).expect("parse gma");
         let m = gma.model(&args[3]).expect("model");
@@ -139,7 +139,7 @@ fn main() {
             }
         }
     } else if args[1] == "nl" {
-        let content = source_from_path(&args[0]).open().expect("open");
+        let content = open_disc_image(&args[0]).expect("open");
         let bytes = content.read_lz(&args[2]).expect("read nl");
         let obj = mb_gma::parse_naomi_obj(&bytes).expect("parse nl");
         let mut names: Vec<_> = obj.names.iter().collect();
@@ -168,7 +168,7 @@ fn main() {
             }
         }
     } else if args[1] == "gma" {
-        let content = source_from_path(&args[0]).open().expect("open");
+        let content = open_disc_image(&args[0]).expect("open");
         let bytes = content.read_maybe_lz(&args[2]).expect("read gma");
         let gma = mb_gma::parse_gma(&bytes).expect("parse gma");
         for m in gma.iter() {

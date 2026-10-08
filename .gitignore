@@ -27,3 +27,4 @@ assets/
 
 # Browser build output (scripts/build-web.*)
 web/pkg/
+web/dist/

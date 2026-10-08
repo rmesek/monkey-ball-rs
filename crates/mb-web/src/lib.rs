@@ -1,17 +1,16 @@
 //! Browser entry point (wasm32). Everything here is gated on `target_arch = "wasm32"` so the host build of the
-//! workspace is unaffected.
+//! workspace is unaffected. The same module runs in two places (see `docs/WEB.md`):
 //!
-//! Flow: `web/main.js` takes a disc image from `<input type=file>` or a drop, reads the `File` in fixed-size
-//! pieces (`Blob.slice().arrayBuffer()`) and hands each piece to a [`DiscImage`] as a `Uint8Array`. The pieces
-//! stay where the browser put them, on the JS heap; nothing is uploaded and nothing is copied into wasm linear
-//! memory up front. [`start`] then opens the disc through `mb-assets` (nod reads through [`ChunkStream`], which
-//! copies just the requested ranges into wasm memory), builds the first game state and hands the winit event
-//! loop to the browser (`spawn_app`).
+//! * In the **import worker** (`web/worker.js`): [`web::ImportJob`] reads the user's disc image through
+//!   synchronous `Blob` slices, and either copies the files the game uses into one pack file in the Origin
+//!   Private File System, or (where that storage is unavailable) serves single files for the session.
+//!   The image itself is never held in memory: reads are a group or a megabyte at a time.
+//! * On the **page** (`web/main.js`): [`web::GameData`] is the imported pack (a `Blob` plus its index) or
+//!   the worker's live file service; [`web::start`] fetches the start-up files, builds the first game state
+//!   and hands the winit event loop to the browser. While the game runs, a state that needs files prepares
+//!   them (`mb_app::content`): they are fetched asynchronously into memory, parsed, and released.
 //!
-//! Why the image is read into memory at all: nod's `DiscStream` is synchronous and the game loads files
-//! synchronously, while `Blob` reads are asynchronous on the main thread (`FileReaderSync` exists only in
-//! workers). Why it is not one big wasm `Vec`: wasm32 linear memory is limited to 4 GiB, never shrinks, and must
-//! grow as one contiguous block, which is the allocation that fails first on phones. See docs/WEB.md.
+//! Nothing here talks to the network.
 
 /// Web Audio backend of the game's audio system (`mb_app::audio`).
 #[cfg(target_arch = "wasm32")]
@@ -20,17 +19,23 @@ mod audio;
 #[cfg(target_arch = "wasm32")]
 mod web {
     use std::cell::{Cell, RefCell};
+    use std::collections::HashSet;
     use std::io;
     use std::rc::Rc;
 
-    use js_sys::Uint8Array;
-    use mb_app::content::Content;
+    use js_sys::{Array, Function, Uint8Array};
+    use mb_app::content::{boot_files, Content, DeferredSource, Fetch};
+    use mb_app::host;
+    use mb_app::import::Importer;
     use mb_app::input::{Action, Axis, InputState};
     use mb_app::shell::{self, Platform};
+    use mb_app::tilt::TiltSteering;
     use mb_app::ui::Insets;
-    use mb_assets::disc::{DiscPack, ImageKind, SNIFF_LEN};
+    use mb_assets::disc::{DiscStream, ImageKind, SNIFF_LEN};
+    use mb_assets::gamepack::{Crc32, Header, PackIndex, HEADER_LEN};
     use wasm_bindgen::prelude::*;
     use wasm_bindgen::JsCast;
+    use wasm_bindgen_futures::JsFuture;
     use winit::platform::web::WindowAttributesExtWebSys;
     use winit::window::{Window, WindowAttributes};
 
@@ -38,8 +43,6 @@ mod web {
     /// Render at most this many device pixels per CSS pixel: phones report 3 and more, which costs fill rate
     /// for no visible gain at this art's resolution.
     const MAX_PIXEL_RATIO: f64 = 2.0;
-    /// Largest piece size accepted (a `Uint8Array` view index must fit `u32`, and pieces should stay small).
-    const MAX_CHUNK_LEN: f64 = (1u32 << 30) as f64;
 
     thread_local! {
         /// Frames presented since start; `web/main.js` derives the `?fps=1` readout from it.
@@ -54,7 +57,31 @@ mod web {
         static RENDER_OPTIONS: Cell<(f32, bool)> = const { Cell::new((1.0, true)) };
         /// Render scale in use, relative to the capped device resolution (for the overlay).
         static QUALITY: Cell<f32> = const { Cell::new(1.0) };
+        /// `Game::nav_depth` of the state on top: not zero while "back" has somewhere to go in the game.
+        static NAV_DEPTH: Cell<u32> = const { Cell::new(0) };
+        /// The page saw a "back" gesture (history `popstate`); delivered as Cancel at the next frame.
+        static BACK_PENDING: Cell<bool> = const { Cell::new(false) };
+        /// Device tilt steering, fed by [`device_orientation`].
+        static TILT: RefCell<TiltSteering> = RefCell::new(TiltSteering::default());
+        /// Prepared game files held in memory right now, in bytes (for `mbStats`).
+        static PREPARED: RefCell<Option<Content>> = const { RefCell::new(None) };
     }
+
+    fn js_err(e: impl std::fmt::Display) -> JsValue {
+        JsValue::from_str(&e.to_string())
+    }
+
+    fn describe(e: &JsValue) -> String {
+        e.as_string()
+            .or_else(|| {
+                e.dyn_ref::<js_sys::Error>()
+                    .map(|e| format!("{}: {}", e.name(), e.message()))
+            })
+            .unwrap_or_else(|| format!("{e:?}"))
+    }
+
+    // -----------------------------------------------------------------------------------------------------
+    // Small exports for the page.
 
     /// The page reports gamepads coming and going (`gamepadconnected` / `gamepaddisconnected`), so the
     /// per-frame poll, which allocates on the JS side, only runs while there is a pad to read.
@@ -135,17 +162,23 @@ mod web {
         // Panics go to the console with a stack and to the page's error box instead of a silent freeze.
         std::panic::set_hook(Box::new(|info| {
             console_error_panic_hook::hook(info);
-            report_to_page(&format!("internal error: {info}"));
+            call_page(
+                "mbOnError",
+                &[JsValue::from_str(&format!("internal error: {info}"))],
+            );
         }));
     }
 
-    /// `web/main.js` defines `window.mbOnError` to show a message over the canvas.
-    fn report_to_page(msg: &str) {
-        if let Some(win) = web_sys::window() {
-            if let Ok(f) = js_sys::Reflect::get(&win, &JsValue::from_str("mbOnError")) {
-                if let Some(f) = f.dyn_ref::<js_sys::Function>() {
-                    let _ = f.call1(&JsValue::NULL, &JsValue::from_str(msg));
+    /// Call `globalThis[name](..args)` if the page (or worker) defines it.
+    fn call_page(name: &str, args: &[JsValue]) {
+        let global = js_sys::global();
+        if let Ok(f) = js_sys::Reflect::get(&global, &JsValue::from_str(name)) {
+            if let Some(f) = f.dyn_ref::<Function>() {
+                let list = Array::new();
+                for a in args {
+                    list.push(a);
                 }
+                let _ = f.apply(&JsValue::NULL, &list);
             }
         }
     }
@@ -162,14 +195,67 @@ mod web {
         GPU.with(|g| g.borrow().clone())
     }
 
+    /// Size of the engine's linear memory in bytes (it only ever grows).
+    #[wasm_bindgen]
+    pub fn wasm_memory_bytes() -> f64 {
+        core::arch::wasm32::memory_size(0) as f64 * 65536.0
+    }
+
+    /// Bytes of game files held in memory right now (fetched for a load and not yet released).
+    #[wasm_bindgen]
+    pub fn prepared_bytes() -> f64 {
+        PREPARED.with(|c| c.borrow().as_ref().map_or(0, Content::prepared_bytes)) as f64
+    }
+
+    /// Files that were read without having been prepared (always empty unless the file lists have a bug).
+    #[wasm_bindgen]
+    pub fn content_misses() -> Vec<String> {
+        PREPARED.with(|c| c.borrow().as_ref().map(Content::misses).unwrap_or_default())
+    }
+
+    /// What the page can do for the game: remove the imported data, go fullscreen, report device tilt.
+    #[wasm_bindgen]
+    pub fn set_caps(remove_data: bool, fullscreen: bool, tilt: bool) {
+        host::set_caps(host::Caps {
+            remove_data,
+            fullscreen,
+            tilt,
+        });
+    }
+
+    /// The page entered or left fullscreen.
+    #[wasm_bindgen]
+    pub fn set_fullscreen_state(on: bool) {
+        host::set_fullscreen(on);
+    }
+
+    /// Not zero while the game has somewhere to go "back" to (a sub-menu, a stage): the page keeps one
+    /// history entry then, so the browser's back gesture reaches [`nav_back`] instead of leaving the page.
+    #[wasm_bindgen]
+    pub fn nav_depth() -> u32 {
+        NAV_DEPTH.with(Cell::get)
+    }
+
+    /// The browser's back gesture: one step back in the game (the Cancel action).
+    #[wasm_bindgen]
+    pub fn nav_back() {
+        BACK_PENDING.with(|b| b.set(true));
+    }
+
+    /// One `deviceorientation` sample (degrees) and the screen's rotation. The single entry point for tilt.
+    #[wasm_bindgen]
+    pub fn device_orientation(beta: f32, gamma: f32, screen_angle: i32) {
+        TILT.with(|t| t.borrow_mut().sample(beta, gamma, screen_angle));
+    }
+
     /// Number of bytes from the start of the file [`check_header`] wants.
     #[wasm_bindgen]
     pub fn header_len() -> usize {
         SNIFF_LEN
     }
 
-    /// Look at the first bytes of a file before it is read in full: fails with a message for the user when the
-    /// container or its compression cannot be read in the browser (e.g. an LZMA2-compressed RVZ).
+    /// Look at the first bytes of a file before anything else is done with it: fails with a message for
+    /// the user when the file is not a supported disc image.
     #[wasm_bindgen]
     pub fn check_header(header: &[u8]) -> Result<(), JsValue> {
         ImageKind::sniff(header)
@@ -177,95 +263,45 @@ mod web {
             .map_err(|e| JsValue::from_str(&e))
     }
 
-    /// A disc image held by the page as equally sized `Uint8Array` pieces (the last one may be shorter).
-    #[wasm_bindgen]
-    pub struct DiscImage {
-        chunks: Vec<Uint8Array>,
-        chunk_len: u64,
-        len: u64,
-        received: u64,
-    }
+    // -----------------------------------------------------------------------------------------------------
+    // Import worker side.
 
-    #[wasm_bindgen]
-    impl DiscImage {
-        /// `len`: size of the image in bytes. `chunk_len`: size of every piece but the last.
-        #[wasm_bindgen(constructor)]
-        pub fn new(len: f64, chunk_len: f64) -> Result<DiscImage, JsValue> {
-            if !((1.0..=9.0e15).contains(&len) && len.fract() == 0.0) {
-                return Err(JsValue::from_str("the file is empty"));
-            }
-            if !((1.0..=MAX_CHUNK_LEN).contains(&chunk_len) && chunk_len.fract() == 0.0) {
-                return Err(JsValue::from_str("invalid piece size"));
-            }
-            Ok(DiscImage {
-                chunks: Vec::new(),
-                chunk_len: chunk_len as u64,
-                len: len as u64,
-                received: 0,
-            })
-        }
-
-        /// Append the next piece. The array is kept by reference (no copy); the caller must not modify it.
-        pub fn push(&mut self, chunk: Uint8Array) -> Result<(), JsValue> {
-            let expected = self.chunk_len.min(self.len - self.received);
-            if u64::from(chunk.length()) != expected {
-                return Err(JsValue::from_str(&format!(
-                    "disc image piece {} has {} bytes, expected {expected}",
-                    self.chunks.len(),
-                    chunk.length()
-                )));
-            }
-            self.received += expected;
-            self.chunks.push(chunk);
-            Ok(())
-        }
-
-        /// True once every byte has been supplied.
-        pub fn complete(&self) -> bool {
-            self.received == self.len
-        }
-    }
-
-    /// Random-access reader over the pieces of a [`DiscImage`], for nod.
-    #[derive(Clone)]
-    struct ChunkStream {
-        chunks: Rc<[Uint8Array]>,
-        chunk_len: u64,
+    /// The user's file, read through a synchronous JS function `read(offset, length) -> Uint8Array`
+    /// (`FileReaderSync` over `Blob.slice` in the worker).
+    struct JsStream {
+        read: Function,
         len: u64,
     }
 
-    // SAFETY: nod requires `DiscStream: Send` because its optional `threading` feature moves clones to worker
-    // threads. That feature is off on wasm32 (mb-assets/Cargo.toml), and `wasm32-unknown-unknown` as built here
-    // has no threads at all, so the JS handles inside never leave the thread that created them.
-    unsafe impl Send for ChunkStream {}
-
-    impl ChunkStream {
-        fn read_at(&self, buf: &mut [u8], offset: u64) -> io::Result<()> {
-            let end = offset
-                .checked_add(buf.len() as u64)
-                .filter(|end| *end <= self.len)
-                .ok_or(io::ErrorKind::UnexpectedEof)?;
-            let mut pos = offset;
-            let mut done = 0usize;
-            while pos < end {
-                let index = (pos / self.chunk_len) as usize;
-                let within = pos % self.chunk_len;
-                let n = (self.chunk_len - within).min(end - pos);
-                let chunk = self.chunks.get(index).ok_or(io::ErrorKind::UnexpectedEof)?;
-                // A view of the piece (no copy on the JS side), copied once into the caller's buffer.
-                chunk
-                    .subarray(within as u32, (within + n) as u32)
-                    .copy_to(&mut buf[done..done + n as usize]);
-                pos += n;
-                done += n as usize;
-            }
-            Ok(())
-        }
-    }
-
-    impl mb_assets::disc::DiscStream for ChunkStream {
+    impl DiscStream for JsStream {
         fn read_exact_at(&mut self, buf: &mut [u8], offset: u64) -> io::Result<()> {
-            self.read_at(buf, offset)
+            if offset
+                .checked_add(buf.len() as u64)
+                .is_none_or(|end| end > self.len)
+            {
+                return Err(io::ErrorKind::UnexpectedEof.into());
+            }
+            if buf.is_empty() {
+                return Ok(());
+            }
+            let bytes = self
+                .read
+                .call2(
+                    &JsValue::NULL,
+                    &JsValue::from_f64(offset as f64),
+                    &JsValue::from_f64(buf.len() as f64),
+                )
+                .map_err(|e| {
+                    io::Error::other(format!("the file could not be read ({})", describe(&e)))
+                })?;
+            let bytes: Uint8Array = bytes
+                .dyn_into()
+                .map_err(|_| io::Error::other("the file reader returned no data"))?;
+            if bytes.length() as usize != buf.len() {
+                return Err(io::ErrorKind::UnexpectedEof.into());
+            }
+            bytes.copy_to(buf);
+            Ok(())
         }
 
         fn stream_len(&mut self) -> io::Result<u64> {
@@ -273,33 +309,406 @@ mod web {
         }
     }
 
-    /// Validate the disc and start the game on the page's canvas. Returns the disc's region once the browser
-    /// owns the event loop; later fatal errors are reported through `window.mbOnError`.
+    /// Messages for the user: what the reader says is already complete for unsupported files; anything else
+    /// is a damaged or truncated image.
+    fn image_error(e: io::Error) -> JsValue {
+        JsValue::from_str(&match e.kind() {
+            io::ErrorKind::Unsupported => e.to_string(),
+            io::ErrorKind::UnexpectedEof => format!(
+                "This disc image is incomplete (the file ends too early). {}",
+                mb_assets::disc::SUPPORTED
+            ),
+            _ => format!("This disc image is damaged or incomplete: {e}."),
+        })
+    }
+
+    /// One import of a disc image, driven by the worker a piece at a time.
+    #[wasm_bindgen]
+    pub struct ImportJob {
+        importer: Option<Importer<JsStream>>,
+    }
+
+    #[wasm_bindgen]
+    impl ImportJob {
+        /// Open the image: `read(offset, length)` returns that range of the file, `size` is its length.
+        /// Fails with a message for the user when the file is not a supported image of the game.
+        pub fn open(read: Function, size: f64) -> Result<ImportJob, JsValue> {
+            if !(1.0..=9.0e15).contains(&size) {
+                return Err(JsValue::from_str(&format!(
+                    "The file is empty. {}",
+                    mb_assets::disc::SUPPORTED
+                )));
+            }
+            let stream = JsStream {
+                read,
+                len: size as u64,
+            };
+            let importer = Importer::open(stream).map_err(image_error)?;
+            Ok(ImportJob {
+                importer: Some(importer),
+            })
+        }
+
+        fn get(&self) -> Result<&Importer<JsStream>, JsValue> {
+            self.importer
+                .as_ref()
+                .ok_or_else(|| JsValue::from_str("the import is finished"))
+        }
+
+        #[wasm_bindgen(js_name = gameId)]
+        pub fn game_id(&self) -> Result<String, JsValue> {
+            Ok(self.get()?.game_id().to_string())
+        }
+
+        pub fn region(&self) -> Result<String, JsValue> {
+            Ok(self.get()?.region().to_string())
+        }
+
+        /// Bytes of file data the import copies in total, and so far.
+        #[wasm_bindgen(js_name = totalBytes)]
+        pub fn total_bytes(&self) -> Result<f64, JsValue> {
+            Ok(self.get()?.total_bytes() as f64)
+        }
+
+        #[wasm_bindgen(js_name = doneBytes)]
+        pub fn done_bytes(&self) -> Result<f64, JsValue> {
+            Ok(self.get()?.done_bytes() as f64)
+        }
+
+        /// The disc paths the game can read after the import.
+        pub fn paths(&self) -> Result<Vec<String>, JsValue> {
+            Ok(self.get()?.paths().map(String::from).collect())
+        }
+
+        /// Copy the next piece (at most a megabyte): `write(bytes, offset)` stores `bytes` at `offset` of
+        /// the pack. Returns false when every file is copied.
+        pub fn step(&mut self, write: &Function) -> Result<bool, JsValue> {
+            let importer = self
+                .importer
+                .as_mut()
+                .ok_or_else(|| JsValue::from_str("the import is finished"))?;
+            match importer.step().map_err(image_error)? {
+                Some((at, bytes)) => {
+                    write_piece(write, bytes, at)?;
+                    Ok(true)
+                }
+                None => Ok(false),
+            }
+        }
+
+        /// Write the index and the header, which complete the pack. Returns the pack's size in bytes.
+        pub fn finish(&mut self, write: &Function) -> Result<f64, JsValue> {
+            let importer = self
+                .importer
+                .take()
+                .ok_or_else(|| JsValue::from_str("the import is finished"))?;
+            let done = importer.finish().map_err(js_err)?;
+            write_piece(write, &done.index, done.index_offset)?;
+            write_piece(write, &done.header, 0)?;
+            Ok(done.total_len as f64)
+        }
+
+        /// One file straight from the image (the session is served from the image when the pack cannot be
+        /// stored).
+        #[wasm_bindgen(js_name = readFile)]
+        pub fn read_file(&mut self, path: &str) -> Result<Uint8Array, JsValue> {
+            let importer = self
+                .importer
+                .as_mut()
+                .ok_or_else(|| JsValue::from_str("the import is finished"))?;
+            let bytes = importer.read_file(path).map_err(image_error)?;
+            Ok(Uint8Array::from(bytes.as_slice()))
+        }
+    }
+
+    fn write_piece(write: &Function, bytes: &[u8], at: u64) -> Result<(), JsValue> {
+        // A copy on the JS side (a megabyte at most), so no view into wasm memory outlives this call.
+        let piece = Uint8Array::from(bytes);
+        write.call2(&JsValue::NULL, &piece, &JsValue::from_f64(at as f64))?;
+        Ok(())
+    }
+
+    /// Read a stored pack back and check all of it: header, index and the checksum of every file.
+    /// `read(offset, length)` is synchronous like the importer's; `size` is the stored file's length.
+    #[wasm_bindgen]
+    pub fn verify_pack(read: Function, size: f64) -> Result<(), JsValue> {
+        let mut stream = JsStream {
+            read,
+            len: size.max(0.0) as u64,
+        };
+        let mut head = [0u8; HEADER_LEN];
+        stream.read_exact_at(&mut head, 0).map_err(js_err)?;
+        let header = Header::parse(&head, stream.len).map_err(js_err)?;
+        let mut index = vec![0u8; header.index_len as usize];
+        stream
+            .read_exact_at(&mut index, header.index_offset)
+            .map_err(js_err)?;
+        let index = PackIndex::parse(&header, &index).map_err(js_err)?;
+        let mut buf = vec![0u8; 1 << 20];
+        let names: Vec<String> = index.names().map(String::from).collect();
+        for name in names {
+            let Some(entry) = index.get(&name) else {
+                continue;
+            };
+            let mut crc = Crc32::default();
+            let mut at = 0u64;
+            while at < u64::from(entry.len) {
+                let n = (u64::from(entry.len) - at).min(buf.len() as u64) as usize;
+                stream
+                    .read_exact_at(&mut buf[..n], entry.offset + at)
+                    .map_err(js_err)?;
+                crc.update(&buf[..n]);
+                at += n as u64;
+            }
+            if crc.finish() != entry.crc {
+                return Err(JsValue::from_str(&format!(
+                    "{name} was not stored correctly"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------------------------------------
+    // Page side: the game data and the game.
+
+    enum Backing {
+        /// The imported pack: a `Blob` (the file in the Origin Private File System) and its index.
+        Pack {
+            blob: web_sys::Blob,
+            index: PackIndex,
+        },
+        /// No stored pack: `read(paths) -> Promise<Uint8Array[]>` asks the worker, which reads the picked
+        /// image; `names` is what it can serve.
+        Live {
+            read: Function,
+            names: HashSet<String>,
+        },
+    }
+
+    /// The game's files as the page has them.
+    #[wasm_bindgen]
+    pub struct GameData {
+        backing: Rc<Backing>,
+        game_id: String,
+    }
+
+    async fn read_blob(blob: &web_sys::Blob, offset: u64, len: u64) -> Result<Vec<u8>, String> {
+        let slice = blob
+            .slice_with_f64_and_f64(offset as f64, (offset + len) as f64)
+            .map_err(|e| describe(&e))?;
+        let buffer = JsFuture::from(slice.array_buffer())
+            .await
+            .map_err(|e| describe(&e))?;
+        let bytes = Uint8Array::new(&buffer);
+        if u64::from(bytes.length()) != len {
+            return Err("the stored game data is shorter than expected".into());
+        }
+        Ok(bytes.to_vec())
+    }
+
+    #[wasm_bindgen]
+    impl GameData {
+        /// Open an imported pack. Fails when it is incomplete, damaged or of another format version (the
+        /// page then removes it and asks for the image again).
+        #[wasm_bindgen(js_name = openPack)]
+        pub async fn open_pack(blob: web_sys::Blob) -> Result<GameData, JsValue> {
+            let size = blob.size() as u64;
+            if size < HEADER_LEN as u64 {
+                return Err(JsValue::from_str("game data is incomplete"));
+            }
+            let head = read_blob(&blob, 0, HEADER_LEN as u64)
+                .await
+                .map_err(js_err)?;
+            let header = Header::parse(&head, size).map_err(js_err)?;
+            let index = read_blob(&blob, header.index_offset, u64::from(header.index_len))
+                .await
+                .map_err(js_err)?;
+            let index = PackIndex::parse(&header, &index).map_err(js_err)?;
+            Ok(GameData {
+                game_id: header.game_id(),
+                backing: Rc::new(Backing::Pack { blob, index }),
+            })
+        }
+
+        /// Game data served by the import worker from the picked image for this session.
+        pub fn live(read: Function, names: Vec<String>, game_id: String) -> GameData {
+            GameData {
+                game_id,
+                backing: Rc::new(Backing::Live {
+                    read,
+                    names: names.into_iter().collect(),
+                }),
+            }
+        }
+
+        #[wasm_bindgen(js_name = gameId)]
+        pub fn game_id(&self) -> String {
+            self.game_id.clone()
+        }
+
+        #[wasm_bindgen(js_name = fileCount)]
+        pub fn file_count(&self) -> usize {
+            match &*self.backing {
+                Backing::Pack { index, .. } => index.len(),
+                Backing::Live { names, .. } => names.len(),
+            }
+        }
+    }
+
+    impl Backing {
+        fn contains(&self, path: &str) -> bool {
+            match self {
+                Backing::Pack { index, .. } => index.get(path).is_some(),
+                Backing::Live { names, .. } => names.contains(path),
+            }
+        }
+
+        /// Total size of `paths`, where it is known up front.
+        fn size_of(&self, paths: &[String]) -> u64 {
+            match self {
+                Backing::Pack { index, .. } => paths
+                    .iter()
+                    .filter_map(|p| index.get(p))
+                    .map(|e| u64::from(e.len))
+                    .sum(),
+                Backing::Live { .. } => 0,
+            }
+        }
+
+        /// Fetch `paths`, reporting bytes done through `progress`.
+        async fn fetch(
+            &self,
+            paths: &[String],
+            progress: &dyn Fn(u64),
+        ) -> Result<Vec<(String, Vec<u8>)>, String> {
+            let mut out = Vec::with_capacity(paths.len());
+            match self {
+                Backing::Pack { blob, index } => {
+                    let mut done = 0;
+                    for path in paths {
+                        let entry = index
+                            .get(path)
+                            .ok_or_else(|| format!("{path} is not in the game data"))?;
+                        let bytes = read_blob(blob, entry.offset, u64::from(entry.len))
+                            .await
+                            .map_err(|e| format!("{path}: {e}"))?;
+                        index.verify(path, &bytes).map_err(|e| e.to_string())?;
+                        done += bytes.len() as u64;
+                        progress(done);
+                        out.push((path.clone(), bytes));
+                    }
+                }
+                Backing::Live { read, .. } => {
+                    let list: Array = paths.iter().map(|p| JsValue::from_str(p)).collect();
+                    let promise = read
+                        .call1(&JsValue::NULL, &list)
+                        .map_err(|e| describe(&e))?;
+                    let files = JsFuture::from(js_sys::Promise::resolve(&promise))
+                        .await
+                        .map_err(|e| describe(&e))?;
+                    let files: Array = files
+                        .dyn_into()
+                        .map_err(|_| "the file service returned no list".to_string())?;
+                    if files.length() as usize != paths.len() {
+                        return Err("the file service returned the wrong number of files".into());
+                    }
+                    for (path, file) in paths.iter().zip(files.iter()) {
+                        let bytes: Uint8Array =
+                            file.dyn_into().map_err(|_| format!("{path}: no data"))?;
+                        out.push((path.clone(), bytes.to_vec()));
+                    }
+                }
+            }
+            Ok(out)
+        }
+    }
+
+    enum FetchState {
+        Idle,
+        Pending { done: u64, total: u64 },
+        Ready(Vec<(String, Vec<u8>)>),
+        Failed(String),
+    }
+
+    /// [`DeferredSource`] over [`Backing`]: a request runs as a future on the page's event loop.
+    struct WebSource {
+        backing: Rc<Backing>,
+        /// The current request's number and state; a finished fetch only lands if it is still current.
+        state: Rc<RefCell<(u32, FetchState)>>,
+    }
+
+    impl DeferredSource for WebSource {
+        fn contains(&self, path: &str) -> bool {
+            self.backing.contains(path)
+        }
+
+        fn request(&self, paths: &[String]) {
+            let generation = {
+                let mut state = self.state.borrow_mut();
+                state.0 = state.0.wrapping_add(1);
+                state.1 = FetchState::Pending {
+                    done: 0,
+                    total: self.backing.size_of(paths),
+                };
+                state.0
+            };
+            let (backing, state, paths) =
+                (self.backing.clone(), self.state.clone(), paths.to_vec());
+            wasm_bindgen_futures::spawn_local(async move {
+                let progress = |done: u64| {
+                    let mut s = state.borrow_mut();
+                    if let (true, FetchState::Pending { done: d, .. }) =
+                        (s.0 == generation, &mut s.1)
+                    {
+                        *d = done;
+                    }
+                };
+                let result = backing.fetch(&paths, &progress).await;
+                let mut s = state.borrow_mut();
+                if s.0 == generation {
+                    s.1 = match result {
+                        Ok(files) => FetchState::Ready(files),
+                        Err(e) => FetchState::Failed(e),
+                    };
+                }
+            });
+        }
+
+        fn poll(&self) -> Fetch {
+            let mut state = self.state.borrow_mut();
+            match std::mem::replace(&mut state.1, FetchState::Idle) {
+                FetchState::Idle => Fetch::Idle,
+                FetchState::Pending { done, total } => {
+                    state.1 = FetchState::Pending { done, total };
+                    Fetch::Pending { done, total }
+                }
+                FetchState::Ready(files) => Fetch::Ready(files),
+                FetchState::Failed(e) => Fetch::Failed(e),
+            }
+        }
+    }
+
+    /// Fetch the start-up files and start the game on the page's canvas. Resolves once the browser owns
+    /// the event loop; later fatal errors are reported through `window.mbOnError`.
     /// `force_webgl`: skip WebGPU even where it is available (the page's `?gl=1`).
     #[wasm_bindgen]
-    pub fn start(disc: DiscImage, force_webgl: bool) -> Result<String, JsValue> {
-        if !disc.complete() {
-            return Err(JsValue::from_str("the disc image was not read completely"));
-        }
-        let stream = ChunkStream {
-            chunks: disc.chunks.into(),
-            chunk_len: disc.chunk_len,
-            len: disc.len,
-        };
-        // Unsupported containers come back as `Unsupported` with a message that is already complete.
-        let pack = DiscPack::from_stream(Box::new(stream)).map_err(|e| {
-            JsValue::from_str(&match e.kind() {
-                io::ErrorKind::Unsupported => e.to_string(),
-                _ => format!("could not read this file as a GameCube disc image: {e}"),
-            })
-        })?;
-        let region = pack.smb1_region().ok_or_else(|| {
-            JsValue::from_str(&format!(
-                "this is not a Super Monkey Ball 1 disc image (disc id {})",
-                pack.game_id()
-            ))
-        })?;
-        let content = Content::from_disc(pack);
+    pub async fn start(data: GameData, force_webgl: bool) -> Result<(), JsValue> {
+        let backing = data.backing;
+        let wanted: Vec<String> = boot_files()
+            .iter()
+            .filter_map(|w| w.resolve(&|p| backing.contains(p)))
+            .collect();
+        let files = backing
+            .fetch(&wanted, &|_| {})
+            .await
+            .map_err(|e| JsValue::from_str(&format!("The game data could not be read: {e}")))?;
+        let content = Content::deferred(Rc::new(WebSource {
+            backing,
+            state: Rc::new(RefCell::new((0, FetchState::Idle))),
+        }));
+        content.insert_prepared(files);
+        PREPARED.with(|c| *c.borrow_mut() = Some(content.clone()));
         let event_loop = winit::event_loop::EventLoop::new()
             .map_err(|e| JsValue::from_str(&format!("event loop: {e}")))?;
         shell::run(
@@ -311,16 +720,24 @@ mod web {
                 crate::audio::create(),
             ),
         )
-        .map_err(|e| JsValue::from_str(&e))?;
-        Ok(region.to_string())
+        .map_err(|e| JsValue::from_str(&e))
     }
 
-    /// Save data in the browser's `localStorage` (hex text, since values are opaque bytes). Where storage is
-    /// unavailable (private mode, blocked site data) the session falls back to memory, so play continues and
-    /// only persistence is lost.
+    // -----------------------------------------------------------------------------------------------------
+    // Saves.
+
+    /// Save data in the browser's `localStorage` (hex text, since values are opaque bytes).
+    ///
+    /// Where storage is unavailable or refuses a write (private mode, blocked site data, a `file://` page,
+    /// a full quota) the write is reported as an error, so the menu says "could not save", and the value is
+    /// kept in memory instead: the session goes on and reads back what it wrote. Two tabs of the game share
+    /// the store without coordination: each keeps its own copy of the profile, and the tab that saves last
+    /// wins (see docs/WEB.md).
     #[derive(Default)]
     struct LocalStorage {
+        /// Values that could not be stored, and so live here for the session.
         fallback: mb_app::mb_game::MemoryStorage,
+        in_fallback: HashSet<String>,
     }
 
     impl LocalStorage {
@@ -331,13 +748,22 @@ mod web {
         }
     }
 
+    const NO_STORAGE: &str =
+        "this browser gives the page no storage; progress lasts until the page closes";
+
     impl mb_app::mb_game::Storage for LocalStorage {
         fn read(&self, key: &str) -> io::Result<Option<Vec<u8>>> {
+            if self.in_fallback.contains(key) {
+                return self.fallback.read(key);
+            }
             let Some(store) = Self::store() else {
-                return self.fallback.read(key);
+                // Nothing was ever stored: a fresh profile, not an error (the first save says so).
+                return Ok(None);
             };
-            let Ok(Some(hex)) = store.get_item(&format!("{}{key}", Self::PREFIX)) else {
-                return self.fallback.read(key);
+            let hex = match store.get_item(&format!("{}{key}", Self::PREFIX)) {
+                Ok(Some(hex)) => hex,
+                Ok(None) => return Ok(None),
+                Err(e) => return Err(io::Error::other(describe(&e))),
             };
             if hex.len() % 2 != 0 || !hex.is_ascii() {
                 return Err(io::Error::new(
@@ -355,23 +781,43 @@ mod web {
 
         fn write(&mut self, key: &str, data: &[u8]) -> io::Result<()> {
             let hex: String = data.iter().map(|b| format!("{b:02x}")).collect();
-            let stored = Self::store()
-                .map(|s| s.set_item(&format!("{}{key}", Self::PREFIX), &hex).is_ok())
-                .unwrap_or(false);
-            if stored {
-                Ok(())
-            } else {
-                self.fallback.write(key, data)
+            let result = match Self::store() {
+                Some(s) => s
+                    .set_item(&format!("{}{key}", Self::PREFIX), &hex)
+                    .map_err(|e| io::Error::other(format!("browser storage: {}", describe(&e)))),
+                None => Err(io::Error::other(NO_STORAGE)),
+            };
+            match result {
+                Ok(()) => {
+                    // Stored for real again: stop serving the session copy.
+                    if self.in_fallback.remove(key) {
+                        let _ = self.fallback.remove(key);
+                    }
+                    Ok(())
+                }
+                Err(e) => {
+                    self.fallback.write(key, data)?;
+                    self.in_fallback.insert(key.to_string());
+                    Err(e)
+                }
             }
         }
 
         fn remove(&mut self, key: &str) -> io::Result<()> {
-            if let Some(s) = Self::store() {
-                let _ = s.remove_item(&format!("{}{key}", Self::PREFIX));
+            if self.in_fallback.remove(key) {
+                let _ = self.fallback.remove(key);
             }
-            self.fallback.remove(key)
+            match Self::store() {
+                Some(s) => s
+                    .remove_item(&format!("{}{key}", Self::PREFIX))
+                    .map_err(|e| io::Error::other(describe(&e))),
+                None => Ok(()),
+            }
         }
     }
+
+    // -----------------------------------------------------------------------------------------------------
+    // The platform the shared shell runs on.
 
     const PAD_AXES: [Axis; 4] = [Axis::MoveX, Axis::MoveY, Axis::LookX, Axis::LookY];
     /// Standard mapping: 0 = A, 1 = B, 3 = Y, 9 = Start.
@@ -402,6 +848,8 @@ mod web {
         /// Frames of play looked at since the last decision, and how many of them were over budget.
         watched: u32,
         slow: u32,
+        /// The Cancel injected for a "back" gesture is still held (released at the next frame).
+        back_held: bool,
     }
 
     /// A frame this long (ms) missed 60 Hz by a clear margin.
@@ -437,6 +885,7 @@ mod web {
                 pad_buttons: [false; 4],
                 insets: Insets::default(),
                 frames: 0,
+                back_held: false,
             }
         }
 
@@ -501,6 +950,27 @@ mod web {
             }
             (axes, buttons)
         }
+
+        /// What game states asked of the page since the last frame (`mb_app::host`). The page's side is
+        /// `window.mbHost(command, argument)` in `web/main.js`.
+        fn run_host_commands() {
+            for command in host::drain() {
+                match command {
+                    host::Command::RemoveGameData => {
+                        call_page("mbHost", &[JsValue::from_str("remove-data")]);
+                    }
+                    host::Command::SetFullscreen(on) => {
+                        call_page("mbHost", &[JsValue::from_str("fullscreen"), on.into()]);
+                    }
+                    host::Command::Tilt { enabled, range_deg } => {
+                        TILT.with(|t| t.borrow_mut().set_enabled(enabled, range_deg));
+                        // The page listens to the sensor only while tilt steers.
+                        call_page("mbHost", &[JsValue::from_str("tilt"), enabled.into()]);
+                    }
+                    host::Command::CalibrateTilt => TILT.with(|t| t.borrow_mut().calibrate()),
+                }
+            }
+        }
     }
 
     impl Platform for WebPlatform {
@@ -545,6 +1015,20 @@ mod web {
             self.css_ratio
         }
 
+        fn pointer_position(
+            &mut self,
+            window: &Window,
+            pos: (f32, f32),
+            _render_scale: f32,
+        ) -> (f32, f32) {
+            // winit reports pointers in CSS pixels times `devicePixelRatio`; the surface has `css_ratio`
+            // pixels per CSS pixel. Going through CSS pixels is right on real devices (where it equals
+            // the default mapping) and also where the canvas has fewer real pixels than the ratio says
+            // (device emulation), where the default would put every touch in the wrong place.
+            let to_surface = self.css_ratio / window.scale_factor().max(0.01) as f32;
+            (pos.0 * to_surface, pos.1 * to_surface)
+        }
+
         fn render_scale_changed(&mut self) -> bool {
             std::mem::take(&mut self.quality_changed)
         }
@@ -566,10 +1050,26 @@ mod web {
             web_sys::console::log_1(&JsValue::from_str(&format!("graphics: {gpu}")));
         }
 
+        fn on_nav_depth(&mut self, depth: u32) {
+            NAV_DEPTH.with(|d| d.set(depth));
+        }
+
         /// Called once per presented frame, which also makes it the frame counter.
         fn poll_input(&mut self, input: &mut InputState) {
             self.frames = self.frames.wrapping_add(1);
             FRAMES.with(|f| f.set(self.frames));
+            Self::run_host_commands();
+            TILT.with(|t| t.borrow().apply(input));
+            // A "back" gesture is one press of Cancel. It is not a key: the on-screen controls stay.
+            if self.back_held {
+                self.back_held = false;
+                input.set_action(Action::Cancel, false);
+            } else if BACK_PENDING.with(|b| b.replace(false)) {
+                let touch = input.touch_active();
+                input.set_action(Action::Cancel, true);
+                input.set_touch_active(touch);
+                self.back_held = true;
+            }
             // `navigator.getGamepads()` builds a fresh array of objects on every call; without a pad there is
             // nothing to read. One more read after the pad went away releases what it held.
             let present = PAD_PRESENT.with(Cell::get);
@@ -626,7 +1126,7 @@ mod web {
 
         fn on_error(&mut self, msg: &str) {
             web_sys::console::error_1(&JsValue::from_str(msg));
-            report_to_page(msg);
+            call_page("mbOnError", &[JsValue::from_str(msg)]);
         }
     }
 }

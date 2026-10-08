@@ -14,7 +14,7 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use mb_app::audio::{Audio, AudioBackend, BackendReport, Bus, Command, MixBackend, Recorded};
-use mb_app::content::{source_from_path, Content};
+use mb_app::content::{open_disc_image, Content};
 use mb_app::headless::{Headless, FRAME};
 use mb_app::input::Action;
 use mb_app::menu::Menu;
@@ -56,7 +56,7 @@ fn start(audio: &Audio) -> Option<Headless> {
         eprintln!("skipped: no disc image (set MB_DISC)");
         return None;
     };
-    let content: Content = match source_from_path(&disc).open() {
+    let content: Content = match open_disc_image(&disc) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("skipped: {}: {e}", disc.display());
@@ -139,6 +139,9 @@ fn play_floor_one(h: &mut Headless, each_frame: &mut dyn FnMut()) -> Timeline {
     step(h, Some(Action::Pause));
     assert!(h.top().unwrap().play_view().unwrap().paused);
     step(h, Some(Action::LookDown));
+    step(h, Some(Action::LookDown));
+    step(h, Some(Action::Confirm));
+    // Quitting a course asks first; the second row is "quit course".
     step(h, Some(Action::LookDown));
     step(h, Some(Action::Confirm));
     for _ in 0..30 {
@@ -329,9 +332,10 @@ fn requests_follow_the_game() {
         "{} ticks in {played_seconds} s",
         ticks.len()
     );
-    // Menus: two confirms into the course, then two moves in the pause menu (its confirm is cut by the quit).
+    // Menus: two confirms into the course, then two moves in the pause menu and one in the "quit the
+    // course?" question (whose confirm is cut by the quit).
     assert!(plays(&log, MENU_CONFIRM).len() >= 2);
-    assert_eq!(plays(&log, MENU_MOVE).len(), 2);
+    assert_eq!(plays(&log, MENU_MOVE).len(), 3);
     // The category volumes go out once (the defaults: 50 / 30 / 30), before anything plays; no suspend.
     let volumes: Vec<&Recorded> = log
         .iter()

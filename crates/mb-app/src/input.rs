@@ -112,8 +112,15 @@ impl InputState {
     }
 
     /// Analog value in -1..=1 (gamepad sticks, touch joystick, tilt).
+    ///
+    /// A value that is not a number (a sensor without a reading) counts as centred: `clamp` would keep the
+    /// NaN, and a NaN tilt axis would win over the stick and the keys for good.
     pub fn set_axis(&mut self, axis: Axis, value: f32) {
-        self.axes[axis.index()] = value.clamp(-1.0, 1.0);
+        self.axes[axis.index()] = if value.is_nan() {
+            0.0
+        } else {
+            value.clamp(-1.0, 1.0)
+        };
     }
 
     pub fn axis(&self, axis: Axis) -> f32 {
@@ -217,6 +224,13 @@ impl InputState {
             self.pointer_released = true;
         }
         self.pointer_held = down;
+    }
+
+    /// The primary button / touch is gone without having been released (the system took the touch away,
+    /// the window lost focus): no longer held, and no release edge, so nothing is clicked.
+    pub fn cancel_pointer(&mut self) {
+        self.pointer_held = false;
+        self.pointer_pressed = false;
     }
 
     pub fn add_scroll(&mut self, dy: f32) {
@@ -399,6 +413,27 @@ mod tests {
         i.set_axis(Axis::MoveY, 1.0);
         let (x, y) = i.tilt();
         assert!(((x * x + y * y).sqrt() - 1.0).abs() < 1e-6 && x > 0.7 && y > 0.7);
+    }
+
+    #[test]
+    fn axis_values_that_are_not_numbers_count_as_centred() {
+        let mut i = InputState::new();
+        i.set_action(Action::MoveForward, true);
+        i.set_axis(Axis::TiltX, f32::NAN);
+        i.set_axis(Axis::MoveY, f32::NAN);
+        assert_eq!(i.axis(Axis::TiltX), 0.0);
+        // The keys still steer.
+        assert_eq!(i.tilt(), (0.0, 1.0));
+        i.set_axis(Axis::MoveX, f32::INFINITY);
+        i.set_axis(Axis::MoveY, f32::NEG_INFINITY);
+        let (x, y) = i.tilt();
+        assert!((x * x + y * y).sqrt() <= 1.0 + 1e-6 && x > 0.0 && y < 0.0);
+        // Every source at once: each component stays in range for the quantiser.
+        i.set_axis(Axis::TiltX, 1.0);
+        i.set_axis(Axis::TiltY, -1.0);
+        i.set_action(Action::LookLeft, true);
+        let (x, y) = i.tilt();
+        assert!(x.abs() <= 1.0 && y.abs() <= 1.0 && (x * x + y * y).sqrt() <= 1.0 + 1e-6);
     }
 
     #[test]

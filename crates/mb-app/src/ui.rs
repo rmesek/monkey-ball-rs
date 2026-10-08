@@ -197,9 +197,51 @@ impl TouchControls {
         layout: &Layout,
         input: &mut InputState,
     ) {
+        // A touch that starts while its id is still known lost its end somewhere (browsers and drivers do
+        // drop them): let go of what the old one held first, or a stick, a button or the pointer would
+        // stay held for good.
+        if phase == TouchPhase::Started {
+            self.cancel(id, input);
+        }
         self.route(id, phase, pos, layout, input);
         // Last, because raising a button action counts as key use, which clears the flag.
         input.set_touch_active(true);
+    }
+
+    /// The touch `id` is gone without a proper end (the system cancelled it): release what it held. Unlike
+    /// an end this is not a tap, so nothing is activated.
+    pub fn cancel(&mut self, id: u64, input: &mut InputState) {
+        if self.pointer_id == Some(id) {
+            self.pointer_id = None;
+            input.cancel_pointer();
+        }
+        self.release(id, input);
+    }
+
+    /// Every touch is gone (focus lost, window hidden, app suspended): release everything they held.
+    pub fn cancel_all(&mut self, input: &mut InputState) {
+        let ids: Vec<u64> = self.active.keys().copied().chain(self.pointer_id).collect();
+        for id in ids {
+            self.cancel(id, input);
+        }
+    }
+
+    /// Let go of whatever the touch `id` was doing.
+    fn release(&mut self, id: u64, input: &mut InputState) {
+        match self.active.remove(&id) {
+            Some(Role::Stick { .. }) => {
+                input.set_axis(Axis::MoveX, 0.0);
+                input.set_axis(Axis::MoveY, 0.0);
+                input.set_touch_stick(None);
+            }
+            Some(Role::Look { .. }) => {
+                if !self.active.values().any(|r| matches!(r, Role::Look { .. })) {
+                    input.set_mouse_look(false);
+                }
+            }
+            Some(Role::Button(a)) => input.set_action(a, false),
+            Some(Role::Pointer) | None => {}
+        }
     }
 
     fn route(
@@ -251,8 +293,13 @@ impl TouchControls {
             TouchPhase::Moved => match self.active.get_mut(&id) {
                 Some(Role::Stick { origin }) => {
                     let r = layout.stick_radius();
-                    let dx = ((pos.0 - origin.0) / r).clamp(-1.0, 1.0);
-                    let dy = ((pos.1 - origin.1) / r).clamp(-1.0, 1.0);
+                    // Clamped to the circle: the knob stays on its base and a diagonal is not faster.
+                    let (mut dx, mut dy) = ((pos.0 - origin.0) / r, (pos.1 - origin.1) / r);
+                    let len = (dx * dx + dy * dy).sqrt();
+                    if len > 1.0 {
+                        dx /= len;
+                        dy /= len;
+                    }
                     input.set_touch_stick(Some(TouchStick {
                         origin: *origin,
                         pos: (origin.0 + dx * r, origin.1 + dy * r),
@@ -268,20 +315,7 @@ impl TouchControls {
                 }
                 _ => {}
             },
-            TouchPhase::Ended => match self.active.remove(&id) {
-                Some(Role::Stick { .. }) => {
-                    input.set_axis(Axis::MoveX, 0.0);
-                    input.set_axis(Axis::MoveY, 0.0);
-                    input.set_touch_stick(None);
-                }
-                Some(Role::Look { .. }) => {
-                    if !self.active.values().any(|r| matches!(r, Role::Look { .. })) {
-                        input.set_mouse_look(false);
-                    }
-                }
-                Some(Role::Button(a)) => input.set_action(a, false),
-                Some(Role::Pointer) | None => {}
-            },
+            TouchPhase::Ended => self.release(id, input),
         }
     }
 }
@@ -364,10 +398,92 @@ mod tests {
             &l,
             &mut input,
         );
-        assert_eq!(input.axis(Axis::MoveX), 1.0);
-        assert_eq!(input.axis(Axis::MoveY), 1.0);
+        // A diagonal is clamped to the circle: the knob stays on the base disc.
+        let (x, y) = (input.axis(Axis::MoveX), input.axis(Axis::MoveY));
+        assert!((x - y).abs() < 1e-6 && ((x * x + y * y).sqrt() - 1.0).abs() < 1e-5);
+        let stick = input.touch_stick().unwrap();
+        let reach = ((stick.pos.0 - stick.origin.0).powi(2)
+            + (stick.pos.1 - stick.origin.1).powi(2))
+        .sqrt();
+        assert!((reach - l.stick_radius()).abs() < 1e-2, "knob {reach}");
+        // Straight along one axis still reaches full deflection.
+        t.touch(1, TouchPhase::Moved, (z.0 + 1000.0, z.1), &l, &mut input);
+        assert_eq!(
+            (input.axis(Axis::MoveX), input.axis(Axis::MoveY)),
+            (1.0, 0.0)
+        );
         t.touch(1, TouchPhase::Ended, z, &l, &mut input);
         assert_eq!(input.axis(Axis::MoveX), 0.0);
+    }
+
+    /// A touch whose end was lost and whose id starts again must not leave the stick, a button or the
+    /// pointer held.
+    #[test]
+    fn a_repeated_start_releases_what_the_lost_touch_held() {
+        let l = landscape();
+        let mut input = InputState::new();
+        input.request_virtual_controls(true);
+        let mut t = TouchControls::new();
+        let z = l.stick_zone().center();
+        let (pause, button) = l.buttons()[0];
+        // Stick held by touch 1, then touch 1 "starts" again on the pause button.
+        t.touch(1, TouchPhase::Started, z, &l, &mut input);
+        t.touch(1, TouchPhase::Moved, (z.0 + 1000.0, z.1), &l, &mut input);
+        assert_eq!(input.axis(Axis::MoveX), 1.0);
+        t.touch(1, TouchPhase::Started, button.center(), &l, &mut input);
+        assert_eq!(input.axis(Axis::MoveX), 0.0, "the stale stick was released");
+        assert!(input.touch_stick().is_none() && input.held(pause));
+        // The button held by touch 1, then touch 1 starts again in the stick zone: pause is released and
+        // a new stick is accepted (it used to be refused for ever).
+        t.touch(1, TouchPhase::Started, z, &l, &mut input);
+        assert!(!input.held(pause));
+        t.touch(1, TouchPhase::Moved, (z.0, z.1 - 1000.0), &l, &mut input);
+        assert_eq!(input.axis(Axis::MoveY), 1.0);
+        t.touch(1, TouchPhase::Ended, z, &l, &mut input);
+        input.end_frame();
+        // Pause still works afterwards.
+        t.touch(2, TouchPhase::Started, button.center(), &l, &mut input);
+        assert!(input.pressed(pause));
+        t.touch(2, TouchPhase::Ended, button.center(), &l, &mut input);
+
+        // Menus: the pointer of a lost touch is let go without a click, and the next touch is a new press.
+        input.request_virtual_controls(false);
+        input.end_frame();
+        t.touch(5, TouchPhase::Started, (10.0, 10.0), &l, &mut input);
+        input.end_frame();
+        t.touch(5, TouchPhase::Started, (300.0, 300.0), &l, &mut input);
+        assert!(input.pointer_pressed() && !input.pointer_released());
+        assert_eq!(input.pointer(), Some((300.0, 300.0)));
+        t.touch(5, TouchPhase::Ended, (300.0, 300.0), &l, &mut input);
+        assert!(input.pointer_released() && !input.pointer_held());
+    }
+
+    #[test]
+    fn cancelling_releases_everything_without_a_click() {
+        let l = landscape();
+        let mut input = InputState::new();
+        input.request_virtual_controls(true);
+        let mut t = TouchControls::new();
+        let z = l.stick_zone().center();
+        let (pause, button) = l.buttons()[0];
+        t.touch(1, TouchPhase::Started, z, &l, &mut input);
+        t.touch(1, TouchPhase::Moved, (z.0 - 1000.0, z.1), &l, &mut input);
+        t.touch(2, TouchPhase::Started, button.center(), &l, &mut input);
+        t.touch(3, TouchPhase::Started, (900.0, 100.0), &l, &mut input);
+        t.touch(3, TouchPhase::Moved, (910.0, 100.0), &l, &mut input);
+        input.end_frame();
+        assert!(input.held(pause) && input.pointer_held() && input.axis(Axis::MoveX) == -1.0);
+        t.cancel_all(&mut input);
+        assert!(!input.held(pause) && !input.pointer_held() && !input.pointer_released());
+        assert_eq!(input.axis(Axis::MoveX), 0.0);
+        assert!(input.touch_stick().is_none());
+        input.add_mouse_delta(5.0, 5.0);
+        assert_eq!(input.look_delta(), (0.0, 0.0), "look mode ended");
+        // One cancelled touch (the system took it for a gesture) leaves the others alone.
+        t.touch(1, TouchPhase::Started, z, &l, &mut input);
+        t.touch(2, TouchPhase::Started, button.center(), &l, &mut input);
+        t.cancel(2, &mut input);
+        assert!(!input.held(pause) && input.touch_stick().is_some());
     }
 
     #[test]

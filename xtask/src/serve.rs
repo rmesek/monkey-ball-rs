@@ -1,39 +1,57 @@
-//! `xtask serve-web`: a static file server for testing the browser build locally. Standard library only, bound
-//! to the loopback interface, no caching. It serves the `web/` directory and, when started with `--disc`, the
-//! developer's own disc image at `/dev-disc` (with HTTP range support) so the page can be exercised without a
-//! file dialog (`http://localhost:<port>/?dev-disc=1`). Nothing from the disc is copied anywhere.
+//! `xtask serve-web`: a static file server for trying the browser build. A DEVELOPER TOOL: the game itself
+//! needs no server (the bundle is static files; see `docs/WEB.md` for hosting, installing and the single-file
+//! build). Standard library only, no caching.
+//!
+//! * By default it listens on the loopback interface only and serves `web/dist/` (what `scripts/build-web`
+//!   produces) at `http://localhost:8080/`.
+//! * `--lan` listens on every interface, so a phone on the same network can open the page. The page is then
+//!   reachable by everyone on that network, and it is plain http: to the phone's browser that is not a
+//!   secure context, so there is no private file storage, no service worker and no WebGPU there. The page
+//!   handles that (it plays from the picked image for the session, on WebGL2).
+//! * `--disc <image>` adds a developer page at `/dev/` that feeds the developer's own disc image to the
+//!   page through its file input, for automation that cannot drive a file dialog. The image is served to
+//!   loopback clients only, and `--disc` cannot be combined with `--lan`: a disc image is never exposed to a
+//!   network.
 
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
-use std::net::{Ipv4Addr, TcpListener, TcpStream};
+use std::net::{IpAddr, Ipv4Addr, TcpListener, TcpStream, UdpSocket};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
 pub const DEFAULT_PORT: u16 = 8080;
 const DEV_DISC_ROUTE: &str = "/dev-disc";
+/// The developer page (the bundle's page plus `web/dev/dev-disc.js`) and its script.
+const DEV_PAGE_ROUTE: &str = "/dev/";
+const DEV_SCRIPT_ROUTE: &str = "/dev/dev-disc.js";
 
 pub struct Options {
+    /// The bundle to serve (`web/dist`).
     pub root: PathBuf,
+    /// Developer-only files (`web/dev`), served under `/dev/` with `--disc`.
+    pub dev: PathBuf,
     pub port: u16,
     pub disc: Option<PathBuf>,
+    /// Listen on all interfaces instead of loopback.
+    pub lan: bool,
 }
 
-/// Parse `[port] [--disc <path>] [--root <dir>]`.
-pub fn parse_args(
-    args: impl Iterator<Item = String>,
-    default_root: PathBuf,
-) -> Result<Options, String> {
+/// Parse `[port] [--root <dir>] [--lan] [--disc <path>]`. `web` is the workspace's `web/` directory.
+pub fn parse_args(args: impl Iterator<Item = String>, web: PathBuf) -> Result<Options, String> {
     let mut opts = Options {
-        root: default_root,
+        root: web.join("dist"),
+        dev: web.join("dev"),
         port: DEFAULT_PORT,
         disc: None,
+        lan: false,
     };
     let mut args = args;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--disc" => opts.disc = Some(args.next().ok_or("--disc needs a path")?.into()),
             "--root" => opts.root = args.next().ok_or("--root needs a directory")?.into(),
+            "--lan" => opts.lan = true,
             port => {
                 opts.port = port
                     .parse()
@@ -41,34 +59,71 @@ pub fn parse_args(
             }
         }
     }
+    if opts.lan && opts.disc.is_some() {
+        return Err(
+            "--disc cannot be combined with --lan: a disc image is never served to a network \
+             (on the phone, pick the image with the page's own button)"
+                .into(),
+        );
+    }
     Ok(opts)
+}
+
+/// This machine's address on the local network, found without sending anything: the address a UDP socket
+/// would use towards a public address (192.0.2.1 is reserved for documentation and never contacted).
+fn lan_address() -> Option<IpAddr> {
+    let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).ok()?;
+    socket.connect((Ipv4Addr::new(192, 0, 2, 1), 9)).ok()?;
+    let ip = socket.local_addr().ok()?.ip();
+    (!ip.is_loopback() && !ip.is_unspecified()).then_some(ip)
 }
 
 pub fn run(opts: Options) -> Result<(), String> {
     if !opts.root.join("index.html").is_file() {
-        return Err(format!("{} has no index.html", opts.root.display()));
-    }
-    if !opts.root.join("pkg").is_dir() {
-        eprintln!(
-            "note: {} does not exist yet; run scripts/build-web.ps1 (or .sh) first",
-            opts.root.join("pkg").display()
-        );
+        return Err(format!(
+            "{} has no index.html: build the bundle first with scripts/build-web.ps1 (or .sh)",
+            opts.root.display()
+        ));
     }
     if let Some(disc) = &opts.disc {
         if !disc.is_file() {
             return Err(format!("disc image not found: {}", disc.display()));
         }
     }
-    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, opts.port))
-        .map_err(|e| format!("cannot listen on 127.0.0.1:{}: {e}", opts.port))?;
+    let bind = if opts.lan {
+        Ipv4Addr::UNSPECIFIED
+    } else {
+        Ipv4Addr::LOCALHOST
+    };
+    let listener = TcpListener::bind((bind, opts.port))
+        .map_err(|e| format!("cannot listen on {bind}:{}: {e}", opts.port))?;
     println!(
-        "serving {} at http://localhost:{}/",
+        "serving {} at http://localhost:{}/  (developer tool; the game needs no server)",
         opts.root.display(),
         opts.port
     );
+    if opts.lan {
+        println!("WARNING: --lan makes this page reachable by every device on the local network.");
+        match lan_address() {
+            Some(ip) => println!(
+                "on a phone in the same network open http://{ip}:{}/",
+                opts.port
+            ),
+            None => println!(
+                "no local network address found; look it up in the system's network settings"
+            ),
+        }
+        println!(
+            "note: plain http on a network address is not a secure context: no on-device storage, no service \
+             worker, no WebGPU there. The page then plays from the picked image for the session (WebGL2).\n\
+             With a USB-connected Android device, `adb reverse tcp:{0} tcp:{0}` and http://localhost:{0}/ on \
+             the phone is a secure context and needs no --lan.",
+            opts.port
+        );
+    }
     if let Some(disc) = &opts.disc {
         println!(
-            "developer disc {} at http://localhost:{}/?dev-disc=1",
+            "developer page with disc {} at http://localhost:{}{DEV_PAGE_ROUTE} (loopback only)",
             disc.display(),
             opts.port
         );
@@ -84,6 +139,18 @@ pub fn run(opts: Options) -> Result<(), String> {
         });
     }
     Ok(())
+}
+
+/// The bundle's page as the developer page: relative paths resolve against the bundle's root and the
+/// developer script is added. Built in memory; the bundle itself never contains it.
+fn dev_page(index: &str) -> String {
+    index
+        .replacen("<head>", "<head>\n<base href=\"/\">", 1)
+        .replacen(
+            "</body>",
+            &format!("  <script src=\"{DEV_SCRIPT_ROUTE}\"></script>\n</body>"),
+            1,
+        )
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -182,6 +249,7 @@ fn mime(path: &Path) -> &'static str {
         Some("svg") => "image/svg+xml",
         Some("png") => "image/png",
         Some("ico") => "image/x-icon",
+        Some("webmanifest") => "application/manifest+json",
         Some("txt" | "md") => "text/plain; charset=utf-8",
         _ => "application/octet-stream",
     }
@@ -217,6 +285,7 @@ fn respond_status(stream: &mut TcpStream, status: &str, extra: &str, body: &str)
 
 fn handle(stream: TcpStream, opts: &Options) -> io::Result<()> {
     stream.set_read_timeout(Some(Duration::from_secs(30)))?;
+    let local_client = stream.peer_addr().is_ok_and(|a| a.ip().is_loopback());
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut stream = stream;
     let Some(request) = read_request(&mut reader)? else {
@@ -231,8 +300,25 @@ fn handle(stream: TcpStream, opts: &Options) -> io::Result<()> {
             "method not allowed\n",
         );
     }
+    // The developer routes exist only with --disc, and only for this machine.
+    let dev = opts.disc.is_some() && local_client;
+    if dev && request.path == DEV_PAGE_ROUTE {
+        let page = dev_page(&std::fs::read_to_string(opts.root.join("index.html"))?);
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\n\
+             Cache-Control: no-store\r\nConnection: close\r\n\r\n",
+            page.len()
+        )?;
+        if !head {
+            stream.write_all(page.as_bytes())?;
+        }
+        return stream.flush();
+    }
     let path = if request.path == DEV_DISC_ROUTE {
-        opts.disc.clone()
+        opts.disc.clone().filter(|_| dev)
+    } else if request.path == DEV_SCRIPT_ROUTE {
+        dev.then(|| opts.dev.join("dev-disc.js"))
     } else {
         resolve(&opts.root, &request.path)
     };
@@ -341,6 +427,15 @@ mod tests {
     }
 
     #[test]
+    fn the_developer_page_is_the_bundle_page_plus_one_script() {
+        let page =
+            dev_page("<html><head>\n<title>x</title></head><body>\n<p>hi</p>\n</body></html>");
+        assert!(page.contains("<head>\n<base href=\"/\">"));
+        assert!(page.contains("<script src=\"/dev/dev-disc.js\"></script>\n</body>"));
+        assert_eq!(page.matches("<script").count(), 1);
+    }
+
+    #[test]
     fn parses_ranges() {
         assert_eq!(parse_range("bytes=0-9", 100), Some((0, 9)));
         assert_eq!(parse_range("bytes=90-", 100), Some((90, 99)));
@@ -364,11 +459,23 @@ mod tests {
         };
         let o = parse_args(args(&["9000", "--disc", "a.rvz"]), "web".into()).unwrap();
         assert_eq!(
-            (o.port, o.disc, o.root),
-            (9000, Some("a.rvz".into()), PathBuf::from("web"))
+            (o.port, o.disc, o.root, o.lan),
+            (
+                9000,
+                Some("a.rvz".into()),
+                PathBuf::from("web").join("dist"),
+                false
+            )
         );
         let o = parse_args(args(&[]), "web".into()).unwrap();
-        assert_eq!((o.port, o.disc), (DEFAULT_PORT, None));
+        assert_eq!((o.port, o.disc, o.lan), (DEFAULT_PORT, None, false));
+        let o = parse_args(args(&["--lan", "--root", "x"]), "web".into()).unwrap();
+        assert!(o.lan && o.root.as_os_str() == "x" && o.dev == Path::new("web").join("dev"));
+        // A disc image is never offered to the network, in either order.
+        for both in [["--lan", "--disc", "a.rvz"], ["--disc", "a.rvz", "--lan"]] {
+            let e = parse_args(args(&both), "web".into()).err().unwrap();
+            assert!(e.contains("--lan"), "{e}");
+        }
         assert!(parse_args(args(&["--disc"]), "web".into()).is_err());
         assert!(parse_args(args(&["port"]), "web".into()).is_err());
     }

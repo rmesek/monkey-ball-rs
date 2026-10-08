@@ -8,7 +8,7 @@
 
 use std::path::{Path, PathBuf};
 
-use mb_app::content::source_from_path;
+use mb_app::content::open_disc_image;
 use mb_app::headless::{unlocked_storage, Headless, FRAME};
 use mb_app::input::{Action, TouchStick};
 use mb_app::menu::{Autostart, Menu};
@@ -195,10 +195,7 @@ fn run() -> Result<(), String> {
     };
     let dir = PathBuf::from(dir);
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let source = source_from_path(disc);
-    let content = source
-        .open()
-        .map_err(|e| format!("{}: {e}", source.describe()))?;
+    let content = open_disc_image(disc).map_err(|e| format!("{disc}: {e}"))?;
     if let Some(list) = args.get(3) {
         let ids: Vec<u32> = list
             .split(',')

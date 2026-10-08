@@ -5,6 +5,16 @@
 //! float-then-truncate colour maths and its behaviour for textures smaller than one tile.
 
 use std::fmt;
+use std::sync::Arc;
+
+/// Largest texture edge the GameCube's GX accepts. Anything larger in a header is corruption, and would be
+/// refused by the GPU (WebGL2 guarantees no more than 2048).
+pub const MAX_DIMENSION: usize = 1024;
+
+/// A container may reference at most this many times its own size in texture data (plus 64 KiB). Entries of a
+/// real container do not overlap; a corrupt one could point thousands of headers at the same megabyte and
+/// decode to gigabytes.
+const MAX_SHARING: usize = 4;
 
 /// GX texture formats (values as stored in the TPL header).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -72,6 +82,10 @@ pub enum TplError {
     NoSuchLevel(usize),
     /// Texture dimensions would need an absurd allocation.
     TooLarge,
+    /// A texture is empty in one direction or larger than [`MAX_DIMENSION`] (width, height).
+    BadDimensions(usize, usize),
+    /// The headers reference far more texture data than the file holds (entries overlap).
+    Overlapping,
 }
 
 impl fmt::Display for TplError {
@@ -83,14 +97,16 @@ impl fmt::Display for TplError {
             Self::UnsupportedFormat(x) => write!(f, "unsupported texture format {x:?}"),
             Self::NoSuchLevel(l) => write!(f, "no mip level {l}"),
             Self::TooLarge => write!(f, "texture too large"),
+            Self::BadDimensions(w, h) => write!(f, "invalid texture size {w}x{h}"),
+            Self::Overlapping => write!(f, "TPL entries overlap"),
         }
     }
 }
 
 impl std::error::Error for TplError {}
 
-/// One texture entry. Holds a copy of the file from its data offset onward, as the reference
-/// does (mip levels follow each other).
+/// One texture entry. Its mip levels follow each other from `data_offset`; all entries of a container share
+/// one copy of the file.
 #[derive(Clone, Debug)]
 pub struct Texture {
     /// Index in the container (gaps exist where entries are empty).
@@ -101,7 +117,7 @@ pub struct Texture {
     /// Mip count as stored in the header (0 is treated as 1 when decoding).
     pub mip_count: usize,
     pub data_offset: usize,
-    data: Vec<u8>,
+    file: Arc<[u8]>,
 }
 
 /// A decoded mip level, RGBA8, row-major, `width * height * 4` bytes.
@@ -133,6 +149,8 @@ pub fn parse(bytes: &[u8]) -> Result<Tpl, TplError> {
         return Err(TplError::Truncated);
     }
     let mut textures = Vec::new();
+    let file: Arc<[u8]> = Arc::from(bytes);
+    let mut referenced = 0usize;
     for i in 0..count {
         let h = 4 + i * 0x10;
         if be16(bytes, h + 0x0e).ok_or(TplError::Truncated)? != 0x1234 {
@@ -149,15 +167,25 @@ pub fn parse(bytes: &[u8]) -> Result<Tpl, TplError> {
         if offs > bytes.len() {
             return Err(TplError::BadOffset(i));
         }
-        textures.push(Texture {
+        let texture = Texture {
             index: i,
             format,
             width,
             height,
             mip_count,
             data_offset: offs,
-            data: bytes[offs..].to_vec(),
-        });
+            file: file.clone(),
+        };
+        referenced = referenced.saturating_add(texture.stored_bytes().min(bytes.len() - offs));
+        if referenced
+            > bytes
+                .len()
+                .saturating_mul(MAX_SHARING)
+                .saturating_add(0x1_0000)
+        {
+            return Err(TplError::Overlapping);
+        }
+        textures.push(texture);
     }
     Ok(Tpl {
         textures,
@@ -182,9 +210,22 @@ impl Texture {
         format!("{tpl_name}_{:03}", self.index)
     }
 
-    /// Number of levels decoded by the reference (`max(1, mip_count)`).
+    /// Number of levels: `max(1, mip_count)` as in the reference, but never past the 1x1 level (a corrupt
+    /// header can claim 65535).
     pub fn level_count(&self) -> usize {
-        self.mip_count.max(1)
+        let longest = self.width.max(self.height);
+        let down_to_one = (usize::BITS - longest.leading_zeros()) as usize;
+        self.mip_count.min(down_to_one).max(1)
+    }
+
+    /// Bytes all levels occupy in the file (0 for formats that cannot be decoded).
+    fn stored_bytes(&self) -> usize {
+        (0..self.level_count())
+            .map(|l| {
+                let (w, h) = self.level_size(l);
+                level_bytes(self.format, w, h)
+            })
+            .fold(0, usize::saturating_add)
     }
 
     /// Width and height of mip `level` (halved each level, clamped to 1).
@@ -205,13 +246,26 @@ impl Texture {
         if !self.format.is_decodable() {
             return Err(TplError::UnsupportedFormat(self.format));
         }
+        if self.width == 0
+            || self.height == 0
+            || self.width > MAX_DIMENSION
+            || self.height > MAX_DIMENSION
+        {
+            return Err(TplError::BadDimensions(self.width, self.height));
+        }
         let mut offs = 0usize;
         for l in 0..level {
             let (w, h) = self.level_size(l);
             offs += level_bytes(self.format, w, h);
         }
         let (w, h) = self.level_size(level);
-        decode_level(self.format, w, h, &self.data, offs)
+        // The reference reads missing texels as 0; here a level the file does not hold is an error, so a
+        // header alone cannot make the decoder allocate megabytes.
+        let data = self.file.get(self.data_offset..).unwrap_or(&[]);
+        if offs + level_bytes(self.format, w, h) > data.len() {
+            return Err(TplError::Truncated);
+        }
+        decode_level(self.format, w, h, data, offs)
     }
 
     /// Decode every level.
@@ -231,7 +285,11 @@ impl Texture {
 
 fn level_bytes(format: Format, w: usize, h: usize) -> usize {
     match format.tile_info() {
-        Some((tw, th, bpp)) => w.div_ceil(tw) * h.div_ceil(th) * tw * th * bpp / 8,
+        // u64: 65535 x 65535 from a corrupt header does not fit 32 bits.
+        Some((tw, th, bpp)) => {
+            let tiles = w.div_ceil(tw) as u64 * h.div_ceil(th) as u64;
+            usize::try_from(tiles * (tw * th * bpp / 8) as u64).unwrap_or(usize::MAX)
+        }
         None => 0,
     }
 }
