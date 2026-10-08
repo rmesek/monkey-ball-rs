@@ -8,14 +8,18 @@ publish.workspace = true
 
 [features]
 default = ["disc"]
-# Read RVZ/ISO/etc. directly. Uses the `nod` crate (MIT/Apache-2.0); wasm32 support to be verified.
-disc = ["dep:nod"]
+# Read RVZ/ISO/etc. directly. Uses the `nod` crate (MIT/Apache-2.0); on wasm32 the RVZ container itself is
+# decoded by `src/rvz.rs` (see there for why).
+disc = ["dep:nod", "dep:ruzstd"]
 
 [dependencies]
 # No default features: they pull vendored C libs (bzip2/lzma/zlib/zstd) and worker threads, which do not build or run
 # on wasm32. Native targets re-enable them below. Without them nod still reads ISO/GCM, CISO, WBFS and
-# RVZ/WIA with compression "none" (what retail dumps made by Dolphin with compression off use).
+# the plain containers (ISO/GCM, CISO, WBFS, TGC).
 nod = { version = "2.0.0-alpha.9", optional = true, default-features = false }
+# Pure-Rust Zstandard decoder for the built-in RVZ reader (`src/rvz.rs`): Dolphin compresses RVZ images with
+# Zstandard by default, and the C library nod uses does not build for wasm32 without a C toolchain.
+ruzstd = { version = "0.8", optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 nod = { version = "2.0.0-alpha.9", optional = true, default-features = true }

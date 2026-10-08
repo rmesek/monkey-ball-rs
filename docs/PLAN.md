@@ -53,9 +53,12 @@ backends). The repo never contains or fetches original game files.
 ## Decisions (recorded)
 - Graphics: `wgpu` (Vulkan/Metal/DX12/GL + WebGPU/WebGL2): one API for desktop, browser and Android.
 - Windowing/input: `winit` (desktop, web canvas, Android via android-activity).
-- Disc reading: `nod` (feature `disc`). On wasm32 it is built without the C codecs; RVZ images stored with
-  compression "none" (what the supported dump uses) read fine. Other codecs on wasm are tracked under workstream 1.
-- Web: `wasm-bindgen` + `web-sys`, built with `wasm-bindgen-cli`; the disc image is held in the tab's wasm memory.
+- Disc reading: `nod` (feature `disc`) on native. nod's RVZ reader calls `std::time::Instant` and panics on
+  wasm32, so the browser uses the pure-Rust GameCube RVZ reader in `mb-assets::rvz` (compression "none" and
+  Zstandard via `ruzstd`; verified byte-identical to nod over the whole disc with `xtask check-rvz`) and nod only
+  parses the resulting ISO stream. RVZ with bzip2/LZMA/LZMA2, WIA and GCZ are refused in the browser with a message.
+- Web: `wasm-bindgen` + `web-sys`, built with `wasm-bindgen-cli`; the disc image stays on the JS heap in 8 MiB
+  pieces and only requested ranges are copied into wasm memory (see `docs/WEB.md`).
 - Parsers (`mb-tpl`, `mb-gma`, `mb-stage`) are std-only.
 - Audio: `mb-audio` produces PCM and has no output dependency; device backend undecided.
 

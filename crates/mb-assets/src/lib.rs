@@ -9,3 +9,5 @@ pub mod disc;
 pub mod layout;
 pub mod lzss;
 pub mod pack;
+#[cfg(feature = "disc")]
+pub mod rvz;

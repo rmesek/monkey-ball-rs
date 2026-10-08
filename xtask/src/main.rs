@@ -5,12 +5,19 @@ use mb_assets::pack::PackProvider;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+mod serve;
+
 const USAGE: &str = "usage:
   xtask check-content [content_root] [stage_id] [bg_name]
   xtask disc-info <disc image>                       (RVZ, ISO, GCM, CISO, ...)
   xtask check-disc <disc image> [stage_id] [bg_name] (stage files + LZSS test, read in place)
   xtask disc-ls <disc image> [path prefix]
-  xtask disc-cat <disc image> <disc path> <out file> [--lz]";
+  xtask disc-cat <disc image> <disc path> <out file> [--lz]
+  xtask check-rvz <rvz image>                        (compare the built-in RVZ reader, used by the browser
+                                                      build, with nod over the whole disc)
+  xtask serve-web [port] [--disc <disc image>] [--root <dir>]
+                                                     (serve web/ on http://localhost:8080; with --disc the
+                                                      page opened with ?dev-disc=1 loads that image)";
 
 fn main() {
     let mut args = std::env::args().skip(1);
@@ -80,6 +87,32 @@ fn main() {
             }
             std::fs::write(&out, &bytes).expect("write output");
             println!("{} bytes -> {out}", bytes.len());
+        }
+        Some("check-rvz") => {
+            let Some(path) = args.next() else {
+                eprintln!("{USAGE}");
+                std::process::exit(2)
+            };
+            match mb_assets::rvz::verify_against_nod(std::path::Path::new(&path), 1) {
+                Ok(n) => {
+                    println!("{path}: {n} bytes identical through nod and the built-in reader")
+                }
+                Err(e) => {
+                    eprintln!("{path}: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        Some("serve-web") => {
+            // The workspace's web/ directory, wherever cargo was started from.
+            let web = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("..")
+                .join("web");
+            let result = serve::parse_args(args, web).and_then(serve::run);
+            if let Err(e) = result {
+                eprintln!("serve-web: {e}");
+                std::process::exit(2);
+            }
         }
         _ => eprintln!("{USAGE}"),
     }

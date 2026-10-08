@@ -10,6 +10,44 @@ use mb_assets::lzss;
 use mb_assets::pack::PackProvider;
 use std::path::PathBuf;
 
+/// The built-in RVZ reader (what the browser build uses) must yield the same disc as nod, and a `DiscPack`
+/// opened through it must serve the same files.
+#[test]
+fn builtin_rvz_reader_matches_nod() {
+    let Some(path) = find_disc() else {
+        eprintln!("skipped: no Super Monkey Ball 1 disc image found");
+        return;
+    };
+    let is_rvz = path
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("rvz"));
+    if !is_rvz {
+        eprintln!("skipped: {} is not an RVZ image", path.display());
+        return;
+    }
+    // Every 16th MiB of the disc (the whole disc is compared by `xtask check-rvz`).
+    let compared = mb_assets::rvz::verify_against_nod(&path, 16).expect("readers agree");
+    assert!(compared > 0);
+
+    let stream = mb_assets::disc::FileStream::open(&path).expect("open file");
+    let rvz = mb_assets::rvz::RvzReader::open(Box::new(stream)).expect("parse RVZ");
+    let through_builtin = DiscPack::from_stream(Box::new(rvz)).expect("open decoded disc");
+    let through_nod = DiscPack::open(&path).expect("open with nod");
+    assert_eq!(through_builtin.game_id(), through_nod.game_id());
+    assert_eq!(through_builtin.list(), through_nod.list());
+    assert_eq!(
+        through_builtin.main_dol().unwrap(),
+        through_nod.main_dol().unwrap()
+    );
+    for file in stage_files(GameSource::Smb1, 1, "bg_jun", false) {
+        assert_eq!(
+            through_builtin.fetch(&file).unwrap(),
+            through_nod.fetch(&file).unwrap(),
+            "{file}"
+        );
+    }
+}
+
 fn find_disc() -> Option<PathBuf> {
     if let Some(p) = std::env::var_os("MB_DISC") {
         return Some(PathBuf::from(p));
