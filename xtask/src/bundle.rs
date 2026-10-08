@@ -1,12 +1,12 @@
-//! `xtask bundle-web`: assemble the static web bundle in `web/dist/` from the page sources in `web/` and the
-//! wasm-bindgen output. Called by `scripts/build-web.*` after the wasm build; standard library only.
+//! The last step of `cargo xtask build-web`: assemble the static web bundle in `web/dist/` from the page
+//! sources in `web/` and the wasm-bindgen output. Standard library only.
 //!
 //! Two products:
 //! * the **hosted bundle** (always): `index.html`, `main.js`, `worker.js`, `sw.js` (with a version hash and
 //!   the precache list filled in), the manifest, the icons and `pkg/`. All paths relative, and nothing else:
 //!   only the files named here are copied, whatever else lies in `web/`.
 //! * the **single file** (`--single`): `monkey-ball.html` with the scripts inlined as classic scripts, the
-//!   wasm module embedded as base64 (gzipped when the build script supplies a `.gz`), the worker source
+//!   wasm module embedded as gzip in base64 (the page unpacks it with `DecompressionStream`), the worker source
 //!   carried as text and the icon as a data URI. No service worker, no manifest. Its Content-Security-Policy
 //!   names the three inline scripts by hash and forbids every connection.
 
@@ -33,30 +33,6 @@ pub struct Options {
     pub pkg: PathBuf,
     pub out: PathBuf,
     pub single: bool,
-    /// Gzip of `mb_web_bg.wasm` for the single file (the build scripts make it with the system's gzip).
-    pub wasm_gz: Option<PathBuf>,
-}
-
-pub fn parse_args(args: impl Iterator<Item = String>, web: PathBuf) -> Result<Options, String> {
-    let mut opts = Options {
-        pkg: web.join("pkg"),
-        out: web.join("dist"),
-        web,
-        single: false,
-        wasm_gz: None,
-    };
-    let mut args = args;
-    while let Some(arg) = args.next() {
-        let mut value = |what: &str| args.next().ok_or(format!("{what} needs a path"));
-        match arg.as_str() {
-            "--single" => opts.single = true,
-            "--pkg" => opts.pkg = value("--pkg")?.into(),
-            "--out" => opts.out = value("--out")?.into(),
-            "--wasm-gz" => opts.wasm_gz = Some(value("--wasm-gz")?.into()),
-            other => return Err(format!("unknown option {other}")),
-        }
-    }
-    Ok(opts)
 }
 
 fn read(path: &Path) -> Result<Vec<u8>, String> {
@@ -129,7 +105,7 @@ pub fn run(opts: Options) -> Result<(), String> {
     for name in PKG_FILES {
         if !pkg_file(name).is_file() {
             return Err(format!(
-                "{} is missing: run scripts/build-web first (it builds the wasm and then calls this)",
+                "{} is missing (wasm-bindgen should have written it)",
                 pkg_file(name).display()
             ));
         }
@@ -213,10 +189,8 @@ pub fn run(opts: Options) -> Result<(), String> {
         ] {
             check_inline(name, text)?;
         }
-        let (wasm, encoding) = match &opts.wasm_gz {
-            Some(gz) => (read(gz)?, "gzip"),
-            None => (read(&pkg_file("pkg/mb_web_bg.wasm"))?, "none"),
-        };
+        let wasm = crate::gzip::compress(&read(&pkg_file("pkg/mb_web_bg.wasm"))?);
+        let encoding = "gzip";
         // The browser hashes the script text exactly as it stands between the tags.
         let guard_block = format!("\n{guard}\n");
         let glue_block = format!("\n{glue}\n");
@@ -461,10 +435,14 @@ mod tests {
         write(&web.join("pkg/mb_web.js"), b"let wasm_bindgen;\n").unwrap();
         write(&web.join("pkg/mb_web_bg.wasm"), &[0, 97, 115, 109]).unwrap();
 
-        let mut opts = parse_args(["--single".to_string()].into_iter(), web.clone()).unwrap();
-        opts.out = dir.join("dist");
-        let out = opts.out.clone();
-        run(opts).unwrap();
+        let out = dir.join("dist");
+        let options = |single| Options {
+            web: web.clone(),
+            pkg: web.join("pkg"),
+            out: out.clone(),
+            single,
+        };
+        run(options(true)).unwrap();
         let listed = |d: &Path| -> Vec<String> {
             let mut v: Vec<String> = fs::read_dir(d)
                 .unwrap()
@@ -519,14 +497,13 @@ mod tests {
             base64(&Sha256::digest(main_block.as_bytes()))
         )));
         assert!(single.contains("connect-src 'none'") && single.contains("id=\"mb-wasm\""));
-        assert!(single.contains("data-encoding=\"none\">AGFzbQ==</script>"));
+        // The module travels gzipped: the gzip magic and "deflate", in base64.
+        assert!(single.contains("data-encoding=\"gzip\">H4sI"));
         assert!(!single.contains("manifest") && !single.contains("sw.js"));
         assert!(!single.contains("mb-version") && !single.contains("build:"));
         // A second run starts from a clean directory.
         write(&out.join("stale.txt"), b"x").unwrap();
-        let mut opts = parse_args(std::iter::empty(), web).unwrap();
-        opts.out = out.clone();
-        run(opts).unwrap();
+        run(options(false)).unwrap();
         assert!(!out.join("stale.txt").exists() && !out.join(SINGLE_FILE).exists());
         let _ = fs::remove_dir_all(&dir);
     }

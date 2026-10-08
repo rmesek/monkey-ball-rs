@@ -32,7 +32,7 @@ what it is and what is supported.
 | For | You need |
 |---|---|
 | Everything | Rust, stable, through [rustup](https://rustup.rs). `rust-toolchain.toml` makes rustup install the toolchain, `rustfmt`, `clippy` and the `wasm32-unknown-unknown` target on the first `cargo` command |
-| The web site | the `wasm-bindgen` command at exactly the version of the `wasm-bindgen` crate in `Cargo.lock`: `cargo install wasm-bindgen-cli --version 0.2.129 --locked` (the build script checks the version and prints this command when it is missing or different) |
+| The web site | the `wasm-bindgen` command at exactly the version of the `wasm-bindgen` crate in `Cargo.lock`: `cargo install wasm-bindgen-cli --version 0.2.129 --locked` (the build checks the version and prints this command when it is missing or different) |
 | Serving the site locally | Python 3 (any static file server does) |
 | The browser test | [Deno](https://deno.com) and Chrome |
 
@@ -51,12 +51,11 @@ options (`--pick`, `--fullscreen`, `--course <name>`, `--mute`). The executable 
 ## Build and run: web site
 
 ```
-scripts/build-web.sh             # bash;        add --single for one self-contained .html as well
-scripts\build-web.ps1            # PowerShell;  add -Single
+cargo xtask build-web --single
 ```
 
 The site is written to `web/dist/`: plain files with relative paths (`index.html`, a few scripts, the 3.9 MB
-WebAssembly module). With `--single` / `-Single` there is also `web/dist/monkey-ball.html` (2.1 MB), the
+WebAssembly module). `--single` adds `web/dist/monkey-ball.html` (2.1 MB), the
 whole page in one file that can be copied anywhere and opened from disk.
 
 Serve the folder with any static file server and open it:
@@ -111,7 +110,7 @@ that makes the way you hold the phone now the level position.
 ## Tests
 
 ```
-scripts/check.sh                  # or scripts\check.ps1
+cargo xtask check
 ```
 
 runs the quality gates: `cargo fmt --all -- --check`, `cargo clippy` for the workspace, for the desktop
@@ -128,7 +127,7 @@ The browser test drives the built site in Chrome through the real file picker:
 deno run -A scripts/web-e2e.ts
 ```
 
-It needs `web/dist` (build it first, with `--single` to include the single file), Chrome, Python 3 and the
+It needs `web/dist` (build it first with `cargo xtask build-web --single`), Chrome, Python 3 and the
 disc image, and says what is missing otherwise.
 
 ## Project layout
@@ -145,9 +144,9 @@ disc image, and says what is missing otherwise.
 | `crates/mb-render` | renderer on wgpu (GX material emulation); no windowing |
 | `crates/mb-app` | the game above all that: menus, loading, play, HUD, input, audio; the desktop program and the browser driver |
 | `crates/mb-web` | the browser target: import worker side, game data and saves in the browser, Web Audio |
-| `xtask` | assembles `web/dist` (called by the build scripts) |
+| `xtask` | the build tool behind `cargo xtask`: `build-web` and `check` (standard library only, the same command on every platform) |
 | `web/` | the page: `index.html`, `main.js`, `worker.js`, `guard.js`, service worker, manifest, icons |
-| `scripts/` | `build-web`, `check`, `web-e2e.ts` |
+| `scripts/` | `web-e2e.ts`, the browser test |
 | `docs/` | see below |
 
 ## Documentation

@@ -23,12 +23,13 @@ cargo install wasm-bindgen-cli --version 0.2.129 --locked
 One command builds the site into `web/dist/` (git-ignored):
 
 ```
-scripts\build-web.ps1 [-Single] [-Dev]       # Windows PowerShell
-scripts/build-web.sh [--single] [--dev]      # bash
+cargo xtask build-web [--single] [--dev]
 ```
 
 It checks the CLI version, runs `cargo build -p mb-web --target wasm32-unknown-unknown --profile web`,
-`wasm-bindgen --target no-modules`, and `cargo run -p xtask -- bundle-web`, which assembles the directory:
+`wasm-bindgen --target no-modules`, and assembles the directory. The same command works in any shell on any
+platform: it is a small Rust program (`xtask/`, standard library only; `cargo xtask` is an alias in
+`.cargo/config.toml`), so there are no shell scripts and nothing else to install:
 
 | File | What |
 |---|---|
@@ -37,7 +38,7 @@ It checks the CLI version, runs `cargo build -p mb-web --target wasm32-unknown-u
 | `main.js`, `worker.js` | the page's script and the import worker (classic scripts, no modules) |
 | `pkg/mb_web.js`, `pkg/mb_web_bg.wasm` | the engine: 3.9 MB wasm (1.39 MB gzipped), 0.19 MB glue |
 | `sw.js`, `manifest.webmanifest`, `icon*.{svg,png}` | offline start and installation (optional at run time) |
-| `monkey-ball.html` | with `-Single` / `--single`: everything in one file, 2.1 MB (1.45 MB gzipped) |
+| `monkey-ball.html` | with `--single`: everything in one file, 2.1 MB (1.45 MB gzipped) |
 
 `-Dev` / `--dev` builds unoptimised and keeps the function names in the module. The `web` profile (workspace
 `Cargo.toml`) is `release` plus fat LTO, one codegen unit and `panic = "abort"`; the optimised build also
@@ -69,7 +70,7 @@ What `python -m http.server` implies, and how the page copes:
 
 ### The single file
 
-`web/dist/monkey-ball.html` (built with `-Single`) has the scripts inlined as classic scripts, the wasm
+`web/dist/monkey-ball.html` (built with `--single`) has the scripts inlined as classic scripts, the wasm
 embedded as gzipped base64 (unpacked with `DecompressionStream`), the import worker started from a Blob, and the
 icon inlined. No service worker, no manifest. Its policy lists the three inline scripts by SHA-256 hash and has
 `connect-src 'none'`. Copy the one file anywhere and open it.

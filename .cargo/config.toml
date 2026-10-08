@@ -1,0 +1,3 @@
+# cargo xtask <command>: the project's build tool (xtask/src/main.rs). No scripts, nothing to install.
+[alias]
+xtask = "run --quiet -p xtask --"

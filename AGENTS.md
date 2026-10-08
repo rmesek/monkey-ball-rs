@@ -12,7 +12,7 @@ Exactly two, and every change must keep both working:
 
 1. **The desktop executable** (`crates/mb-app`, binary `mb-app`).
 2. **The game in a web browser, as a light static site** (`crates/mb-web` compiled to WebAssembly, plus
-   `web/`), built into `web/dist/` by `scripts/build-web.*`.
+   `web/`), built into `web/dist/` by `cargo xtask build-web`.
 
 The static site is a design constraint, not a packaging detail:
 
@@ -72,7 +72,7 @@ Changes to import, storage or saves must keep these, and the tests that prove th
   memory, and files fetched for a load are released after it.
 
 ## Quality gates
-All must hold at every commit. `scripts/check.sh` (or `scripts\check.ps1`) runs the first five.
+All must hold at every commit. `cargo xtask check` runs the first five.
 
 ```
 cargo fmt --all -- --check
@@ -80,7 +80,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo clippy -p mb-app -- -D warnings
 cargo clippy -p mb-web --target wasm32-unknown-unknown --target-dir target/wasm -- -D warnings
 cargo test --workspace --release
-scripts/build-web.sh --single        # or scripts\build-web.ps1 -Single
+cargo xtask build-web --single
 deno run -A scripts/web-e2e.ts
 ```
 

@@ -8,7 +8,7 @@ offline, for exactly two targets.
 | Target | Built from | Entry |
 |---|---|---|
 | Desktop executable | `crates/mb-app` (binary `mb-app`) | `cargo run -p mb-app --release` |
-| Static web site (WebAssembly) | `crates/mb-web` + `web/` | `scripts/build-web.sh` or `.ps1`, output `web/dist/` |
+| Static web site (WebAssembly) | `crates/mb-web` + `web/` | `cargo xtask build-web`, output `web/dist/` |
 
 There is no native mobile target. The site is plain files with relative paths, no server-side component and
 no dependency on a service worker, with WebGL2 as a first-class backend. It must keep working under a static

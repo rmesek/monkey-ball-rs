@@ -1,6 +1,6 @@
 [package]
 name = "xtask"
-description = "Build tool: assembles the static web site (web/dist) from the page sources and the wasm-bindgen output. Not part of the game; standard library only."
+description = "Build tool behind `cargo xtask`: builds the static web site (web/dist) and runs the quality gates. Not part of the game; standard library only."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
