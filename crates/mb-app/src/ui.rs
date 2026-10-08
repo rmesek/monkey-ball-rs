@@ -165,18 +165,15 @@ enum Role {
     Stick {
         origin: (f32, f32),
     },
-    Look {
-        last: (f32, f32),
-    },
     Button(Action),
-    /// Started while virtual controls were off: pointer only.
+    /// Started while virtual controls were off, or outside the stick zone and the buttons: pointer only.
     Pointer,
 }
 
 /// Maps raw touches to input. Every touch marks touch as the active device and the first finger doubles as
 /// the pointer (menus). While the running state asks for virtual controls
-/// ([`InputState::request_virtual_controls`]) a floating stick in the stick zone drives the move axes, a drag
-/// anywhere else looks around, and taps on buttons raise actions; otherwise touches are pointer-only.
+/// ([`InputState::request_virtual_controls`]) a floating stick in the stick zone drives the move axes and
+/// taps on buttons raise actions; otherwise, and anywhere else on the screen, touches are pointer-only.
 #[derive(Default)]
 pub struct TouchControls {
     active: HashMap<u64, Role>,
@@ -234,11 +231,6 @@ impl TouchControls {
                 input.set_axis(Axis::MoveY, 0.0);
                 input.set_touch_stick(None);
             }
-            Some(Role::Look { .. }) => {
-                if !self.active.values().any(|r| matches!(r, Role::Look { .. })) {
-                    input.set_mouse_look(false);
-                }
-            }
             Some(Role::Button(a)) => input.set_action(a, false),
             Some(Role::Pointer) | None => {}
         }
@@ -286,12 +278,12 @@ impl TouchControls {
                     input.set_touch_stick(Some(TouchStick { origin: pos, pos }));
                     Role::Stick { origin: pos }
                 } else {
-                    Role::Look { last: pos }
+                    Role::Pointer
                 };
                 self.active.insert(id, role);
             }
-            TouchPhase::Moved => match self.active.get_mut(&id) {
-                Some(Role::Stick { origin }) => {
+            TouchPhase::Moved => {
+                if let Some(Role::Stick { origin }) = self.active.get_mut(&id) {
                     let r = layout.stick_radius();
                     // Clamped to the circle: the knob stays on its base and a diagonal is not faster.
                     let (mut dx, mut dy) = ((pos.0 - origin.0) / r, (pos.1 - origin.1) / r);
@@ -308,13 +300,7 @@ impl TouchControls {
                     // Screen Y grows downward; pushing up means forward.
                     input.set_axis(Axis::MoveY, -dy);
                 }
-                Some(Role::Look { last }) => {
-                    input.add_mouse_delta(pos.0 - last.0, pos.1 - last.1);
-                    input.set_mouse_look(true);
-                    *last = pos;
-                }
-                _ => {}
-            },
+            }
             TouchPhase::Ended => self.release(id, input),
         }
     }
@@ -477,8 +463,6 @@ mod tests {
         assert!(!input.held(pause) && !input.pointer_held() && !input.pointer_released());
         assert_eq!(input.axis(Axis::MoveX), 0.0);
         assert!(input.touch_stick().is_none());
-        input.add_mouse_delta(5.0, 5.0);
-        assert_eq!(input.look_delta(), (0.0, 0.0), "look mode ended");
         // One cancelled touch (the system took it for a gesture) leaves the others alone.
         t.touch(1, TouchPhase::Started, z, &l, &mut input);
         t.touch(2, TouchPhase::Started, button.center(), &l, &mut input);
@@ -516,16 +500,19 @@ mod tests {
     }
 
     #[test]
-    fn drag_outside_zones_looks_around() {
+    fn a_drag_outside_the_stick_zone_and_the_buttons_steers_nothing() {
         let l = landscape();
         let mut input = InputState::new();
         input.request_virtual_controls(true);
         let mut t = TouchControls::new();
         t.touch(2, TouchPhase::Started, (900.0, 100.0), &l, &mut input);
         t.touch(2, TouchPhase::Moved, (910.0, 95.0), &l, &mut input);
-        assert_eq!(input.look_delta(), (10.0, -5.0));
+        assert_eq!(
+            (input.axis(Axis::MoveX), input.axis(Axis::MoveY)),
+            (0.0, 0.0)
+        );
+        assert!(input.touch_stick().is_none() && input.pointer() == Some((910.0, 95.0)));
         t.touch(2, TouchPhase::Ended, (910.0, 95.0), &l, &mut input);
-        input.end_frame();
-        assert_eq!(input.look_delta(), (0.0, 0.0));
+        assert!(!input.pointer_held());
     }
 }

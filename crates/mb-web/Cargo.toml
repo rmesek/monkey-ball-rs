@@ -1,6 +1,6 @@
 [package]
 name = "mb-web"
-description = "Browser (wasm32) entry point: disc import, on-device game data, canvas, gamepad, tilt"
+description = "The browser target (wasm32): disc import, on-device game data and saves, Web Audio, the page's hooks for the browser driver"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -16,7 +16,7 @@ mb-assets = { path = "../mb-assets" }
 winit = "0.30"
 wgpu = { version = "30", features = ["webgl"] }
 
-# Everything below only exists on wasm32 so `cargo check --workspace` on the host stays unchanged.
+# Everything below only exists on wasm32: on the host this crate is empty, so workspace-wide commands pass.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # JS glue. Pinned exactly: wasm-bindgen-cli must be the same version to produce the .js/.wasm pair
 # (`cargo install wasm-bindgen-cli --version 0.2.129 --locked`; scripts/build-web.* check this).
@@ -24,7 +24,7 @@ wasm-bindgen = "=0.2.129"
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
 web-sys = { version = "0.3", features = [
-    "Window", "Document", "Element", "HtmlElement", "HtmlCanvasElement", "Navigator",
+    "Window", "Document", "Element", "HtmlCanvasElement", "Navigator",
     "Gamepad", "GamepadButton", "CssStyleDeclaration", "Storage", "console",
     # The imported game pack is a Blob (a file in the Origin Private File System) read in slices.
     "Blob",

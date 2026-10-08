@@ -3,7 +3,7 @@
 //!
 //! ```ignore
 //! let mut r = Renderer::new(device, queue, format);
-//! let tex = r.upload_tpl(&tpl);
+//! let tex: Vec<_> = tpl.textures().map(|t| r.upload_tpl_texture(t)).collect();
 //! let model = r.upload_model(gma.model("STG001").unwrap(), &tex)?;
 //! let obj = r.add_object(model, Layer::World, Mat4::IDENTITY);
 //! r.set_transform(obj, Mat4::from_translation(Vec3::Y));

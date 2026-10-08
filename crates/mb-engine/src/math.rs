@@ -454,12 +454,6 @@ impl MatrixStack {
         self.a = [1., 0., 0., x, 0., 1., 0., y, 0., 0., 1., z];
     }
 
-    pub fn from_rotate_x(&mut self, angle: i32) {
-        let s = sin_s16(angle) as f32;
-        let c = cos_s16(angle) as f32;
-        self.a = [1., 0., 0., 0., 0., c, -s, 0., 0., s, c, 0.];
-    }
-
     pub fn from_rotate_y(&mut self, angle: i32) {
         let s = sin_s16(angle) as f32;
         let c = cos_s16(angle) as f32;

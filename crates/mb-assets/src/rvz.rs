@@ -2,7 +2,7 @@
 //! random-access stream, decoding groups on demand.
 //!
 //! This is the only RVZ reader of the project, on every target (pure Rust, Zstandard through `ruzstd`); the
-//! `nod` crate is used by tests and `xtask check-rvz` only, to prove this reader yields the same disc.
+//! `nod` crate is used by the tests only (`tests/disc.rs`), to prove this reader yields the same disc.
 //!
 //! Supported: RVZ of a GameCube disc, compression "none" or Zstandard, including RVZ-packed junk data.
 //! Not supported: Wii discs (partition data and hash exceptions), the older WIA variant, bzip2/LZMA/LZMA2/purge.

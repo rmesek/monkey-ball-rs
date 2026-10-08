@@ -1,7 +1,7 @@
 //! Desktop driver: winit event loop, wgpu surface and the per-frame update / render loop, plus the
 //! desktop-only devices (mouse pointer, native gamepads) and window niceties (fullscreen, fps in the title).
-//! Everything game-specific lives in [`crate::game::Game`] states; the browser and mobile shells use
-//! [`crate::shell`] and feed the same `InputState`.
+//! Everything game-specific lives in [`crate::game::Game`] states; the browser has its own driver (`shell.rs`,
+//! which explains why there are two) and feeds the same `InputState`.
 //!
 //! Pacing: the surface presents with vsync (`Fifo`), so the loop runs once per display refresh without
 //! spinning; game states advance their simulation in fixed 60 Hz ticks from `ctx.dt`. While the window is
@@ -12,9 +12,7 @@ use std::time::{Duration, Instant};
 
 use mb_render::Renderer;
 use winit::application::ApplicationHandler;
-use winit::event::{
-    DeviceEvent, DeviceId, ElementState, MouseButton, MouseScrollDelta, WindowEvent,
-};
+use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, ModifiersState, PhysicalKey};
 use winit::window::{Fullscreen, Window, WindowId};
@@ -32,7 +30,8 @@ const PAD_DEADZONE: f32 = 0.15;
 
 #[derive(Clone, Debug, Default)]
 pub struct WindowOptions {
-    /// Close the window after this many seconds (developer flag for timing runs).
+    /// Close the window after this many seconds and measure frame pacing meanwhile (the developer flag
+    /// `--exit-after` of a `dev` build; the kill test uses it).
     pub exit_after: Option<f32>,
     pub fullscreen: bool,
     /// The game's audio system, to silence it while the window is hidden. The game states hold clones.
@@ -346,8 +345,9 @@ impl App {
         st.window.pre_present_notify();
         st.gpu.queue.present(frame);
 
-        // The first frames include asset loading; leave them out of the pacing statistics.
-        if self.stats.frames > 0 || frame_time < 0.1 {
+        // Pacing statistics are only kept for a timed run (they grow with every frame). The first frames
+        // include asset loading; leave them out.
+        if self.options.exit_after.is_some() && (self.stats.frames > 0 || frame_time < 0.1) {
             self.frame_times.push(frame_time);
         }
         self.stats.frames += 1;
@@ -443,14 +443,11 @@ impl ApplicationHandler for App {
                     .set_pointer(Some((position.x as f32, position.y as f32)));
             }
             WindowEvent::CursorLeft { .. } => self.input.set_pointer(None),
-            WindowEvent::MouseInput { state, button, .. } => {
-                let down = state == ElementState::Pressed;
-                match button {
-                    MouseButton::Left => self.input.set_pointer_down(down),
-                    MouseButton::Right => self.input.set_mouse_look(down),
-                    _ => {}
-                }
-            }
+            WindowEvent::MouseInput {
+                state,
+                button: MouseButton::Left,
+                ..
+            } => self.input.set_pointer_down(state == ElementState::Pressed),
             WindowEvent::MouseWheel { delta, .. } => {
                 self.input.add_scroll(match delta {
                     MouseScrollDelta::LineDelta(_, y) => y * WHEEL_LINE,
@@ -484,12 +481,6 @@ impl ApplicationHandler for App {
             }
             WindowEvent::RedrawRequested => self.frame(event_loop),
             _ => {}
-        }
-    }
-
-    fn device_event(&mut self, _el: &ActiveEventLoop, _id: DeviceId, event: DeviceEvent) {
-        if let DeviceEvent::MouseMotion { delta } = event {
-            self.input.add_mouse_delta(delta.0 as f32, delta.1 as f32);
         }
     }
 

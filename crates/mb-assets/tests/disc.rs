@@ -3,7 +3,11 @@
 //! `Super Monkey Ball*.rvz|iso` next to this repository.
 //!
 //! `nod` is the reference here: the built-in readers must list the same files and return the same bytes.
-//! (`cargo run --release -p xtask -- check-rvz <image>` runs the same comparison over the whole disc.)
+//! The normal run compares a sample; the whole image, every byte and every file, is one command away:
+//!
+//! ```text
+//! cargo test --release -p mb-assets --test disc -- --ignored whole_image_matches_nod
+//! ```
 
 use mb_assets::disc::{DiscPack, DiscStream, FileStream, ImageStream, MAIN_DOL_PATH};
 use mb_assets::lzss;
@@ -52,21 +56,34 @@ fn identifies_smb1() {
     assert!(disc.contains(MAIN_DOL_PATH));
 }
 
-/// Same file list, same executable, same file contents and same raw disc bytes as nod.
+/// Same file list, same executable, same file contents and same raw disc bytes as nod (a sample of the
+/// bytes and of the files).
 #[test]
 fn matches_nod() {
-    let path = disc_or_skip!();
-    let ours = DiscPack::open(&path).expect("open with the built-in reader");
-    let mut reference = DiscReader::new(&path, &DiscOptions::default()).expect("open with nod");
+    compare_with_nod(&disc_or_skip!(), false);
+}
+
+/// The same over the whole image: every byte of the decoded disc and the contents of every file.
+/// On the tested USA image that is 1,459,978,240 disc bytes and 897 files.
+#[test]
+#[ignore = "reads the whole image twice (about a minute); run it after touching the disc or RVZ reader"]
+fn whole_image_matches_nod() {
+    compare_with_nod(&disc_or_skip!(), true);
+}
+
+fn compare_with_nod(path: &std::path::Path, whole: bool) {
+    let ours = DiscPack::open(path).expect("open with the built-in reader");
+    let mut reference = DiscReader::new(path, &DiscOptions::default()).expect("open with nod");
     assert_eq!(ours.game_id(), reference.header().game_id_str());
 
-    // Raw disc bytes: every 16th MiB (the whole disc is compared by `xtask check-rvz`).
+    // Raw disc bytes: every 16th MiB, or all of them.
     const BLOCK: u64 = 1 << 20;
-    let mut stream = ImageStream::open(FileStream::open(&path).unwrap()).unwrap();
+    let stride = if whole { 1 } else { 16 };
+    let mut stream = ImageStream::open(FileStream::open(path).unwrap()).unwrap();
     let size = stream.stream_len().unwrap();
     assert_eq!(size, reference.disc_size());
     let (mut a, mut b) = (vec![0u8; BLOCK as usize], vec![0u8; BLOCK as usize]);
-    for offset in (0..size).step_by(16 * BLOCK as usize) {
+    for offset in (0..size).step_by(stride * BLOCK as usize) {
         let n = BLOCK.min(size - offset) as usize;
         reference.seek(SeekFrom::Start(offset)).unwrap();
         reference.read_exact(&mut a[..n]).unwrap();
@@ -101,8 +118,8 @@ fn matches_nod() {
     assert_eq!(mine, theirs, "file lists differ");
     // Contents: every file of stage 1 and its sounds, and every 9th file of the rest.
     for (i, (path, node)) in files.iter().enumerate() {
-        let wanted = i % 9 == 0 || path.contains("st001") || path.contains("init/");
-        if !wanted || node.length() > 32 << 20 {
+        let sampled = i % 9 == 0 || path.contains("st001") || path.contains("init/");
+        if !whole && (!sampled || node.length() > 32 << 20) {
             continue;
         }
         let mut expected = Vec::new();

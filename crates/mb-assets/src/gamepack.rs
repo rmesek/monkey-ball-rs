@@ -390,7 +390,7 @@ mod tests {
             "GMBE8P",
             &[
                 ("test/a.lz", &[1, 2, 3, 4, 5]),
-                ("smb1_content/test/b.tpl", &[9; 300]),
+                ("./test/b.tpl", &[9; 300]),
                 ("sys/main.dol", &[]),
             ],
         )

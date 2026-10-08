@@ -2,13 +2,8 @@
 target/
 Cargo.lock.bak
 
-# Game content is never committed. The content root is filled by the user/operator.
-content/
-smb1_content/
-smb2_content/
-mb2ws_content/
-audio/
-assets/
+# Game data is never committed (AGENTS.md, hard rule 2). The game reads the user's own disc image where it
+# is; these patterns only keep a stray copy or an extracted file out of a commit.
 *.iso
 *.gcm
 *.rvz
@@ -18,6 +13,8 @@ assets/
 *.gma
 *.tpl
 *.lz
+*.adp
+*.pack
 
 # Local
 .env
@@ -25,6 +22,5 @@ assets/
 .vscode/
 *.log
 
-# Browser build output (scripts/build-web.*)
-web/pkg/
+# The built site (scripts/build-web.*)
 web/dist/

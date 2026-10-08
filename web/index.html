@@ -2,14 +2,14 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover, user-scalable=no">
 <meta name="color-scheme" content="dark">
 <meta name="theme-color" content="#10131a">
 <meta name="mobile-web-app-capable" content="yes">
 <!-- Everything this page needs is served next to it; it never talks to another host. -->
 <!--build:csp-->
 <meta http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; worker-src 'self'; manifest-src 'self'">
+      content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; worker-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'">
 <!--/build:csp-->
 <!--build:version--><!--/build:version-->
 <title>Monkey Ball (Rust)</title>
@@ -146,7 +146,7 @@
     <div class="card">
       <h2 id="fatal-title">The game stopped</h2>
       <p id="fatal-text" class="error"></p>
-      <p class="small">Your progress is saved at every stage. Restarting returns to the title menu.</p>
+      <p id="fatal-note" class="small">Your progress is saved at every stage. Restarting returns to the title menu.</p>
       <div class="row">
         <button id="reload" type="button">Restart</button>
         <button id="fatal-remove" type="button" class="quiet" hidden>Remove imported game data</button>
@@ -155,6 +155,7 @@
   </div>
 
 <!--build:scripts-->
+  <script src="./guard.js"></script>
   <script src="./pkg/mb_web.js"></script>
   <script src="./main.js"></script>
 <!--/build:scripts-->

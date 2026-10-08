@@ -7,15 +7,16 @@ own bundle files, and its Content-Security-Policy forbids anything else.
 
 The output is a **static site**: plain files, relative paths only, no server-side component, no dependency on
 a service worker, WebGL2 as a first-class backend. It can be hosted by any static file server, installed as a
-PWA, placed inside another application's web view, or opened as a single `.html` file.
+PWA, placed inside another application's web view (see [ANDROID_WEBVIEW.md](ANDROID_WEBVIEW.md)), or opened
+as a single `.html` file.
 
 ## Build
 
-Needs the wasm target and the wasm-bindgen CLI at exactly the version of the `wasm-bindgen` crate in
-`Cargo.lock` (pinned in `crates/mb-web/Cargo.toml`, currently 0.2.129):
+Needs the wasm-bindgen CLI at exactly the version of the `wasm-bindgen` crate in `Cargo.lock` (pinned in
+`crates/mb-web/Cargo.toml`, currently 0.2.129). The `wasm32-unknown-unknown` target comes with the toolchain
+(`rust-toolchain.toml` names it, so rustup installs it by itself).
 
 ```
-rustup target add wasm32-unknown-unknown
 cargo install wasm-bindgen-cli --version 0.2.129 --locked
 ```
 
@@ -32,13 +33,17 @@ It checks the CLI version, runs `cargo build -p mb-web --target wasm32-unknown-u
 | File | What |
 |---|---|
 | `index.html` | the page (stamped with a version hash of the bundle) |
+| `guard.js` | a few lines of old-style script loaded first: says so when a later script cannot load or parse (a browser below the supported versions) |
 | `main.js`, `worker.js` | the page's script and the import worker (classic scripts, no modules) |
-| `pkg/mb_web.js`, `pkg/mb_web_bg.wasm` | the engine: 5.0 MB wasm (1.56 MB gzipped), 0.19 MB glue |
+| `pkg/mb_web.js`, `pkg/mb_web_bg.wasm` | the engine: 3.9 MB wasm (1.39 MB gzipped), 0.19 MB glue |
 | `sw.js`, `manifest.webmanifest`, `icon*.{svg,png}` | offline start and installation (optional at run time) |
-| `monkey-ball.html` | with `-Single` / `--single`: everything in one file, 2.3 MB (1.6 MB gzipped) |
+| `monkey-ball.html` | with `-Single` / `--single`: everything in one file, 2.1 MB (1.45 MB gzipped) |
 
-`-Dev` / `--dev` builds unoptimised. The `web` profile (workspace `Cargo.toml`) is `release` plus fat LTO, one
-codegen unit and `panic = "abort"`. `wasm-opt` is not used (not required; not installed on the build machine).
+`-Dev` / `--dev` builds unoptimised and keeps the function names in the module. The `web` profile (workspace
+`Cargo.toml`) is `release` plus fat LTO, one codegen unit and `panic = "abort"`; the optimised build also
+drops the module's name section (1.1 MB; a panic still reports its message and source line). `wasm-opt` is
+not used (not required; not installed on the build machine). The module is built with rustc's default
+feature set for `wasm32-unknown-unknown` (see "Browser requirements").
 
 ## Run
 
@@ -66,7 +71,7 @@ What `python -m http.server` implies, and how the page copes:
 
 `web/dist/monkey-ball.html` (built with `-Single`) has the scripts inlined as classic scripts, the wasm
 embedded as gzipped base64 (unpacked with `DecompressionStream`), the import worker started from a Blob, and the
-icon inlined. No service worker, no manifest. Its policy lists the two inline scripts by SHA-256 hash and has
+icon inlined. No service worker, no manifest. Its policy lists the three inline scripts by SHA-256 hash and has
 `connect-src 'none'`. Copy the one file anywhere and open it.
 
 What a page opened from disk may do depends on the browser. Measured in Chrome 154 on Windows: it is treated as
@@ -77,12 +82,19 @@ If the single file does not work somewhere, host `web/dist/` instead.
 
 ### Page parameters
 
-`?gl=1` forces WebGL2 where WebGPU is available; `?scale=0.5` renders at that fraction of the device
-resolution (0.25 to 1); `?autoscale=0` turns the automatic resolution fallback off; `?fps=1` shows the frame
-timing overlay; `?nostore=1` skips on-device storage (plays from the picked file); `?tilt=1` offers tilt
-control on a device without a touch screen. `window.mbStats` holds what happened at start-up (mode, import
-time, pack size, save mode), `window.mbPerf` frame timings and load breakdowns (`summary()`, `lastLoad()`,
-`status()`, `preparedBytes()`, `wasmMemoryBytes()`, `audio()`).
+| Parameter | Effect | For |
+|---|---|---|
+| `?gl=1` | use WebGL2 even where WebGPU is available | a machine whose WebGPU misbehaves; the browser check |
+| `?scale=0.5` | render at that fraction of the device resolution (0.25 to 1) | weak GPUs |
+| `?autoscale=0` | do not lower the resolution automatically when frames stay slow | measuring |
+| `?fps=1` | show the frame timing overlay | measuring |
+| `?nostore=1` | do not keep the game data (play from the picked file) | trying the page without leaving 144 MB behind; the browser check |
+| `?tilt=1` | offer tilt control on a device without a touch screen | the browser check (emulated sensor) |
+
+For the console and for automated checks: `window.mbStats` holds what happened at start-up (mode, import
+time, pack size, save mode, why nothing is stored), `window.mbPerf` frame timings and load breakdowns
+(`summary()`, `lastLoad()`, `status()`, `preparedBytes()`, `wasmMemoryBytes()`, `audio()`), and
+`window.mbBack()` takes one step back inside the game (false at the title menu).
 
 ## The game file
 
@@ -104,9 +116,10 @@ truncated or damaged files), and the picker stays usable.
 Reading is done by the project's own code on every target (`crates/mb-assets`): `rvz.rs` (the RVZ container)
 and `disc.rs` (GameCube boot header, file table, `main.dol`). Sizes and offsets from the file are checked
 against the format and the file before anything is allocated or read; tests feed truncated, bit-flipped and
-hostile-size inputs under an allocation-counting allocator. `cargo run --release -p xtask -- check-rvz <image>`
-compares the readers with the `nod` crate over a whole image (identical on the tested file: 1,459,978,240 disc
-bytes, 897 files, `main.dol`); `nod` is a test and tool dependency only.
+hostile-size inputs under an allocation-counting allocator. `crates/mb-assets/tests/disc.rs` compares the
+readers with the `nod` crate: a sample in every test run, and the whole image with
+`cargo test --release -p mb-assets --test disc -- --ignored whole_image_matches_nod` (identical on the tested
+file: 1,459,978,240 disc bytes, 897 files, `main.dol`). `nod` is a dev-dependency of that test only.
 
 ## Storage model
 
@@ -141,7 +154,9 @@ without a single unprepared read.
   write fails, the page does not store anything: the import worker stays alive and hands the game single
   files straight from the picked image for the session (still never holding the image in memory), and the
   file is asked for again next time.
-* **Space.** About 145 MB; `navigator.storage.estimate()` is checked first.
+* **Space.** About 145 MB; `navigator.storage.estimate()` is checked first (160 MB must be free where the
+  browser reports a quota), and a write that still comes up short ends the import cleanly. Either way the
+  page then plays from the picked file, and the options screen says why nothing is kept.
 * **No duplicates.** There is one pack. Importing again, the same disc or another region, replaces it.
 * **Expiry.** A browser may clear a site's storage under pressure. After an import the page asks for
   persistence (`navigator.storage.persist()`); the landing page and the options screen say whether the data is
@@ -212,7 +227,15 @@ page (main.js + wasm)
   lists, a Back button in the top-left corner of every screen but the title (and on the pause screen). A tap
   is a press and release without movement, however long; a drag never activates.
 * The browser's back gesture goes one step back inside the game while it is in a sub-menu or a stage (one
-  history entry is kept for that); at the title it leaves the page as usual.
+  history entry is kept for that, added and removed when the game says so, with no polling); at the title it
+  leaves the page as usual.
+* On a touch device the file input has no extension filter: a phone's chooser maps extensions to media types,
+  knows none for `.rvz` or `.gcm`, and could grey the right file out. The file is judged by its content.
+* Playing from the picked file (nothing stored), the file can vanish mid-session: moved, deleted, or the
+  permission a phone gave for it has ended. The game then cannot load another stage; the page says "The game
+  file can no longer be read" and offers the way back to the picker. Progress is already saved.
+* A hidden page (another tab or app in front) produces no frames, stops its audio clock and pauses the stage;
+  nothing runs on a timer while the game is up.
 * Options: fullscreen (with an attempt to lock landscape), controls by device tilt (calibrated to the pose
   the device is held in when a stage starts; iOS asks for permission at the next tap), remove game data,
   erase save data.
@@ -223,10 +246,36 @@ page (main.js + wasm)
 
 ## Browser requirements
 
-WebAssembly; WebGPU, or WebGL2 (automatic fallback, and the only backend on plain http and in most web views);
-`Worker` and `FileReaderSync`. On-device storage additionally needs the Origin Private File System with
-`createSyncAccessHandle` (Chrome 102+, Firefox 111+, Safari 15.2+); the single file needs
-`DecompressionStream` (Chrome 80+, Firefox 113+, Safari 16.4+).
+**Chrome or Android System WebView 97, Safari 16, Firefox 79, or newer.** Only Chrome 154 on Windows was
+run; the other numbers are derived from what the build uses and the browsers' documentation.
+
+| Needed for | Feature | Chrome / WebView | Safari | Firefox |
+|---|---|---|---|---|
+| running at all | WebAssembly with reference types, bulk memory, non-trapping conversions, sign extension, multi-value (rustc 1.98's defaults for `wasm32-unknown-unknown`; the built module has two tables and uses `memory.copy`/`memory.fill`) | 96 | 15 | 79 |
+| running at all | `'wasm-unsafe-eval'` in the page's Content-Security-Policy (an older engine refuses to compile WebAssembly under the policy) | 97 | 16 | any (applied to WebAssembly from 102) |
+| running at all | WebGL2, or WebGPU; `Worker` with `FileReaderSync`; `Blob.arrayBuffer` | 76 | 15 | 69 |
+| keeping the game data | Origin Private File System with `createSyncAccessHandle` | 102 | 15.2 | 111 |
+| saves as files | `createWritable` (else `localStorage`, else memory) | 86 | 26 | 111 |
+| the single file | `DecompressionStream` | 80 | 16.4 | 113 |
+
+The module is deliberately not built for an older WebAssembly feature level (`-C target-cpu=mvp`): the policy
+already sets the floor at Chrome 97, above every WebAssembly feature used, so it would buy nothing.
+
+What the page does where something is missing:
+
+* **Cannot run** (no WebAssembly, the engine refuses the module, no `Worker`, neither WebGL2 nor WebGPU, a
+  script that does not load or parse): a message on the landing page that names what is missing and the
+  versions above. There is deliberately no import path without a worker: every environment the site is meant
+  for has dedicated workers and `FileReaderSync`, the import is the one place that needs synchronous reads,
+  and a second, main-thread reader would be a second code path to keep correct for no known user.
+* **No private file system** (plain http on a network address, a page opened from disk, private windows, some
+  web views): plays from the picked file for the session.
+* **No `localStorage`** (blocked site data; a web view with DOM storage off, where it is `null`): saves last
+  until the page closes and every save says so.
+* **No service worker, WebGPU, fullscreen, wake lock, orientation lock, device orientation, gamepads,
+  `storage.persist`, `compileStreaming`:** each is optional and its absence changes nothing else.
+* **Audio blocked by the autoplay policy:** the context is resumed at the first key, pointer or touch.
+* **A lost graphics context or device:** a dialog with a restart button.
 
 ## Measurements
 
@@ -234,8 +283,10 @@ Chrome 154, Windows 11, RTX 4080, 165 Hz display, the tested RVZ; `scripts/web-e
 
 | | Before (image held in the tab) | Now |
 |---|---|---|
-| JS heap with the game running | 509 MB | 1.7 MB |
-| wasm memory while playing | (plus the above) | 32 MB (Beginner), 40 MB (Expert 50) |
+| JS heap with the game running | 509 MB | 2 MB |
+| wasm memory while playing | (plus the above) | 22 to 23 MB (Beginner), 28 MB (Expert 50); it was 32 and 40 MB while music was decoded to 16-bit PCM inside it first |
+| Music of the current stage (float samples held by the browser, outside wasm memory) | | 24 MB (`st1`) to 54 MB (`st2`) |
+| Textures on the GPU (RGBA8 with mip levels), heaviest stage | | 16.6 MB (stage 109, 78 textures); 6 to 15 MB typical |
 | Game files held in memory between loads | all | 0 bytes (largest single stage fetch: 10.6 MB, released after the load) |
 | First run: pick to menu | read 475 MB every visit | 1.3 s import (copy 144 MB, verify), once |
 | Later runs: page load to first frame | same as first | 0.1 s after the engine is compiled; no picker |
@@ -243,10 +294,29 @@ Chrome 154, Windows 11, RTX 4080, 165 Hz display, the tested RVZ; `scripts/web-e
 | Stage load, Beginner 1 / Expert 50, WebGL2 | 176 ms / 432 ms at 6x CPU throttle | 82 ms / 28 ms unthrottled; Expert 50 at 6x: 137 ms |
 | Frames, 30 s of steering, Expert 50, WebGL2, 6x throttle | 2 long of 4963 | 2 long of 4917, p99 6.6 ms |
 | Frames, 30 s, Beginner 2, WebGPU | 0 of 5783, p99 6.6 ms | 1 of 4997, p99 6.5 ms |
-| A still menu | | 1.9 % of one core (no redraw without change) |
-| Play, 165 fps | | 27 % of one core on the main thread |
+| A still menu | | 1.5 % of one core (no redraw without change) |
+| Play, 165 fps | | 21 % of one core on the main thread |
+| Play, Beginner 1, WebGL2, 6x CPU throttle | | update 0.16 ms + render 5.1 ms per frame (275 draws) |
 
 Not measured: any real phone, iOS, an Android web view, Firefox, Safari.
+
+### Where the frame time goes, and what is left to gain
+
+On WebGL2 a frame of play is almost all render calls: update 0.16 ms against render 5.1 ms at 6x CPU
+throttle for the 275 draws of Beginner 1. The renderer already uploads only what changed (one buffer with
+dynamic offsets for all objects), sorts opaque draws by pipeline and material, skips redundant binds, culls
+by bounding sphere, compiles each pipeline with only the texture fetches its material uses, renders at most
+two device pixels per CSS pixel and lowers the resolution by itself when frames stay slow. A still menu or a
+pause screen is not drawn again at all. Not done, because the gain could not be measured without a phone:
+
+* **Fewer draws.** Background and stage meshes that never move and share a material could be merged at load
+  into one vertex buffer each; the draw count would fall to roughly the number of materials.
+* **One render pass instead of two.** The backdrop and the world are separate passes so the depth buffer can
+  be cleared between them; on a tile-based phone GPU the second pass has to load the colour buffer back.
+  Splitting the depth range between the two layers in one pass would avoid that.
+* **Compressed textures.** Textures are uploaded as RGBA8 with mip levels (up to 16.6 MB for a stage). The
+  disc's own DXT1 (`CMPR`) blocks could go to the GPU as they are where the device supports S3TC, and ETC2
+  would need a transcoder.
 
 ## Checking it
 
@@ -257,8 +327,12 @@ deno run -A scripts/web-e2e.ts [--lan]
 serves `web/dist` with `python -m http.server`, starts the installed Chrome with a throw-away profile and
 drives it over the DevTools protocol, setting the real disc image on the page's real file input. It needs the
 bundle, Chrome, Python and the image (`MB_DISC`, or `Super Monkey Ball*.rvz` next to the repository) and says
-what is missing otherwise. 45 checks (48 with `--lan`): wrong, empty, random and truncated files; import and
-storage contents; play floor 1 into floor 2; in-place retry; audio; closing the tab mid-play and mid-import;
-touch-only menus at 412x915; the back gesture; idle cost; tilt with an emulated sensor; remove data; cancel;
-play without storage; the network address (with `--lan`); the single file opened from disk; start with the
-server stopped (service worker).
+what is missing otherwise. 60 checks (63 with `--lan`): wrong, empty, random and truncated files; import and
+storage contents; play floor 1 into floor 2; in-place retry; audio; the page hidden and shown again; closing
+the tab mid-play and mid-import; touch-only menus at 412x915; the back gesture; idle cost; tilt with an
+emulated sensor; remove data; cancel; play without storage; the picked file deleted mid-session; a bare web
+view (the private file system, `localStorage`, service worker, WebGPU, fullscreen, wake lock, device
+orientation, gamepads and streaming compilation taken away before the page loads); browsers that cannot run
+the game (no workers, no WebGL2, an engine that rejects the module, no WebAssembly); the bundle served from a
+sub-path; the network address (with `--lan`); the single file opened from disk; start with the server
+stopped (service worker).

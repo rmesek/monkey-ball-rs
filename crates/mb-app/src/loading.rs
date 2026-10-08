@@ -197,7 +197,7 @@ impl Game for StageLoad {
                     // The same track as on the previous floor just keeps playing; a new one is decoded
                     // here and starts while the scene is built.
                     self.audio
-                        .stage_music(self.request.bg, &mut |path| ctx.content.read(path));
+                        .stage_music(self.request.bg, &mut |path| ctx.content.read_once(path));
                     self.progress = 0.85;
                     self.phase = Phase::Build(loaded);
                 }

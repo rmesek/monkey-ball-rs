@@ -1,5 +1,5 @@
 //! Input abstraction. The game reads logical [`Action`]s and [`Axis`] values from [`InputState`]; platform
-//! shells (winit keyboard/mouse, gamepads, touch, later device tilt) just feed it.
+//! shells (winit keyboard/mouse, gamepads, touch, device tilt) just feed it.
 //!
 //! What a shell feeds, once per event or per frame:
 //! * keys / buttons: [`InputState::set_action`]; sticks: [`InputState::set_axis`] (`MoveX`/`MoveY`, +Y = forward);
@@ -23,9 +23,7 @@ pub enum Action {
     MoveBack,
     MoveLeft,
     MoveRight,
-    MoveUp,
-    MoveDown,
-    Fast,
+    /// The arrow keys: a second set of direction keys (steering and menu steps, like WASD).
     LookLeft,
     LookRight,
     LookUp,
@@ -33,17 +31,12 @@ pub enum Action {
     Confirm,
     Cancel,
     Pause,
-    NextStage,
-    PrevStage,
-    ResetCamera,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Axis {
     MoveX,
     MoveY,
-    LookX,
-    LookY,
     /// Device tilt (the browser shell feeds it from `deviceorientation`, see `tilt`).
     TiltX,
     TiltY,
@@ -59,9 +52,7 @@ impl Axis {
 pub struct InputState {
     held: HashSet<Action>,
     pressed: HashSet<Action>,
-    axes: [f32; 6],
-    mouse_delta: (f32, f32),
-    mouse_look: bool,
+    axes: [f32; 4],
     pointer: Option<(f32, f32)>,
     pointer_held: bool,
     pointer_pressed: bool,
@@ -127,15 +118,6 @@ impl InputState {
         self.axes[axis.index()]
     }
 
-    pub fn add_mouse_delta(&mut self, dx: f32, dy: f32) {
-        self.mouse_delta.0 += dx;
-        self.mouse_delta.1 += dy;
-    }
-
-    pub fn set_mouse_look(&mut self, on: bool) {
-        self.mouse_look = on;
-    }
-
     pub fn held(&self, action: Action) -> bool {
         self.held.contains(&action)
     }
@@ -143,21 +125,6 @@ impl InputState {
     /// True only on the frame the action went down.
     pub fn pressed(&self, action: Action) -> bool {
         self.pressed.contains(&action)
-    }
-
-    /// Digital pair combined with the analog axis, clamped to -1..=1.
-    pub fn axis_with_keys(&self, axis: Axis, negative: Action, positive: Action) -> f32 {
-        let digital = self.held(positive) as i32 as f32 - self.held(negative) as i32 as f32;
-        (digital + self.axes[axis.index()]).clamp(-1.0, 1.0)
-    }
-
-    /// Mouse motion since the last frame, only while mouse-look is active.
-    pub fn look_delta(&self) -> (f32, f32) {
-        if self.mouse_look {
-            self.mouse_delta
-        } else {
-            (0.0, 0.0)
-        }
     }
 
     /// Normalized steering vector for gameplay: `x` right, `y` forward, length <= 1 for analog sources.
@@ -300,23 +267,20 @@ impl InputState {
         copy.pointer_pressed = false;
         copy.pointer_released = false;
         copy.scroll = 0.0;
-        copy.mouse_delta = (0.0, 0.0);
         copy.nav_axis_prev = copy.nav_axis();
         copy
     }
 
-    /// Let go of every held action, the pointer button and mouse-look (the window lost focus, so the
-    /// matching "up" events will never arrive).
+    /// Let go of every held action and the pointer button (the window lost focus, so the matching "up"
+    /// events will never arrive).
     pub fn release_all(&mut self) {
         self.held.clear();
-        self.mouse_look = false;
         self.set_pointer_down(false);
     }
 
     /// Call after each update to clear per-frame state.
     pub fn end_frame(&mut self) {
         self.pressed.clear();
-        self.mouse_delta = (0.0, 0.0);
         self.pointer_pressed = false;
         self.pointer_released = false;
         self.scroll = 0.0;
@@ -332,9 +296,6 @@ pub fn action_for_key(key: winit::keyboard::KeyCode) -> Option<Action> {
         K::KeyS => Action::MoveBack,
         K::KeyA => Action::MoveLeft,
         K::KeyD => Action::MoveRight,
-        K::KeyE | K::Space => Action::MoveUp,
-        K::KeyQ | K::ControlLeft => Action::MoveDown,
-        K::ShiftLeft | K::ShiftRight => Action::Fast,
         K::ArrowLeft => Action::LookLeft,
         K::ArrowRight => Action::LookRight,
         K::ArrowUp => Action::LookUp,
@@ -342,9 +303,6 @@ pub fn action_for_key(key: winit::keyboard::KeyCode) -> Option<Action> {
         K::Enter => Action::Confirm,
         K::Escape => Action::Cancel,
         K::KeyP => Action::Pause,
-        K::PageUp | K::BracketRight => Action::NextStage,
-        K::PageDown | K::BracketLeft => Action::PrevStage,
-        K::KeyR => Action::ResetCamera,
         _ => return None,
     })
 }
@@ -365,33 +323,6 @@ mod tests {
         assert!(!i.pressed(Action::Confirm));
         i.set_action(Action::Confirm, false);
         assert!(!i.held(Action::Confirm));
-    }
-
-    #[test]
-    fn digital_and_analog_combine_and_clamp() {
-        let mut i = InputState::new();
-        i.set_action(Action::MoveRight, true);
-        i.set_axis(Axis::MoveX, 0.5);
-        assert_eq!(
-            i.axis_with_keys(Axis::MoveX, Action::MoveLeft, Action::MoveRight),
-            1.0
-        );
-        i.set_action(Action::MoveRight, false);
-        assert_eq!(
-            i.axis_with_keys(Axis::MoveX, Action::MoveLeft, Action::MoveRight),
-            0.5
-        );
-    }
-
-    #[test]
-    fn mouse_delta_only_counts_in_look_mode() {
-        let mut i = InputState::new();
-        i.add_mouse_delta(3.0, 4.0);
-        assert_eq!(i.look_delta(), (0.0, 0.0));
-        i.set_mouse_look(true);
-        assert_eq!(i.look_delta(), (3.0, 4.0));
-        i.end_frame();
-        assert_eq!(i.look_delta(), (0.0, 0.0));
     }
 
     #[test]

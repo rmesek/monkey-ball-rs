@@ -65,7 +65,8 @@ horizontal view of 4:3 is kept instead (portrait phones).
 | Fullscreen | F11 or Alt+Enter | | |
 
 Mouse: hover and click rows, wheel scrolls lists. The on-screen stick and pause button are drawn only while
-touch is the device in use (any key or button press hides them).
+touch is the device in use (any key or button press hides them). Device tilt (browser, Options -> Controls)
+steers by holding the phone; see `docs/WEB.md`.
 
 ## Options and sound
 | Option | Values | Effect |
@@ -81,14 +82,15 @@ profile and apply at once; a category that is off is not played at all. Menus cl
 back. In the pause menu the music plays on and the ball's roll is silent; leaving a stage cuts its effects.
 What plays when, and how sound reaches the device, is in `docs/AUDIO.md`.
 
-## Input seam (Stage 2 tilt)
+## Input seam
 Gameplay reads exactly one thing: `InputState::tilt() -> (x right, y forward)`, a vector in the unit circle.
-Its sources, in priority order like the reference's `getStick`: the `TiltX`/`TiltY` axes (reserved for the
-accelerometer), the `MoveX`/`MoveY` axes (gamepad or touch stick), then keys (unramped, as in the reference;
-the world tilt itself eases). `PlayState` applies the stick curve and `quantize_input`. An Android shell only
-has to call `input.set_axis(Axis::TiltX / TiltY, ..)`; nothing in the game states changes. The pointer API
-(`set_pointer`, `set_pointer_down`, `add_scroll`) is documented at the top of `input.rs`; `ui::TouchControls`
-feeds it for touches.
+Its sources, in priority order like the reference's `getStick`: the `TiltX`/`TiltY` axes (device tilt, fed by
+the browser target through `tilt::TiltSteering`), the `MoveX`/`MoveY` axes (gamepad or touch stick), then
+keys (unramped, as in the reference; the world tilt itself eases). `PlayState` applies the stick curve and
+`quantize_input`. A new input device only has to write actions and axes into `InputState` from its driver
+(`app.rs` on the desktop, the `Platform` hooks of `shell.rs` in the browser); nothing in the game states
+changes. The pointer API (`set_pointer`, `set_pointer_down`, `add_scroll`) is documented at the top of
+`input.rs`; `ui::TouchControls` feeds it for touches.
 
 ## HUD (`hud.rs`, `text.rs`)
 A port of `hud.ts` with the same timings, laid out on its 640 x 480 grid but anchored to the edges and centre
@@ -109,18 +111,24 @@ time from the user's disc; nothing is embedded:
 Font cell layouts are the reference's `FONT_PARAMS`. The touch stick uses a disc computed in code.
 
 ## Automated verification
-- `mb-app <disc> --autoplay <stage> --screenshot-dir <dir>`: headless; walks the real menu with key presses,
-  plays the stage with the waypoint autopilot (`autopilot.rs`) and writes PNGs of the menu, fly-in, READY,
-  GO, play, goal and result. Exit code 1 if the goal is not reached.
-- `cargo run -p mb-app --example screens -- <disc> <dir>`: PNGs of the other screens (course HUD, pause,
-  goal score, floor intro, fall-out, game over, time over, portrait with touch controls).
 - `cargo test -p mb-app`: `tests/gameplay.rs` drives the real states on an offscreen renderer (goal advances
   the course and saves, fall-out retries until game over and continue, pause / retry / quit in practice,
-  pointer and stick input, every course stage loads and renders). Skips without a disc or adapter.
-- `mb-app <disc> [stage] --exit-after <s>` prints frame pacing and simulation ticks against the 60 Hz target,
-  and what the audio device played (stream, callbacks, peak / RMS, late callbacks). `--mute` opens no device.
+  pointer and stick input, every course stage loads and renders); `tests/pack.rs` does the same over an
+  imported game pack behind a deferred source, the way the browser reads; `tests/pause.rs`, `tests/rules.rs`,
+  `tests/kill.rs` (the real program killed mid-run). They skip without a disc or a GPU adapter.
 - `cargo test -p mb-app --test audio`: the autopilot's floor 1 with a recording audio backend and an offline
   render of its sound.
+
+The tests run on developer support that the product does not contain: the windowless driver (`headless.rs`),
+the waypoint autopilot (`autopilot.rs`) and a PNG writer (`image.rs`) are compiled only with the `dev` cargo
+feature, which `cargo test` switches on by itself. A `dev` build of the program also has two options:
+
+- `cargo run --release -p mb-app --features dev -- <disc> --autoplay <stage> [--screenshot-dir <dir>]`:
+  windowless; walks the real menu with key presses, plays the stage with the autopilot and, when asked,
+  writes PNGs of the menu, fly-in, READY, GO, play, goal and result to a directory of your choice. Exit code
+  1 if the goal is not reached.
+- `... -- <disc> [stage] --exit-after <s>` prints frame pacing and simulation ticks against the 60 Hz target,
+  and what the audio device played (stream, callbacks, peak / RMS, late callbacks).
 
 ## Not ported from the reference
 - The monkey inside the ball (separate skeletal system in the reference), the projected ball shadow,

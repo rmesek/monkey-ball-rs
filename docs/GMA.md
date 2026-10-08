@@ -72,7 +72,6 @@ Nothing here panics on bad bytes; every failure is an `Error`.
   synthetic GMA / NaomiLib / display-list inputs under a counting allocator, repeated on real archives when a
   disc is present. `tests/golden.rs`: a hash over every parsed model and decoded mesh of the disc, recorded
   before the hardening.
-- `cargo run --release -p mb-gma --example gma_to_obj -- in.gma out.obj [model]` (write outside the repo).
 - `crates/mb-gma/tests/disc.rs`: parses every GMA (incl. `.gma.lz`) and NaomiLib archive on the disc; compares triangle
   counts and position checksums against the TypeScript reference (via `deno`, `tests/ref/gma_ref.ts`) for 9 files.
   Env: `MB_DISC`, `MB_REF`, `MB_SCRATCH`.

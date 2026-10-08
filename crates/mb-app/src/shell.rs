@@ -1,9 +1,15 @@
-//! Windowed driver for the browser shell (`mb-web`).
+//! The browser driver (wasm32 only; `mb-web` starts it and supplies the [`Platform`] hooks).
 //!
-//! The desktop driver in [`crate::app`] blocks on GPU setup and uses `std::time`; neither works in the
-//! browser (no blocking, `Instant::now` panics). This driver therefore (a) runs GPU setup through a
-//! [`Platform::run_local`] hook so the web shell can spawn it on the JS event loop and (b) uses `web_time`
-//! clocks. Platform specifics (safe-area insets, gamepad, tilt, error display) are the [`Platform`] trait.
+//! The desktop driver (`app.rs`) blocks on GPU setup and uses `std::time`; neither works in the browser (no
+//! blocking, `Instant::now` panics). This driver therefore (a) runs GPU setup through
+//! [`Platform::run_local`], which spawns it on the JS event loop, and (b) uses `web_time` clocks. What the
+//! page knows and the game does not (safe-area insets, gamepads, tilt, the back gesture, error display) comes
+//! in through the [`Platform`] trait.
+//!
+//! Why there are two drivers: the browser paces frames with `requestAnimationFrame`, hides the page as a
+//! whole and has no blocking calls; the desktop paces with vsync, has to detect a minimised window itself
+//! and has native gamepads, a real mouse pointer and a fullscreen key. Everything from the state stack up
+//! is shared.
 //!
 //! Frame pacing: the event loop sleeps (`ControlFlow::Wait`) and every frame asks for the next one with
 //! `request_redraw`, which is `requestAnimationFrame` in the browser and the compositor's frame callback
@@ -55,10 +61,8 @@ pub trait Platform: 'static {
     }
     /// The top state's status line (`Game::status`), when asked for.
     fn on_status(&mut self, _status: String) {}
-    /// Drive a future to completion. Native blocks; the web shell spawns it on the JS event loop.
-    fn run_local(&mut self, fut: Pin<Box<dyn Future<Output = ()>>>) {
-        pollster::block_on(fut);
-    }
+    /// Run a future to completion on the page's event loop (`wasm_bindgen_futures::spawn_local`).
+    fn run_local(&mut self, fut: Pin<Box<dyn Future<Output = ()>>>);
     /// Render resolution relative to the window's physical size, in 0..=1 (1.0 = native). The web shell caps
     /// very dense displays here; pointer positions and the layout scale follow the reduced size.
     fn render_scale(&mut self, _window: &Window) -> f32 {
@@ -109,8 +113,7 @@ type GpuInit = Result<(wgpu::Surface<'static>, Gpu), String>;
 
 struct Live {
     window: Arc<Window>,
-    /// Always present once set up (kept optional so a frame without a surface is simply skipped).
-    surface: Option<wgpu::Surface<'static>>,
+    surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
     gpu: Gpu,
     renderer: Renderer,
@@ -123,8 +126,6 @@ const WHEEL_LINE: f32 = 60.0;
 
 struct Shell<P: Platform> {
     platform: P,
-    /// `None` on the web, where the instance is created asynchronously (WebGPU detection, see [`init_gpu`]).
-    instance: Option<wgpu::Instance>,
     content: Content,
     initial: Option<Box<dyn Game>>,
     stack: GameStack,
@@ -176,15 +177,11 @@ fn required_limits(adapter: &wgpu::Adapter) -> wgpu::Limits {
 }
 
 async fn init_gpu(
-    instance: Option<wgpu::Instance>,
     web_backends: wgpu::Backends,
     power_preference: wgpu::PowerPreference,
     window: Arc<Window>,
 ) -> GpuInit {
-    let instance = match instance {
-        Some(i) => i,
-        None => web_instance(web_backends).await,
-    };
+    let instance = web_instance(web_backends).await;
     let surface = instance
         .create_surface(window)
         .map_err(|e| format!("surface: {e}"))?;
@@ -232,14 +229,13 @@ impl<P: Platform> Shell<P> {
                 .create_window(attrs)
                 .map_err(|e| format!("window: {e}"))?,
         );
-        let instance = self.instance.clone();
         self.window = Some(window.clone());
         let slot = self.pending.clone();
         let web_backends = self.platform.web_backends();
         let power = self.platform.power_preference();
         let kick = window.clone();
         self.platform.run_local(Box::pin(async move {
-            *slot.borrow_mut() = Some(init_gpu(instance, web_backends, power, window).await);
+            *slot.borrow_mut() = Some(init_gpu(web_backends, power, window).await);
         }));
         // Start the frame chain; frames before the GPU is up only check whether it has arrived.
         kick.request_redraw();
@@ -286,9 +282,7 @@ impl<P: Platform> Shell<P> {
             if (st.config.width, st.config.height) != (width, height) {
                 st.config.width = width;
                 st.config.height = height;
-                if let Some(s) = &st.surface {
-                    s.configure(&st.gpu.device, &st.config);
-                }
+                st.surface.configure(&st.gpu.device, &st.config);
             }
             st.renderer.invalidate();
         }
@@ -299,7 +293,6 @@ impl<P: Platform> Shell<P> {
         for action in std::mem::take(&mut self.keys_down) {
             self.input.set_action(action, false);
         }
-        self.input.set_mouse_look(false);
         // Fingers and the mouse-as-touch: their ends will not arrive either. Cancelled, not ended, so
         // nothing under them is activated.
         self.mouse_touch = false;
@@ -334,7 +327,7 @@ impl<P: Platform> Shell<P> {
         let renderer = Renderer::new(gpu.device.clone(), gpu.queue.clone(), format);
         self.live = Some(Live {
             window,
-            surface: Some(surface),
+            surface,
             config,
             gpu,
             renderer,
@@ -385,9 +378,6 @@ impl<P: Platform> Shell<P> {
             self.resize_surface();
         }
         let st = self.live.as_mut().unwrap();
-        if st.surface.is_none() {
-            return;
-        }
         self.platform.poll_input(&mut self.input);
         if std::mem::take(&mut self.auto_pause) {
             let playing = (self.stack.top())
@@ -447,7 +437,7 @@ impl<P: Platform> Shell<P> {
         };
         let updated = Instant::now();
         let st = self.live.as_mut().unwrap();
-        let surface = st.surface.as_ref().unwrap();
+        let surface = &st.surface;
         // Uploads what changed; a frame identical to the one on screen is not drawn or presented again
         // (still menus and the pause screen then cost no GPU time at all).
         if st.renderer.prepare(size, &camera) {
@@ -546,11 +536,6 @@ impl<P: Platform> ApplicationHandler for Shell<P> {
                 self.release_held();
                 self.look_away();
             }
-            WindowEvent::MouseInput {
-                state,
-                button: MouseButton::Right,
-                ..
-            } => self.input.set_mouse_look(state == ElementState::Pressed),
             // The left button works the touch controls, so menus and the stick are usable with a mouse.
             WindowEvent::MouseInput {
                 state,
@@ -572,9 +557,6 @@ impl<P: Platform> ApplicationHandler for Shell<P> {
                 let pos = (position.x as f32, position.y as f32);
                 if self.mouse_touch {
                     self.pointer(MOUSE_TOUCH_ID, TouchPhase::Moved, pos);
-                } else if let Some(last) = self.cursor {
-                    // Right-button mouse look; `look_delta` ignores this while the button is up.
-                    self.input.add_mouse_delta(pos.0 - last.0, pos.1 - last.1);
                 }
                 self.cursor = Some(pos);
             }
@@ -625,16 +607,8 @@ impl<P: Platform> ApplicationHandler for Shell<P> {
     }
 }
 
-/// Build the wgpu instance for an event loop (shares the display handle, required on Wayland).
-/// Not used in the browser: there the backend has to be detected asynchronously (see `web_instance`).
-pub fn new_instance(event_loop: &EventLoop<()>) -> wgpu::Instance {
-    wgpu::Instance::new(wgpu::InstanceDescriptor::new_with_display_handle(Box::new(
-        event_loop.owned_display_handle(),
-    )))
-}
-
-/// Drive `initial` on `event_loop`. On the web this returns immediately (`spawn_app`); elsewhere it runs
-/// until the app exits and returns the fatal error, if any.
+/// Start `initial` on `event_loop`. Returns at once: the browser owns the loop from here (`spawn_app`), and
+/// later fatal errors reach the page through [`Platform::on_error`].
 pub fn run<P: Platform>(
     event_loop: EventLoop<()>,
     platform: P,
@@ -645,11 +619,6 @@ pub fn run<P: Platform>(
     let now = Instant::now();
     let shell = Shell {
         platform,
-        instance: if cfg!(target_arch = "wasm32") {
-            None
-        } else {
-            Some(new_instance(&event_loop))
-        },
         content,
         initial: Some(initial),
         stack: GameStack::new(),
@@ -671,22 +640,7 @@ pub fn run<P: Platform>(
         auto_pause: false,
         device_lost: Arc::new(Mutex::new(None)),
     };
-    #[cfg(target_arch = "wasm32")]
-    {
-        use winit::platform::web::EventLoopExtWebSys;
-        event_loop.spawn_app(shell);
-        Ok(())
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let mut shell = shell;
-        event_loop
-            .run_app(&mut shell)
-            .map_err(|e| format!("event loop: {e}"))?;
-        if shell.failed {
-            Err("stopped after an error".into())
-        } else {
-            Ok(())
-        }
-    }
+    use winit::platform::web::EventLoopExtWebSys;
+    event_loop.spawn_app(shell);
+    Ok(())
 }

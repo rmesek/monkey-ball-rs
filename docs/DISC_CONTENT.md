@@ -1,29 +1,22 @@
 # What is on the SMB1 (USA, GMBE8P) disc
 
-Observed with `xtask disc-ls` / `disc-cat` on a USA RVZ. 897 files; everything except `opening.bnr` is under `test/`.
-The web build's `smb1_content/test/…` is exactly this `test/` folder.
+As listed by the project's own disc reader (`mb_assets::disc::DiscPack::list`) on a USA RVZ: 897 files, all
+under `test/` except `opening.bnr`; the executable is exposed as `sys/main.dol`. None of this data is stored
+in the repository; these notes describe where things are and what the game reads.
 
-| Disc folder | Files | Contents (as far as verified) |
-|---|---|---|
-| `test/stNNN/` | 555 | per-stage `STAGENNN.lz` (stagedef), `stNNN.gma`, `stNNN.tpl`, and more |
-| `test/init/` | 35 | `common.gma/.tpl`, `common_p.lz`, `common.lz`, minigame models (`m_*.gma/.tpl`), `roll`, `pattern`, ... |
-| `test/bg/` | 46 | background models/textures (`bg_*.gma/.tpl`) |
-| `test/bmp/` | 15 | HUD/UI textures: `bmp_com.tpl`, `bmp_nml.tpl`, `bmp_adv`, `bmp_rnk`, ... |
-| `test/spr_bg/` | 7 | `bg_*.gct` menu backgrounds |
-| `test/snd/adp/` | 112 | music streams, `*.adp` (`*_int` intro + `*_lp` loop pairs, plus `m` variants) |
-| `test/snd/mkb/` | ~44 | sound-effect banks: `.proj/.pool/.sdir/.samp` per group (`allse`, `comn`, `bil`, `bowl`, ...) |
-| `test/ape`, `kid_*`, `gor_*`, ... | ~40 | character models/textures |
-| `test/recdata`, `preview`, `stage`, `common` | | replay data, previews, shared model sets |
+| Disc folder | Files | Contents | Read by the game |
+|---|---|---|---|
+| `test/stNNN/` | 555 | per stage: `STAGENNN.lz` (stagedef), `stNNN.gma`, `stNNN.tpl`; NaomiLib stages also `stNNN_p.lz` and `stNNN.lz` | the 109 course stages |
+| `test/init/` | 35 | `common.gma/.tpl`, `common_p.lz`, `common.lz` (ball, bananas, goal, clock digits); minigame models | the four `common` files |
+| `test/bg/` | 46 | background models and textures (`bg_*.gma/.tpl`) | the backgrounds the courses use |
+| `test/bmp/` | 15 | HUD / UI texture sheets (`bmp_com.tpl`, `bmp_nml.tpl`, ...), a TPL variant | `bmp_com`, `bmp_nml` |
+| `test/snd/adp/` | 112 | music streams, DTK ADPCM (`*_int` + `*_lp` pairs, `m` = mono mixdown) | the 10 stage tracks |
+| `test/snd/mkb/` | about 44 | MusyX sound banks, `.proj/.pool/.sdir/.samp` per group | `allse`, `comn` |
+| `sys/main.dol` | 1 | the executable | trig tables, sound table |
+| `test/spr_bg/`, `test/ape`, `kid_*`, `gor_*`, `test/recdata`, `test/preview`, ... | | menu backgrounds, character models, replay data, previews | not read |
 
-## Mapping to what the web build loads
-- **Stages / models / textures**: read directly (Phase 2 parsers). Verified: stage-1/2 files present, all stagedefs
-  decompress to their declared size, output byte-identical to the reference decoder on stages 1, 2, 50.
-- **HUD**: the web build's `assets/hud/smb1/bmp_com|bmp_nml/NNN_name.png` match the disc's `bmp_com.tpl` and
-  `bmp_nml.tpl`. These are TPL image containers (header differs from standard TPL; the reference parses them with
-  `parseAVTpl`). So HUD sprites can be decoded in the app from the disc, no PNG files needed.
-- **Music**: `snd/adp/*.adp`. The first bytes show 32-byte frames with a repeated 4-byte header, consistent with
-  GameCube streaming ADPCM. Exact layout to be confirmed in Phase 3. The web build ships these as `.ogg`.
-- **Sound effects**: `snd/mkb/*.proj|.pool|.sdir|.samp` look like the MusyX sound engine's project/sample banks.
-  The web build uses `.wav` by id. Needs a MusyX bank reader (Phase 3, largest unknown).
+The exact list of what the game reads is code: `mb_app::content::all_files()` (382 files, 144.1 MB), built
+from the per-stage list `StageFiles`. A test checks that an imported pack contains exactly that and that
+every stage loads from it without reading anything else (`crates/mb-app/tests/pack.rs`).
 
-None of this data is stored in the repo; these notes describe formats only.
+Formats: `docs/STAGEDEF.md`, `docs/GMA.md`, `docs/TPL.md`, `docs/AUDIO.md`.

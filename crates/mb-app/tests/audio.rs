@@ -2,9 +2,9 @@
 //! while the autopilot plays Beginner floor 1.
 //!
 //! * `requests_follow_the_game`: a recording backend; the sequence of sound requests is checked.
-//! * `offline_render_is_sane`: the software mixer renders the same run to PCM, which is measured (and
-//!   written as WAV files to a scratch directory outside the repository: `MB_AUDIO_OUT`, or the system
-//!   temporary directory).
+//! * `offline_render_is_sane`: the software mixer renders the same run to PCM, which is measured. Nothing
+//!   is written to disk unless `MB_AUDIO_OUT` names a directory outside the repository: then the mix is
+//!   also saved there as WAV files, for listening to while working on the audio.
 //!
 //! Both need the user's own disc image and a GPU adapter, and skip without them.
 
@@ -495,26 +495,27 @@ fn offline_render_is_sane() {
     assert!(window(full, t.end - 5, t.end).iter().all(|s| *s == 0.0));
     assert_eq!(full_handle.stats().snapshot().voices, 0);
 
-    // Scratch output for a human to listen to; never inside the repository.
-    let dir = std::env::var_os("MB_AUDIO_OUT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| std::env::temp_dir().join("mb-audio-test"));
+    eprintln!(
+        "{:.1} s rendered: peak {peak:.3}, rms {whole:.4}; music-only intro {music_intro:.4}; \
+         effects: READY {ready:.4}, GO {go:.4}, roll {rolling:.4}, goal {goal:.4}",
+        t.end as f64 / 60.0
+    );
+    // Only where the developer asked for it, and never inside the repository: the mix as WAV files.
+    let Some(dir) = std::env::var_os("MB_AUDIO_OUT").map(PathBuf::from) else {
+        return;
+    };
     let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-    if let (Ok(d), Ok(repo)) = (
-        std::fs::create_dir_all(&dir).and_then(|_| dir.canonicalize()),
-        repo.canonicalize(),
-    ) {
-        assert!(
-            !d.starts_with(&repo),
-            "audio output must stay out of the repository"
-        );
-        std::fs::write(d.join("floor1_mix.wav"), wav_bytes_f32(full, 2, RATE)).unwrap();
-        std::fs::write(d.join("floor1_effects.wav"), wav_bytes_f32(fx, 2, RATE)).unwrap();
-        eprintln!(
-            "wrote {} ({:.1} s): peak {peak:.3}, rms {whole:.4}; music-only intro {music_intro:.4}; \
-             effects: READY {ready:.4}, GO {go:.4}, roll {rolling:.4}, goal {goal:.4}",
-            d.join("floor1_mix.wav").display(),
-            t.end as f64 / 60.0
-        );
-    }
+    let (d, repo) = (
+        std::fs::create_dir_all(&dir)
+            .and_then(|_| dir.canonicalize())
+            .expect("MB_AUDIO_OUT"),
+        repo.canonicalize().unwrap(),
+    );
+    assert!(
+        !d.starts_with(&repo),
+        "audio output must stay out of the repository"
+    );
+    std::fs::write(d.join("floor1_mix.wav"), wav_bytes_f32(full, 2, RATE)).unwrap();
+    std::fs::write(d.join("floor1_effects.wav"), wav_bytes_f32(fx, 2, RATE)).unwrap();
+    eprintln!("wrote {}", d.join("floor1_mix.wav").display());
 }

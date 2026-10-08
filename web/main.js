@@ -10,6 +10,17 @@
 "use strict";
 
 (() => {
+  // What the page says when the engine cannot run here (guard.js states the versions).
+  const NEEDS = window.mbNeeds || "It needs a current browser.";
+  if (typeof wasm_bindgen === "undefined") {
+    // The glue script did not load or did not parse; guard.js has usually said why already.
+    const s = document.getElementById("status");
+    if (s && !s.classList.contains("error")) {
+      s.classList.add("error");
+      s.textContent = "The engine script could not be loaded. " + NEEDS;
+    }
+    return;
+  }
   const wasm = wasm_bindgen; // the glue script's global: wasm(...) initialises, wasm.<name> are the exports
 
   // Where the imported data lives in the Origin Private File System. worker.js writes it, this file reads
@@ -96,12 +107,49 @@
   // carried in the page, started from a Blob.
   function makeWorker() {
     const source = $("mb-worker");
-    if (!source) return new Worker("./worker.js" + VERSION_QUERY);
-    const blob = new Blob([$("mb-glue").textContent, "\n", source.textContent], { type: "text/javascript" });
-    const url = URL.createObjectURL(blob);
-    const w = new Worker(url);
-    setTimeout(() => URL.revokeObjectURL(url), 10000);
-    return w;
+    try {
+      if (!source) return new Worker("./worker.js" + VERSION_QUERY);
+      const blob = new Blob([$("mb-glue").textContent, "\n", source.textContent], { type: "text/javascript" });
+      const url = URL.createObjectURL(blob);
+      const w = new Worker(url);
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
+      return w;
+    } catch (e) {
+      // A page opened from disk may not start a worker from a file next to it; an embedding page or app
+      // may forbid workers with its own policy.
+      throw new Error(
+        "This page is not allowed to start its import worker here (" + describeError(e) + ")." +
+          (source ? "" : " If the page was opened from disk, use the single-file build (monkey-ball.html) or serve the folder with a static web server."),
+      );
+    }
+  }
+
+  // What the game cannot do without, checked before anything is asked of the user. Returns a message, or null.
+  function unsupported() {
+    if (typeof WebAssembly !== "object" || typeof WebAssembly.compile !== "function") {
+      return "This browser has no WebAssembly. " + NEEDS;
+    }
+    // The disc image is read in a worker with synchronous slices; there is no other import path.
+    if (typeof Worker !== "function") {
+      return "This browser (or the page or app embedding this one) does not allow web workers, which the game needs to read the disc image. " + NEEDS;
+    }
+    if (typeof Blob !== "function" || typeof Blob.prototype.slice !== "function" || typeof Blob.prototype.arrayBuffer !== "function") {
+      return "This browser cannot read parts of a local file. " + NEEDS;
+    }
+    // WebGPU where the browser has it, else WebGL2. Probing WebGL2 costs a context, so only without WebGPU;
+    // the probe context is given back at once.
+    if (!navigator.gpu) {
+      let gl = null;
+      try {
+        gl = document.createElement("canvas").getContext("webgl2");
+      } catch (e) {}
+      if (!gl) {
+        return "This browser provides neither WebGL2 nor WebGPU (graphics acceleration may be switched off, or the device's graphics driver is blocked). The game cannot draw without one of them.";
+      }
+      const lose = gl.getExtension("WEBGL_lose_context");
+      if (lose) lose.loseContext();
+    }
+    return null;
   }
 
   // ---- on-device storage (Origin Private File System) -----------------------------------------------------
@@ -118,17 +166,21 @@
 
   // Whether the import can be stored: the storage exists and has room.
   async function storageVerdict(needBytes) {
-    if (params.get("nostore") === "1") return { ok: false, why: "storage was switched off with ?nostore=1" };
+    if (params.get("nostore") === "1") return { ok: false, why: "storage was switched off with ?nostore=1", short: "storage switched off" };
     if (!window.isSecureContext) {
-      return { ok: false, why: "this page is not a secure context (plain http or a local file)" };
+      return { ok: false, why: "this page is not a secure context (plain http or a local file)", short: "page not served securely" };
     }
-    if (!(await storeDir(true))) return { ok: false, why: "this browser provides no private file storage here" };
+    if (!(await storeDir(true))) {
+      return { ok: false, why: "this browser provides no private file storage here", short: "no private storage here" };
+    }
     try {
       const { quota = 0, usage = 0 } = await navigator.storage.estimate();
       if (quota && quota - usage < needBytes) {
+        const free = Math.max(0, Math.floor((quota - usage) / MB));
         return {
           ok: false,
-          why: `only ${Math.floor((quota - usage) / MB)} MB of storage are free here (${Math.ceil(needBytes / MB)} MB needed)`,
+          why: `only ${free} MB of storage are free for this page (${Math.ceil(needBytes / MB)} MB needed)`,
+          short: `only ${free} MB of storage free`,
         };
       }
     } catch (e) {
@@ -243,6 +295,7 @@
       );
     } else {
       lines.push("Game data: read from the picked file, not kept");
+      if (stats.liveWhyShort) lines.push("(" + stats.liveWhyShort + ")");
     }
     lines.push(
       saveMode === "opfs"
@@ -380,7 +433,10 @@
         e.cancelled = true;
         fail(e);
       };
-      w.onerror = (e) => fail(new Error(`the import worker failed: ${e.message || "could not be started"}`));
+      w.onerror = (e) => {
+        fail(new Error(`The import worker failed (${e.message || "it could not be started"}).`));
+        if (running) fileGone();
+      };
       w.onmessageerror = () => fail(new Error("the import worker sent something unreadable"));
       w.onmessage = (event) => {
         const m = event.data;
@@ -407,6 +463,9 @@
           const p = pending.get(m.id);
           pending.delete(m.id);
           if (p) m.error ? p.reject(new Error(m.error)) : p.resolve(m.files);
+          // The picked file went away under the running game (moved, deleted, a phone's permission for
+          // it ended): nothing more can be loaded this session. Say so and offer the way back to the picker.
+          if (m.gone) fileGone();
         } else if (m.type === "error") {
           const e = new Error(m.message);
           e.kind = m.kind;
@@ -458,6 +517,7 @@
       const verdict = await storageVerdict(160 * MB);
       let result = null;
       let liveWhy = verdict.ok ? "" : verdict.why;
+      let liveWhyShort = verdict.ok ? "" : verdict.short;
       if (verdict.ok) {
         try {
           result = await runImport(file, "store", onProgress);
@@ -466,6 +526,7 @@
           if (cancelled || e.cancelled || !(e.kind === "quota" || e.kind === "storage")) throw e;
           await removeStored();
           liveWhy = e.kind === "quota" ? "this browser ran out of storage for the game data" : describeError(e);
+          liveWhyShort = e.kind === "quota" ? "storage is full" : "storage refused the data";
         }
       }
       if (cancelled) return;
@@ -474,6 +535,7 @@
         setStatus("Opening the disc image...");
         result = await runImport(file, "live", onProgress);
         stats.liveWhy = liveWhy;
+        stats.liveWhyShort = liveWhyShort;
       }
       if (cancelled) return;
       stats.importMs = performance.now() - t0;
@@ -581,22 +643,24 @@
   // one extra history entry exists exactly while the game is in a sub-menu or a stage, so "back" pops it
   // (and the game takes one step back) instead of leaving the page. At the title menu there is no entry
   // and "back" leaves the page as usual.
+  // The engine calls `mbNav(deep)` when that changes (nothing is polled). An app that shows this page in a web
+  // view wires its own back button the same way: `WebView.goBack()` while `WebView.canGoBack()`, or
+  // `mbBack()`, which returns false when the game is at the title and the app should handle "back" itself.
   function watchNavigation() {
     let entry = false;
     let ignorePop = false;
-    try {
-      window.addEventListener("popstate", () => {
-        if (ignorePop) {
-          ignorePop = false;
-          return;
-        }
-        if (entry) {
-          entry = false;
-          wasm.nav_back();
-        }
-      });
-      setInterval(() => {
-        const deep = wasm.nav_depth() > 0;
+    window.addEventListener("popstate", () => {
+      if (ignorePop) {
+        ignorePop = false;
+        return;
+      }
+      if (entry) {
+        entry = false;
+        wasm.nav_back();
+      }
+    });
+    window.mbNav = (deep) => {
+      try {
         if (deep && !entry) {
           history.pushState({ mb: 1 }, "");
           entry = true;
@@ -605,10 +669,18 @@
           ignorePop = true;
           history.back();
         }
-      }, 200);
-    } catch (e) {
-      // No history here (a sandboxed frame): the on-screen Back button is all there is.
-    }
+      } catch (e) {
+        // No usable history here (a sandboxed frame): the on-screen Back button is all there is.
+        entry = false;
+        ignorePop = false;
+      }
+    };
+    window.mbBack = () => {
+      if (!(wasm.nav_depth() > 0)) return false;
+      wasm.nav_back();
+      return true;
+    };
+    window.mbNav(wasm.nav_depth() > 0);
   }
 
   // ---- errors after the game has started ----------------------------------------------------------------
@@ -616,10 +688,27 @@
   // Fatal errors (called from Rust, see crates/mb-web): the engine has stopped. Game data problems never
   // get here: a stage that cannot be loaded is reported inside the game.
   window.mbOnError = (msg) => {
+    $("fatal-title").textContent = "The game stopped";
     $("fatal-text").textContent = String(msg);
+    $("fatal-note").textContent = "Your progress is saved at every stage. Restarting returns to the title menu.";
+    $("reload").textContent = "Restart";
     $("fatal-remove").hidden = stats.mode !== "stored";
     $("fatal").hidden = false;
+    stats.fatal = String(msg);
   };
+  // Playing from the picked file (nothing stored) and the file cannot be read any more.
+  function fileGone() {
+    if (!$("fatal").hidden) return;
+    $("fatal-title").textContent = "The game file can no longer be read";
+    $("fatal-text").textContent =
+      "The disc image you chose was moved, changed or deleted, or this page's permission to read it has ended. " +
+      "The game data was not kept on this device, so nothing more can be loaded.";
+    $("fatal-note").textContent = "Your progress is saved at every stage. Choose the file again to go on.";
+    $("reload").textContent = "Choose the file again";
+    $("fatal-remove").hidden = true;
+    $("fatal").hidden = false;
+    stats.fatal = "file gone";
+  }
   // With the game data on the device a restart is quick: reload, and the title menu is back.
   $("reload").addEventListener("click", () => location.reload());
   $("fatal-remove").addEventListener("click", removeData);
@@ -724,6 +813,10 @@
 
   // ---- picking the file -------------------------------------------------------------------------------------
 
+  // The extension filter helps on a desktop (the dialog still offers "all files"). A phone's file chooser
+  // maps extensions to media types, knows none for .rvz or .gcm, and may then grey the right file out
+  // with no way around it: there the filter is dropped and the file is judged by its content alone.
+  if (navigator.maxTouchPoints > 0) fileInput.removeAttribute("accept");
   pick.addEventListener("click", () => fileInput.click());
   fileInput.addEventListener("change", () => {
     const file = fileInput.files && fileInput.files[0];
@@ -763,7 +856,7 @@
   window.addEventListener("gamepadconnected", () => wasmModule && padsChanged());
   window.addEventListener("gamepaddisconnected", () => wasmModule && padsChanged());
 
-  // Right-drag looks around in the game; keep the context menu out of the way. Clicking gives keyboard focus.
+  // A long press or a right click on the game must not open the browser's menu. Clicking gives keyboard focus.
   canvas.addEventListener("contextmenu", (e) => e.preventDefault());
   canvas.addEventListener("pointerdown", () => canvas.focus());
 
@@ -772,14 +865,20 @@
   // Offline start for the hosted and installed page: a small service worker serves the bundle from a cache.
   // The page does not depend on it (an app's WebView or the single-file build have none).
   function registerServiceWorker() {
-    if (!("serviceWorker" in navigator) || !window.isSecureContext || $("mb-wasm")) return;
+    if (!navigator.serviceWorker || !window.isSecureContext || $("mb-wasm")) return;
     if (!/^https?:$/.test(location.protocol)) return;
-    navigator.serviceWorker.register("./sw.js").catch((e) => console.info("no service worker:", e && e.message));
+    try {
+      navigator.serviceWorker.register("./sw.js").catch((e) => console.info("no service worker:", e && e.message));
+    } catch (e) {
+      console.info("no service worker:", e && e.message);
+    }
   }
 
   async function boot() {
-    if (typeof WebAssembly !== "object") {
-      setStatus("This browser does not support WebAssembly.", true);
+    const missing = unsupported();
+    if (missing) {
+      stats.unsupported = missing;
+      setStatus(missing, true);
       return;
     }
     try {
@@ -787,9 +886,21 @@
       await wasm({ module_or_path: wasmModule });
     } catch (e) {
       console.error(e);
-      setStatus("The engine could not be loaded (" + describeError(e) + ").", true);
+      // A CompileError here is an engine that lacks a WebAssembly feature the build uses (bulk memory,
+      // reference types, ...), or one too old to honour 'wasm-unsafe-eval' in the page's policy.
+      const old =
+        (typeof WebAssembly.CompileError === "function" && e instanceof WebAssembly.CompileError) ||
+        /disallowed|unsafe-eval|Content Security Policy/i.test(String(e && e.message));
+      stats.unsupported = describeError(e);
+      setStatus(
+        old
+          ? "This browser cannot run the engine (" + describeError(e) + "). " + NEEDS
+          : "The engine could not be loaded (" + describeError(e) + ").",
+        true,
+      );
       return;
     }
+    window.mbBooted = true;
     registerServiceWorker();
     padsChanged();
     setStatus("");

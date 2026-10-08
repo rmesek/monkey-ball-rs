@@ -53,6 +53,18 @@ pub fn decode_adp(data: &[u8]) -> Result<AdpAudio> {
 
 /// Like [`decode_adp`], optionally keeping the zero padding frames.
 pub fn decode_adp_opts(data: &[u8], trim_padding: bool) -> Result<AdpAudio> {
+    let frames = adp_frame_count(data, trim_padding)?;
+    let mut out = Vec::with_capacity(frames * ADP_FRAME_SAMPLES * 2);
+    AdpDecoder::new().decode(&data[..frames * ADP_FRAME_BYTES], &mut out);
+    Ok(AdpAudio {
+        sample_rate: ADP_SAMPLE_RATE,
+        samples: out,
+    })
+}
+
+/// Number of 32-byte frames in a stream, without the trailing all-zero padding frames when `trim_padding`.
+/// Each frame decodes to [`ADP_FRAME_SAMPLES`] stereo sample pairs.
+pub fn adp_frame_count(data: &[u8], trim_padding: bool) -> Result<usize> {
     let mut frames = data.len() / ADP_FRAME_BYTES;
     if frames == 0 {
         return Err(AudioError::Truncated {
@@ -70,41 +82,55 @@ pub fn decode_adp_opts(data: &[u8], trim_padding: bool) -> Result<AdpAudio> {
             frames -= 1;
         }
     }
-    let mut out = Vec::with_capacity(frames * ADP_FRAME_SAMPLES * 2);
-    // hist[channel] = (h1, h2)
-    let mut hist = [(0i64, 0i64); 2];
-    for f in 0..frames {
-        let frame = &data[f * ADP_FRAME_BYTES..(f + 1) * ADP_FRAME_BYTES];
-        let mut ch_samples = [[0i16; ADP_FRAME_SAMPLES]; 2];
-        for (ch, samples) in ch_samples.iter_mut().enumerate() {
-            let hdr = frame[ch];
-            let filter = FILTERS[usize::from((hdr >> 4) & 3)];
-            let range = u32::from(hdr & 15);
-            // History is kept with 6 fractional bits and is *not* clamped; only the predictor term is
-            // clamped to the 16-bit range (at that precision). This reproduces ffmpeg's `adpcm_dtk` exactly.
-            let (mut h1, mut h2) = hist[ch];
-            for (n, slot) in samples.iter_mut().enumerate() {
-                let byte = frame[4 + n];
-                let nib = if ch == 0 { byte & 15 } else { byte >> 4 };
-                let nib = i64::from(((nib << 4) as i8) >> 4);
-                let pred = ((filter.0 * h1 + filter.1 * h2 + 32) >> 6)
-                    .clamp(-(32768 << 6), (32767 << 6) | 63);
-                let y = (((nib << 12) >> range) << 6) + pred;
-                *slot = (y >> 6).clamp(-32768, 32767) as i16;
-                h2 = h1;
-                h1 = y;
+    Ok(frames)
+}
+
+/// Decodes a stream a piece at a time: the predictor history carries from one call to the next, so feeding
+/// the frames in any number of pieces gives exactly the samples of [`decode_adp`]. For outputs that take
+/// audio in blocks (a browser `AudioBuffer`), so a whole track never has to exist as PCM in memory.
+#[derive(Debug, Clone, Default)]
+pub struct AdpDecoder {
+    /// Per channel `(h1, h2)`.
+    hist: [(i64, i64); 2],
+}
+
+impl AdpDecoder {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Decode whole frames (`frames.len()` is taken down to a multiple of [`ADP_FRAME_BYTES`]) and append
+    /// the interleaved L,R samples to `out`.
+    pub fn decode(&mut self, frames: &[u8], out: &mut Vec<i16>) {
+        for frame in frames.as_chunks::<ADP_FRAME_BYTES>().0 {
+            let mut ch_samples = [[0i16; ADP_FRAME_SAMPLES]; 2];
+            for (ch, samples) in ch_samples.iter_mut().enumerate() {
+                let hdr = frame[ch];
+                let filter = FILTERS[usize::from((hdr >> 4) & 3)];
+                let range = u32::from(hdr & 15);
+                // History is kept with 6 fractional bits and is *not* clamped; only the predictor term is
+                // clamped to the 16-bit range (at that precision). This reproduces ffmpeg's `adpcm_dtk`
+                // exactly.
+                let (mut h1, mut h2) = self.hist[ch];
+                for (n, slot) in samples.iter_mut().enumerate() {
+                    let byte = frame[4 + n];
+                    let nib = if ch == 0 { byte & 15 } else { byte >> 4 };
+                    let nib = i64::from(((nib << 4) as i8) >> 4);
+                    let pred = ((filter.0 * h1 + filter.1 * h2 + 32) >> 6)
+                        .clamp(-(32768 << 6), (32767 << 6) | 63);
+                    let y = (((nib << 12) >> range) << 6) + pred;
+                    *slot = (y >> 6).clamp(-32768, 32767) as i16;
+                    h2 = h1;
+                    h1 = y;
+                }
+                self.hist[ch] = (h1, h2);
             }
-            hist[ch] = (h1, h2);
-        }
-        for (l, r) in ch_samples[0].iter().zip(&ch_samples[1]) {
-            out.push(*l);
-            out.push(*r);
+            for (l, r) in ch_samples[0].iter().zip(&ch_samples[1]) {
+                out.push(*l);
+                out.push(*r);
+            }
         }
     }
-    Ok(AdpAudio {
-        sample_rate: ADP_SAMPLE_RATE,
-        samples: out,
-    })
 }
 
 #[cfg(test)]
@@ -190,5 +216,39 @@ mod tests {
     #[test]
     fn rejects_empty() {
         assert!(decode_adp(&[0u8; 31]).is_err());
+        assert!(adp_frame_count(&[0u8; 31], true).is_err());
+    }
+
+    #[test]
+    fn decoding_in_pieces_gives_the_same_samples() {
+        // A stream that exercises every filter and range, with history that matters across frames.
+        let mut bytes = Vec::new();
+        let mut x = 0x2545_f491u32;
+        for f in 0..40u8 {
+            let mut d = [0u8; 28];
+            for b in &mut d {
+                x ^= x << 13;
+                x ^= x >> 17;
+                x ^= x << 5;
+                *b = (x >> 8) as u8;
+            }
+            bytes.extend(frame(
+                ((f % 4) << 4) | (f % 13),
+                (((f + 1) % 4) << 4) | (f % 11),
+                d,
+            ));
+        }
+        bytes.extend(vec![0u8; 96]); // padding
+        let whole = decode_adp(&bytes).unwrap();
+        assert_eq!(adp_frame_count(&bytes, true).unwrap(), 40);
+        assert_eq!(adp_frame_count(&bytes, false).unwrap(), 43);
+        for piece in [1usize, 3, 7, 40] {
+            let mut dec = AdpDecoder::new();
+            let mut out = Vec::new();
+            for chunk in bytes[..40 * ADP_FRAME_BYTES].chunks(piece * ADP_FRAME_BYTES) {
+                dec.decode(chunk, &mut out);
+            }
+            assert_eq!(out, whole.samples, "pieces of {piece} frame(s)");
+        }
     }
 }

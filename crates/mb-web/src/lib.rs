@@ -902,12 +902,12 @@ mod web {
     // -----------------------------------------------------------------------------------------------------
     // The platform the shared shell runs on.
 
-    const PAD_AXES: [Axis; 4] = [Axis::MoveX, Axis::MoveY, Axis::LookX, Axis::LookY];
-    /// Standard mapping: 0 = A, 1 = B, 3 = Y, 9 = Start.
-    const PAD_BUTTONS: [(u32, Action); 4] = [
+    /// The left stick.
+    const PAD_AXES: [Axis; 2] = [Axis::MoveX, Axis::MoveY];
+    /// Standard mapping: 0 = A, 1 = B, 9 = Start.
+    const PAD_BUTTONS: [(u32, Action); 3] = [
         (0, Action::Confirm),
         (1, Action::Cancel),
-        (3, Action::ResetCamera),
         (9, Action::Pause),
     ];
     const PAD_DEADZONE: f32 = 0.15;
@@ -915,8 +915,8 @@ mod web {
     struct WebPlatform {
         /// What the gamepad last wrote. Axes and buttons are only written when they change, so an idle or absent
         /// pad never overwrites keyboard/touch input, and a pad that disconnects is released exactly once.
-        pad_axes: [f32; 4],
-        pad_buttons: [bool; 4],
+        pad_axes: [f32; 2],
+        pad_buttons: [bool; 3],
         insets: Insets,
         frames: u32,
         force_webgl: bool,
@@ -964,8 +964,8 @@ mod web {
                 css_ratio: pixel_ratio().min(MAX_PIXEL_RATIO) as f32 * quality,
                 watched: 0,
                 slow: 0,
-                pad_axes: [0.0; 4],
-                pad_buttons: [false; 4],
+                pad_axes: [0.0; 2],
+                pad_buttons: [false; 3],
                 insets: Insets::default(),
                 frames: 0,
                 back_held: false,
@@ -1003,9 +1003,9 @@ mod web {
         }
 
         /// Current state of the first connected gamepad, or everything released when there is none.
-        fn read_pad() -> ([f32; 4], [bool; 4]) {
-            let mut axes = [0.0f32; 4];
-            let mut buttons = [false; 4];
+        fn read_pad() -> ([f32; 2], [bool; 3]) {
+            let mut axes = [0.0f32; 2];
+            let mut buttons = [false; 3];
             let pad = web_sys::window()
                 .and_then(|w| w.navigator().get_gamepads().ok())
                 .and_then(|pads| {
@@ -1134,7 +1134,12 @@ mod web {
         }
 
         fn on_nav_depth(&mut self, depth: u32) {
-            NAV_DEPTH.with(|d| d.set(depth));
+            // The page keeps its history entry in step; it is told when "somewhere to go back to" starts
+            // or ends, so nothing has to poll.
+            let before = NAV_DEPTH.with(|d| d.replace(depth));
+            if (before > 0) != (depth > 0) {
+                call_page("mbNav", &[JsValue::from_bool(depth > 0)]);
+            }
         }
 
         fn wants_status(&mut self) -> bool {

@@ -21,8 +21,9 @@ builders (SMB2), `worker/` Cloudflare lobby (multiplayer signalling only, unrela
 Decomp-faithful physics using S16 angles and lookup tables (`math_lut.ts`), deterministic stepping, sim hashing,
 rollback and WebRTC netplay. Audio via the browser decoder from wav/ogg. HUD from PNG sprites.
 
-## Asset acquisition findings
-No anti-dump mechanism: no encryption, ISO handling or storage layer; content is plain files served statically.
-Audio and HUD files are expected at fixed paths and are not produced by any tool in the repo.
-`tools/smb2_pack_builder.py` derives SMB2 stage environment data from `mkb2.main_loop.rel` using hard-coded
-US NTSC offsets.
+## What this port does differently
+The reference is given extracted files (stages, models, `.ogg` / `.wav` audio, HUD PNGs) at fixed paths. This
+port reads everything from the user's own disc image at run time: HUD sheets from `bmp_*.tpl`, music from the
+`.adp` streams, sound effects from the MusyX banks (`docs/DISC_CONTENT.md`). For SMB2 the reference's
+`tools/smb2_pack_builder.py` derives stage environment data from `mkb2.main_loop.rel` with hard-coded US
+NTSC offsets; nothing of SMB2 is ported here.

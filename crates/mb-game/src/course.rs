@@ -214,9 +214,6 @@ impl Course {
     pub fn stage_id(&self) -> u32 {
         self.current_id
     }
-    pub fn stage_name(&self) -> &'static str {
-        self.current_name
-    }
     pub fn stage_label(&self) -> String {
         stage_label_from_name(self.current_name)
     }

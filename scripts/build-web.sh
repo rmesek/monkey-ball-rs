@@ -2,8 +2,8 @@
 # Build the browser bundle into web/dist/ (git-ignored). Usage:  scripts/build-web.sh [--dev] [--single]
 #   --dev     unoptimised build (quick to compile, slow to run)
 #   --single  also write web/dist/monkey-ball.html: the whole game page in one file that opens from disk
-#   needs: rustup target add wasm32-unknown-unknown
-#          cargo install wasm-bindgen-cli --version <the wasm-bindgen version in Cargo.lock> --locked
+#   needs: cargo install wasm-bindgen-cli --version <the wasm-bindgen version in Cargo.lock> --locked
+#          (rust-toolchain.toml makes rustup install the wasm32-unknown-unknown target by itself)
 # web/dist/ is a static site: host it anywhere, or try it with the developer server:
 #   cd web/dist && python -m http.server 8080      (then open http://localhost:8080/)
 set -euo pipefail
@@ -46,7 +46,11 @@ cargo build -p mb-web --target wasm32-unknown-unknown --target-dir "$target_dir"
 # inlined in the single-file build.
 pkg="$target_dir/web-pkg"
 rm -rf "$pkg"
-wasm-bindgen --target no-modules --no-typescript --out-dir "$pkg" \
+# The optimised build drops the function-name section (1.1 MB of 5.0 MB; a panic still reports its message
+# and source line). --dev keeps it, so stacks in the console are readable.
+strip=(--remove-name-section --remove-producers-section)
+if [ "$dev" = 1 ]; then strip=(); fi
+wasm-bindgen --target no-modules --no-typescript ${strip[@]+"${strip[@]}"} --out-dir "$pkg" \
   "$target_dir/wasm32-unknown-unknown/$profile/mb_web.wasm"
 
 bundle=(bundle-web --pkg "$pkg")

@@ -1,7 +1,7 @@
 //! Where game files come from, and which files the game needs.
 //!
 //! Two kinds of source sit behind [`Content`]:
-//! * **direct** (desktop, tools, tests): a disc image read in place; every read is synchronous.
+//! * **direct** (desktop, tests): a disc image read in place; every read is synchronous.
 //! * **deferred** (browser): files live in on-device storage that can only be read asynchronously. A state
 //!   that needs files first *prepares* them ([`Content::prepare`], polled once per frame while a loading
 //!   screen is shown); the synchronous loaders then read from memory, and the files are released again
@@ -274,6 +274,17 @@ impl Content {
         }
     }
 
+    /// [`Content::read`] for a file that is read exactly once (a music stream): prepared content hands over
+    /// its copy instead of cloning it, so the file is in memory once, not twice.
+    pub fn read_once(&self, path: &str) -> io::Result<Vec<u8>> {
+        if let Backing::Deferred(d) = &self.backing {
+            if let Some(bytes) = d.ready.borrow_mut().remove(&disc_path(path)) {
+                return Ok(bytes);
+            }
+        }
+        self.read(path)
+    }
+
     /// Read and LZSS-decompress a `.lz` file.
     pub fn read_lz(&self, path: &str) -> io::Result<Vec<u8>> {
         let raw = self.read(path)?;
@@ -511,8 +522,9 @@ pub fn import_list(exists: &dyn Fn(&str) -> bool) -> Result<Vec<String>, String>
     Ok(out)
 }
 
-/// A deferred source over a synchronous pack, for tests and tools: it behaves like the browser's storage
-/// (files must be prepared; a fetch takes `delay` polls) without needing a browser.
+/// A deferred source over a synchronous pack, for tests (behind the `dev` feature): it behaves like the
+/// browser's storage (files must be prepared; a fetch takes `delay` polls) without needing a browser.
+#[cfg(any(test, feature = "dev"))]
 pub struct DeferredPack {
     pack: Rc<dyn PackProvider>,
     delay: u32,
@@ -521,6 +533,7 @@ pub struct DeferredPack {
     pub requests: std::cell::Cell<u32>,
 }
 
+#[cfg(any(test, feature = "dev"))]
 impl DeferredPack {
     pub fn new(pack: Rc<dyn PackProvider>, delay: u32) -> Self {
         Self {
@@ -532,6 +545,7 @@ impl DeferredPack {
     }
 }
 
+#[cfg(any(test, feature = "dev"))]
 impl DeferredSource for DeferredPack {
     fn contains(&self, path: &str) -> bool {
         self.pack.contains(path)
@@ -572,21 +586,37 @@ impl DeferredSource for DeferredPack {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mb_assets::pack::MemoryPack;
+
+    /// A pack of three small files.
+    struct Files(HashMap<String, Vec<u8>>);
+
+    impl PackProvider for Files {
+        fn fetch(&self, path: &str) -> io::Result<Vec<u8>> {
+            let found = self.0.get(&disc_path(path)).cloned();
+            found.ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, path.to_string()))
+        }
+
+        fn contains(&self, path: &str) -> bool {
+            self.0.contains_key(&disc_path(path))
+        }
+    }
 
     fn pack() -> Rc<dyn PackProvider> {
-        let mut m = MemoryPack::default();
-        m.insert("test/a.gma", vec![1]);
-        m.insert("test/b.tpl.lz", vec![2, 2]);
-        m.insert("test/c.lz", vec![3, 3, 3]);
-        Rc::new(m)
+        let files = [
+            ("test/a.gma", vec![1]),
+            ("test/b.tpl.lz", vec![2, 2]),
+            ("test/c.lz", vec![3, 3, 3]),
+        ];
+        Rc::new(Files(
+            files.into_iter().map(|(p, b)| (p.to_string(), b)).collect(),
+        ))
     }
 
     #[test]
     fn wanted_resolves_the_plain_file_first() {
         let exists = |p: &str| p == "test/a.gma" || p == "test/a.gma.lz" || p == "test/b.tpl.lz";
         assert_eq!(
-            Wanted::maybe_lz("smb1_content/test/a.gma").resolve(&exists),
+            Wanted::maybe_lz("./test/a.gma").resolve(&exists),
             Some("test/a.gma".into())
         );
         assert_eq!(
@@ -600,7 +630,7 @@ mod tests {
     fn deferred_content_needs_prepare_and_reports_unprepared_reads() {
         let source = Rc::new(DeferredPack::new(pack(), 2));
         let content = Content::deferred(source.clone());
-        assert!(content.is_deferred() && content.contains("smb1_content/test/a.gma"));
+        assert!(content.is_deferred() && content.contains("/test/a.gma"));
         // Reading before preparing: an error that is not "not found", and it is recorded.
         let e = content.read("test/a.gma").unwrap_err();
         assert_ne!(e.kind(), io::ErrorKind::NotFound);
@@ -632,6 +662,9 @@ mod tests {
         // Already there: ready at once, nothing fetched again.
         assert_eq!(content.prepare(&wanted), Prepare::Ready);
         assert_eq!(source.requests.get(), 1);
+        // A file read once is handed over, not copied.
+        assert_eq!(content.read_once("test/b.tpl.lz").unwrap(), [2, 2]);
+        assert_eq!(content.prepared_bytes(), 1);
         content.release(&wanted);
         assert_eq!(content.prepared_bytes(), 0);
         assert!(content.read("test/a.gma").is_err());
@@ -645,7 +678,9 @@ mod tests {
             content.prepare(&[Wanted::file("test/c.lz")]),
             Prepare::Ready
         );
-        assert_eq!(content.read("smb1_content/test/c.lz").unwrap(), [3, 3, 3]);
+        assert_eq!(content.read("./test/c.lz").unwrap(), [3, 3, 3]);
+        assert_eq!(content.read_once("test/c.lz").unwrap(), [3, 3, 3]);
+        assert_eq!(content.read("test/c.lz").unwrap(), [3, 3, 3]);
         assert!(content.misses().is_empty());
     }
 

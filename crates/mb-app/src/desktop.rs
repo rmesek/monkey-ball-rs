@@ -1,19 +1,15 @@
 //! The desktop program.
 //!
 //! `mb-app` opens the disc image used last time, or asks for one with a file dialog; `mb-app <disc image>`
-//! uses that image. The game starts at the title menu. Developer options are listed in [`USAGE`].
+//! uses that image. The game starts at the title menu. Options are listed in [`USAGE`]; a build with the
+//! `dev` feature adds the developer ones in [`DEV_USAGE`].
 
 use std::path::{Path, PathBuf};
 
-use glam::Vec3;
 use mb_app::app::WindowOptions;
 use mb_app::audio::Audio;
 use mb_app::content::{open_disc_image, Content, LAST_DISC_KEY};
-use mb_app::game::Game;
-use mb_app::headless::{autoplay, AutoplayOptions};
 use mb_app::menu::{Autostart, Menu};
-use mb_app::stage_info::bg_by_name;
-use mb_app::viewer::{FlyCamera, StageViewer};
 use mb_game::{Difficulty, FileStorage, MemoryStorage, SlotStorage, Storage};
 
 const USAGE: &str = "usage: mb-app [disc image] [stage] [options]
@@ -27,15 +23,91 @@ dialog asks for one. A stage number starts practice on that stage directly.
   --pick                   ask for the disc image even if one is remembered
   --fullscreen             start in fullscreen (F11 or Alt+Enter toggles)
   --course <name>          start course play directly (beginner, advanced, expert, ...)
-  --viewer                 free-fly stage viewer instead of the game
-  --screenshot <file>      render one frame of the stage viewer to PNG / PPM and exit
-      --cam x,y,z,yaw,pitch   viewer camera (degrees)   --time <seconds>   --bg <bg_jun|...>
-  --autoplay <stage>       headless scripted run: menu -> practice -> stage, played by the autopilot
+  --mute                   do not open an audio device";
+
+#[cfg(feature = "dev")]
+const DEV_USAGE: &str = "
+developer options (this build has the `dev` feature):
+  --autoplay <stage>       windowless scripted run: menu -> practice -> stage, played by the autopilot;
+                           needs the disc image path; succeeds when the goal is reached
       --screenshot-dir <dir>  write PNGs of the menu, intro, play and goal there
-  --size WxH               size for --screenshot / --autoplay (default 1280x720)
-  --software               use the software adapter for headless runs
-  --mute                   do not open an audio device
+      --size WxH              picture size for the run (default 1280x720)
+      --software              use the software adapter
   --exit-after <seconds>   close the window after that long and print frame pacing and audio output";
+#[cfg(not(feature = "dev"))]
+const DEV_USAGE: &str = "";
+
+/// What the developer options ask for; empty without the `dev` feature.
+#[derive(Default)]
+struct DevArgs {
+    #[cfg(feature = "dev")]
+    autoplay: Option<u32>,
+    #[cfg(feature = "dev")]
+    screenshot_dir: Option<PathBuf>,
+    #[cfg(feature = "dev")]
+    size: Option<(u32, u32)>,
+    #[cfg(feature = "dev")]
+    software: bool,
+    #[cfg(feature = "dev")]
+    exit_after: Option<f32>,
+}
+
+impl DevArgs {
+    /// Take `option` (and its value from `value`) if it is a developer option.
+    #[cfg(feature = "dev")]
+    fn parse(
+        &mut self,
+        option: &str,
+        value: &mut dyn FnMut(&str) -> Result<String, String>,
+    ) -> Result<bool, String> {
+        match option {
+            "--autoplay" => {
+                let v = value("--autoplay")?;
+                self.autoplay = Some(v.parse().map_err(|_| format!("bad stage number {v:?}"))?);
+            }
+            "--screenshot-dir" => {
+                self.screenshot_dir = Some(PathBuf::from(value("--screenshot-dir")?))
+            }
+            "--size" => self.size = Some(parse_size(&value("--size")?)?),
+            "--software" => self.software = true,
+            "--exit-after" => {
+                let v = value("--exit-after")?;
+                self.exit_after = Some(
+                    v.parse::<f32>()
+                        .ok()
+                        .filter(|s| s.is_finite() && *s >= 0.0)
+                        .ok_or_else(|| format!("bad --exit-after {v:?}"))?,
+                );
+            }
+            _ => return Ok(false),
+        }
+        Ok(true)
+    }
+
+    #[cfg(not(feature = "dev"))]
+    fn parse(
+        &mut self,
+        _option: &str,
+        _value: &mut dyn FnMut(&str) -> Result<String, String>,
+    ) -> Result<bool, String> {
+        Ok(false)
+    }
+
+    /// The stage of a scripted run, which never touches the player's saves or the window.
+    fn autoplay(&self) -> Option<u32> {
+        #[cfg(feature = "dev")]
+        return self.autoplay;
+        #[cfg(not(feature = "dev"))]
+        None
+    }
+
+    fn exit_after(&self) -> Option<f32> {
+        #[cfg(feature = "dev")]
+        return self.exit_after;
+        #[cfg(not(feature = "dev"))]
+        None
+    }
+}
 
 struct Args {
     source: Option<PathBuf>,
@@ -43,17 +115,8 @@ struct Args {
     pick: bool,
     fullscreen: bool,
     course: Option<Difficulty>,
-    viewer: bool,
-    screenshot: Option<PathBuf>,
-    size: (u32, u32),
-    cam: Option<FlyCamera>,
-    time: f32,
-    bg: Option<String>,
-    software: bool,
-    autoplay: Option<u32>,
-    screenshot_dir: Option<PathBuf>,
-    exit_after: Option<f32>,
     mute: bool,
+    dev: DevArgs,
 }
 
 fn parse_args(args: impl Iterator<Item = String>) -> Result<Args, String> {
@@ -64,37 +127,13 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Args, String> {
         pick: false,
         fullscreen: false,
         course: None,
-        viewer: false,
-        screenshot: None,
-        size: (1280, 720),
-        cam: None,
-        time: 0.0,
-        bg: None,
-        software: false,
-        autoplay: None,
-        screenshot_dir: None,
-        exit_after: None,
         mute: false,
+        dev: DevArgs::default(),
     };
     let mut it = args;
     while let Some(a) = it.next() {
         let mut value = |name: &str| it.next().ok_or(format!("{name} needs a value"));
         match a.as_str() {
-            "--screenshot" => out.screenshot = Some(PathBuf::from(value("--screenshot")?)),
-            "--screenshot-dir" => {
-                out.screenshot_dir = Some(PathBuf::from(value("--screenshot-dir")?))
-            }
-            "--size" => out.size = parse_size(&value("--size")?)?,
-            "--cam" => out.cam = Some(parse_cam(&value("--cam")?)?),
-            "--time" => out.time = parse_number(&value("--time")?, "--time")?,
-            "--exit-after" => {
-                out.exit_after = Some(parse_number(&value("--exit-after")?, "--exit-after")?)
-            }
-            "--bg" => out.bg = Some(value("--bg")?),
-            "--autoplay" => {
-                let v = value("--autoplay")?;
-                out.autoplay = Some(v.parse().map_err(|_| format!("bad stage number {v:?}"))?);
-            }
             "--course" => {
                 let v = value("--course")?;
                 out.course = Some(
@@ -102,13 +141,15 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Args, String> {
                         .ok_or_else(|| format!("unknown course {v:?}"))?,
                 );
             }
-            "--software" => out.software = true,
             "--mute" => out.mute = true,
-            "--viewer" => out.viewer = true,
             "--pick" => out.pick = true,
             "--fullscreen" => out.fullscreen = true,
             "-h" | "--help" => return Err(String::new()),
-            s if s.starts_with("--") => return Err(format!("unknown option {s}")),
+            s if s.starts_with("--") => {
+                if !out.dev.parse(s, &mut value)? {
+                    return Err(format!("unknown option {s}"));
+                }
+            }
             _ => positional.push(a),
         }
     }
@@ -123,29 +164,17 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Args, String> {
     if p.next().is_some() {
         return Err("too many positional arguments".into());
     }
-    // Stages no course uses have no background of their own; only the viewer opens them.
-    let played = if out.viewer || out.screenshot.is_some() {
-        None
-    } else {
-        out.stage
-    };
-    for id in [played, out.autoplay].into_iter().flatten() {
+    for id in [out.stage, out.dev.autoplay()].into_iter().flatten() {
         if !mb_game::stages::is_playable_stage(id) {
             return Err(format!(
-                "stage {id} is not part of the game (no course uses it); the stage viewer can open it: --viewer {id}"
+                "stage {id} is not part of the game (no course uses it)"
             ));
         }
     }
     Ok(out)
 }
 
-fn parse_number(s: &str, name: &str) -> Result<f32, String> {
-    s.parse::<f32>()
-        .ok()
-        .filter(|v| v.is_finite() && *v >= 0.0)
-        .ok_or_else(|| format!("bad {name} {s:?}"))
-}
-
+#[cfg(feature = "dev")]
 fn parse_size(s: &str) -> Result<(u32, u32), String> {
     let (w, h) = s
         .split_once(['x', 'X'])
@@ -156,22 +185,6 @@ fn parse_size(s: &str) -> Result<(u32, u32), String> {
         return Err(format!("size {s:?} out of range"));
     }
     Ok((w, h))
-}
-
-fn parse_cam(s: &str) -> Result<FlyCamera, String> {
-    let v: Vec<f32> = s
-        .split(',')
-        .map(|p| p.trim().parse::<f32>())
-        .collect::<Result<_, _>>()
-        .map_err(|_| format!("bad --cam {s:?}"))?;
-    if v.len() != 5 {
-        return Err("--cam needs x,y,z,yaw_deg,pitch_deg".into());
-    }
-    Ok(FlyCamera {
-        pos: Vec3::new(v[0], v[1], v[2]),
-        yaw: v[3].to_radians(),
-        pitch: v[4].to_radians(),
-    })
 }
 
 /// The per-user save directory, or memory when there is none. Values are kept in two checksummed slots
@@ -269,6 +282,44 @@ fn remember(storage: &mut dyn Storage, path: &Path) {
     }
 }
 
+/// The scripted, windowless run of `--autoplay`.
+#[cfg(feature = "dev")]
+fn autoplay(content: &Content, stage: u32, dev: &DevArgs) -> Result<(), String> {
+    use mb_app::headless::{autoplay, AutoplayOptions};
+    let report = autoplay(
+        content,
+        &AutoplayOptions {
+            stage,
+            size: dev.size.unwrap_or((1280, 720)),
+            software: dev.software,
+            screenshot_dir: dev.screenshot_dir.clone(),
+            max_frames: 60 * 150,
+        },
+    )?;
+    println!(
+        "autoplay stage {stage}: {} after {} frames ({}), goal at tick {:?}, {} banana(s), {} screenshot(s)",
+        report.end_status,
+        report.frames,
+        report.adapter,
+        report.goal_tick,
+        report.bananas,
+        report.screenshots.len()
+    );
+    for s in &report.screenshots {
+        println!("  {}", s.display());
+    }
+    if report.goal_tick.is_some() {
+        Ok(())
+    } else {
+        Err("the autopilot did not reach the goal".into())
+    }
+}
+
+#[cfg(not(feature = "dev"))]
+fn autoplay(_content: &Content, _stage: u32, _dev: &DevArgs) -> Result<(), String> {
+    unreachable!("--autoplay is only parsed with the dev feature")
+}
+
 fn run() -> Result<(), String> {
     let args = match parse_args(std::env::args().skip(1)) {
         Ok(a) => a,
@@ -276,102 +327,44 @@ fn run() -> Result<(), String> {
             if !e.is_empty() {
                 eprintln!("error: {e}\n");
             }
-            eprintln!("{USAGE}");
+            eprintln!("{USAGE}{DEV_USAGE}");
             std::process::exit(if e.is_empty() { 0 } else { 2 });
         }
     };
-    let headless = args.screenshot.is_some() || args.autoplay.is_some();
-    if headless && args.source.is_none() {
-        return Err("headless runs need the disc image path".into());
+    let scripted = args.dev.autoplay();
+    if scripted.is_some() && args.source.is_none() {
+        return Err("--autoplay needs the disc image path".into());
     }
-    // Scripted runs never read or write the player's own save directory.
-    let mut storage: Box<dyn Storage> = if headless {
+    // A scripted run never reads or writes the player's own save directory.
+    let mut storage: Box<dyn Storage> = if scripted.is_some() {
         Box::new(MemoryStorage::new())
     } else {
         open_storage()
     };
     let content = resolve_content(&args, storage.as_mut())?;
-
-    if let Some(stage) = args.autoplay {
-        let report = autoplay(
-            &content,
-            &AutoplayOptions {
-                stage,
-                size: args.size,
-                software: args.software,
-                screenshot_dir: args.screenshot_dir.clone(),
-                max_frames: 60 * 150,
-            },
-        )?;
-        println!(
-            "autoplay stage {stage}: {} after {} frames ({}), goal at tick {:?}, {} banana(s), {} screenshot(s)",
-            report.end_status,
-            report.frames,
-            report.adapter,
-            report.goal_tick,
-            report.bananas,
-            report.screenshots.len()
-        );
-        for s in &report.screenshots {
-            println!("  {}", s.display());
-        }
-        return if report.goal_tick.is_some() {
-            Ok(())
-        } else {
-            Err("the autopilot did not reach the goal".into())
-        };
-    }
-
-    let viewer = || -> Result<Box<dyn Game>, String> {
-        let bg = match &args.bg {
-            Some(name) => {
-                Some(*bg_by_name(name).ok_or_else(|| format!("unknown background {name:?}"))?)
-            }
-            None => None,
-        };
-        Ok(Box::new(
-            StageViewer::new(args.stage.unwrap_or(1), bg, args.cam).with_anim_time(args.time),
-        ))
-    };
-    if let Some(path) = &args.screenshot {
-        let cap = mb_app::headless::capture(&content, viewer()?, args.size, args.software)?;
-        mb_app::image::write_image(path, cap.width, cap.height, &cap.rgba)
-            .map_err(|e| format!("{}: {e}", path.display()))?;
-        eprintln!(
-            "wrote {} ({}x{}) using {}\n{} | {} draws",
-            path.display(),
-            cap.width,
-            cap.height,
-            cap.adapter,
-            cap.status,
-            cap.draws
-        );
-        return Ok(());
+    if let Some(stage) = scripted {
+        return autoplay(&content, stage, &args.dev);
     }
 
     // The device stream opens here; without a device the game simply runs silent.
-    let audio = (!args.viewer && !args.mute)
-        .then(|| Audio::new(Box::new(mb_app::audio_cpal::CpalBackend::new())));
-    let initial: Box<dyn Game> = if args.viewer {
-        viewer()?
-    } else {
-        let autostart = args
-            .course
-            .map(Autostart::Course)
-            .or(args.stage.map(Autostart::Stage));
-        let menu = Menu::new(storage).with_autostart(autostart);
-        Box::new(match &audio {
-            Some(audio) => menu.with_audio(audio.clone()),
-            None => menu,
-        })
+    let audio = (!args.mute).then(|| Audio::new(Box::new(mb_app::audio_cpal::CpalBackend::new())));
+    let autostart = args
+        .course
+        .map(Autostart::Course)
+        .or(args.stage.map(Autostart::Stage));
+    let menu = Menu::new(storage).with_autostart(autostart);
+    let menu = match &audio {
+        Some(audio) => menu.with_audio(audio.clone()),
+        None => menu,
     };
     let options = WindowOptions {
-        exit_after: args.exit_after,
+        exit_after: args.dev.exit_after(),
         fullscreen: args.fullscreen,
         audio: audio.clone(),
     };
-    let stats = mb_app::app::run_windowed(content, initial, options)?;
-    if args.exit_after.is_some() {
+    let stats = mb_app::app::run_windowed(content, Box::new(menu), options)?;
+    if args.dev.exit_after().is_some() {
+        // A timed run reports what it measured.
         println!("{}", stats.summary());
         if let Some(audio) = &audio {
             println!("{}", audio.summary());

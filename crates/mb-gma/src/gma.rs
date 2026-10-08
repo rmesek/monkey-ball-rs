@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use crate::gx::{self, attr, CullMode, DecodedList};
+use crate::gx::{self, attr, CullMode};
 use crate::reader::{Budget, Reader};
 use crate::Error;
 use std::mem::size_of;
@@ -112,9 +112,6 @@ impl TevLayer {
             raw as f32
         }
     }
-    pub fn mag_filter_nearest(&self) -> bool {
-        self.flags & tev_layer_flags::MAGFILT_NEAR != 0
-    }
 }
 
 fn wrap(v: u32) -> WrapMode {
@@ -220,17 +217,6 @@ pub struct Shape {
     pub dlists: Vec<Dlist>,
 }
 
-impl Shape {
-    /// Decode display list `i` into vertex/index buffers.
-    pub fn decode_dlist(&self, i: usize) -> Result<DecodedList, Error> {
-        let d = self
-            .dlists
-            .get(i)
-            .ok_or(Error::Invalid("display list index"))?;
-        gx::decode_display_list(&d.data, self.material.vtx_attrs)
-    }
-}
-
 /// Decoded geometry of one display list, ready for upload.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Mesh {
@@ -288,10 +274,6 @@ impl Model {
             }
         }
         Ok(out)
-    }
-
-    pub fn uses_vat16(&self) -> bool {
-        self.flags & model_flags::VAT_16_BIT != 0
     }
 
     /// Texture layers referenced by `shape`'s material, resolved against this model.

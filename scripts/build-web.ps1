@@ -1,8 +1,8 @@
 # Build the browser bundle into web/dist/ (git-ignored). Usage:  scripts\build-web.ps1 [-Dev] [-Single]
 #   -Dev     unoptimised build (quick to compile, slow to run)
 #   -Single  also write web/dist/monkey-ball.html: the whole game page in one file that opens from disk
-#   needs: rustup target add wasm32-unknown-unknown
-#          cargo install wasm-bindgen-cli --version <the wasm-bindgen version in Cargo.lock> --locked
+#   needs: cargo install wasm-bindgen-cli --version <the wasm-bindgen version in Cargo.lock> --locked
+#          (rust-toolchain.toml makes rustup install the wasm32-unknown-unknown target by itself)
 # web/dist/ is a static site: host it anywhere, or try it with the developer server:
 #   cd web/dist && python -m http.server 8080      (then open http://localhost:8080/)
 param([switch]$Dev, [switch]$Single)
@@ -39,7 +39,11 @@ if ($LASTEXITCODE -ne 0) { Fail 'cargo build failed' }
 $wasm = Join-Path $targetDir "wasm32-unknown-unknown/$buildProfile/mb_web.wasm"
 $pkg = Join-Path $targetDir 'web-pkg'
 if (Test-Path $pkg) { Remove-Item -Recurse -Force $pkg }
-& wasm-bindgen --target no-modules --no-typescript --out-dir $pkg $wasm
+# The optimised build drops the function-name section (1.1 MB of 5.0 MB; a panic still reports its message
+# and source line). -Dev keeps it, so stacks in the console are readable.
+$bindgenArgs = @('--target', 'no-modules', '--no-typescript')
+if (-not $Dev) { $bindgenArgs += @('--remove-name-section', '--remove-producers-section') }
+& wasm-bindgen @bindgenArgs --out-dir $pkg $wasm
 if ($LASTEXITCODE -ne 0) { Fail 'wasm-bindgen failed' }
 
 $bundleArgs = @('run', '--quiet', '-p', 'xtask', '--target-dir', $targetDir, '--', 'bundle-web', '--pkg', $pkg)

@@ -289,10 +289,6 @@ impl Mixer {
         self.bus_gain[bus as usize] = v.max(0.0);
     }
 
-    pub fn bus_volume(&self, bus: Bus) -> f32 {
-        self.bus_gain[bus as usize]
-    }
-
     /// Voice limit. Raising it above the current capacity reallocates, so do that before playback starts.
     pub fn set_max_voices(&mut self, n: usize) {
         self.max_voices = n.max(1);
@@ -308,10 +304,6 @@ impl Mixer {
     /// While paused [`Mixer::mix`] writes silence and nothing advances.
     pub fn set_paused(&mut self, paused: bool) {
         self.paused = paused;
-    }
-
-    pub fn is_paused(&self) -> bool {
-        self.paused
     }
 
     /// Play one sound.

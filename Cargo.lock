@@ -1178,6 +1178,7 @@ dependencies = [
  "cpal",
  "gilrs",
  "glam",
+ "mb-app",
  "mb-assets",
  "mb-audio",
  "mb-engine",
@@ -1214,7 +1215,6 @@ version = "0.0.1"
 dependencies = [
  "mb-assets",
  "mb-stage",
- "nod",
 ]
 
 [[package]]
@@ -3409,10 +3409,6 @@ checksum = "e450f9b2ed1dff33c94c12589a87338689467b9c4f5d8a5710bd09a847d2c8a7"
 [[package]]
 name = "xtask"
 version = "0.0.1"
-dependencies = [
- "mb-assets",
- "nod",
-]
 
 [[package]]
 name = "xxhash-rust"

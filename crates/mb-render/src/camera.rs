@@ -26,16 +26,6 @@ impl Camera {
         }
     }
 
-    /// From a free-fly pose: yaw about +Y (0 looks down -Z), pitch about the camera's X (positive looks up).
-    pub fn from_pose(eye: Vec3, yaw: f32, pitch: f32) -> Self {
-        let rot = Mat4::from_rotation_y(yaw) * Mat4::from_rotation_x(pitch);
-        let world_from_view = Mat4::from_translation(eye) * rot;
-        Self {
-            view: world_from_view.inverse(),
-            ..Self::look_at(Vec3::ZERO, Vec3::NEG_Z, Vec3::Y)
-        }
-    }
-
     pub fn position(&self) -> Vec3 {
         self.view.inverse().w_axis.truncate()
     }
@@ -56,15 +46,15 @@ mod tests {
     }
 
     #[test]
-    fn from_pose_round_trips_position() {
+    fn look_at_round_trips_position() {
         let eye = Vec3::new(3.0, 4.0, -5.0);
-        let c = Camera::from_pose(eye, 0.7, -0.3);
+        let c = Camera::look_at(eye, Vec3::new(1.0, 0.0, 2.0), Vec3::Y);
         assert!((c.position() - eye).length() < 1e-4);
     }
 
     #[test]
     fn point_in_front_has_negative_view_z_and_valid_depth() {
-        let c = Camera::from_pose(Vec3::new(0.0, 0.0, 10.0), 0.0, 0.0);
+        let c = Camera::look_at(Vec3::new(0.0, 0.0, 10.0), Vec3::ZERO, Vec3::Y);
         let p = c.projection(1.0, c.near, c.far) * c.view * Vec3::ZERO.extend(1.0);
         let ndc_z = p.z / p.w;
         assert!(p.w > 0.0 && (0.0..=1.0).contains(&ndc_z));

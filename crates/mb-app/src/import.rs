@@ -127,7 +127,8 @@ impl<S: DiscStream> Importer<S> {
     }
 }
 
-/// Import a whole image into memory (tests and tools).
+/// Import a whole image into memory (tests, behind the `dev` feature).
+#[cfg(any(test, feature = "dev"))]
 pub fn import_to_vec<S: DiscStream>(stream: S) -> io::Result<Vec<u8>> {
     let mut importer = Importer::open(stream)?;
     let mut out = vec![0u8; mb_assets::gamepack::HEADER_LEN];

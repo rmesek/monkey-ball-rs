@@ -17,14 +17,20 @@
 //! from that moment. A hidden tab suspends the context (music pauses, nothing is processed) and showing
 //! it again resumes.
 //!
-//! Memory: an `AudioBuffer` is 32-bit float, twice the 16-bit PCM it was made from. Only the current
-//! stage's music is kept (see `audio_debug_json` for the live numbers, `docs/AUDIO.md` for measurements).
+//! Memory: an `AudioBuffer` is 32-bit float, twice the size of 16-bit PCM (up to 54 MB for the longest
+//! track, held by the browser, not in wasm memory). Only the current stage's music is kept, and it is decoded
+//! from the disc's ADPCM stream straight into its buffer a block at a time, so the track never exists as
+//! PCM in wasm memory (which cannot shrink again). See `audio_debug_json` for the live numbers and
+//! `docs/AUDIO.md` for measurements.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
 
 use mb_app::audio::{Audio, AudioBackend, BackendReport, Bus, Command, MASTER_GAIN};
+use mb_app::mb_audio::adp::{
+    adp_frame_count, AdpDecoder, ADP_FRAME_BYTES, ADP_FRAME_SAMPLES, ADP_SAMPLE_RATE,
+};
 use mb_app::mb_audio::mixer::Sound;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
@@ -128,6 +134,8 @@ pub struct WebAudio {
     loops: [Option<Looping>; LOOP_SLOTS],
     voices: Vec<Voice>,
     scratch: Vec<f32>,
+    /// Decoded block of a music stream on its way into an `AudioBuffer` (interleaved, reused).
+    pcm: Vec<i16>,
 }
 
 /// End a source at `when` on the audio clock (0 = now). Stopping one that already ended is harmless.
@@ -170,6 +178,7 @@ impl WebAudio {
             loops: Default::default(),
             voices: Vec::new(),
             scratch: Vec::new(),
+            pcm: Vec::new(),
         })
     }
 
@@ -236,6 +245,48 @@ impl WebAudio {
         st.last_buffer_at.set(now);
         st.buffers_made.set(st.buffers_made.get() + 1);
         Some(buffer)
+    }
+
+    /// Decode a DTK stream into a new stereo `AudioBuffer`, a block at a time: the same samples as
+    /// decoding it whole and passing the result to [`WebAudio::buffer`], without the whole track in memory.
+    fn stream_buffer(&mut self, stream: &[u8]) -> Result<AudioBuffer, String> {
+        /// DTK frames per block: 28 sample pairs each, so one block fits `COPY_FRAMES`.
+        const BLOCK: usize = COPY_FRAMES / ADP_FRAME_SAMPLES;
+        let started = js_sys::Date::now();
+        let frames = adp_frame_count(stream, true).map_err(|e| e.to_string())?;
+        let buffer = self
+            .shared
+            .ctx
+            .create_buffer(
+                2,
+                (frames * ADP_FRAME_SAMPLES).max(1) as u32,
+                ADP_SAMPLE_RATE as f32,
+            )
+            .map_err(|_| "the browser could not allocate the music buffer".to_string())?;
+        self.scratch.resize(COPY_FRAMES, 0.0);
+        let mut decoder = AdpDecoder::new();
+        let mut at = 0usize;
+        for block in stream[..frames * ADP_FRAME_BYTES].chunks(BLOCK * ADP_FRAME_BYTES) {
+            self.pcm.clear();
+            decoder.decode(block, &mut self.pcm);
+            let n = self.pcm.len() / 2;
+            for ch in 0..2 {
+                let src = self.pcm[ch..].iter().step_by(2);
+                for (out, s) in self.scratch[..n].iter_mut().zip(src) {
+                    *out = f32::from(*s) / 32768.0;
+                }
+                buffer
+                    .copy_to_channel_with_start_in_channel(&self.scratch[..n], ch as i32, at as u32)
+                    .map_err(|_| "the browser refused the music data".to_string())?;
+            }
+            at += n;
+        }
+        let st = &self.shared.stats;
+        let now = js_sys::Date::now();
+        st.buffer_ms.set(st.buffer_ms.get() + (now - started));
+        st.last_buffer_at.set(now);
+        st.buffers_made.set(st.buffers_made.get() + 1);
+        Ok(buffer)
     }
 
     fn buffer_bytes(buffer: &AudioBuffer) -> u64 {
@@ -423,6 +474,19 @@ impl AudioBackend for WebAudio {
         let bytes = Self::buffer_bytes(&body) + intro.as_ref().map_or(0, Self::buffer_bytes);
         self.shared.stats.music_bytes.set(bytes);
         self.music_buffers = Some((intro, body));
+    }
+
+    fn define_music_streams(&mut self, intro: Option<&[u8]>, body: &[u8]) -> Result<bool, String> {
+        // The previous track goes first, so two tracks are never held at once.
+        self.music_stop(0.0);
+        self.music_buffers = None;
+        self.shared.stats.music_bytes.set(0);
+        let intro = intro.map(|s| self.stream_buffer(s)).transpose()?;
+        let body = self.stream_buffer(body)?;
+        let bytes = Self::buffer_bytes(&body) + intro.as_ref().map_or(0, Self::buffer_bytes);
+        self.shared.stats.music_bytes.set(bytes);
+        self.music_buffers = Some((intro, body));
+        Ok(true)
     }
 
     fn clear_music(&mut self) {

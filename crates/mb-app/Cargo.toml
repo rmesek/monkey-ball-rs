@@ -1,6 +1,6 @@
 [package]
 name = "mb-app"
-description = "Application shell: windowing, input, game flow, platform glue"
+description = "The game above the engine: states (menus, loading, play, HUD), input, audio, content access; the desktop program and the browser driver"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,6 +9,13 @@ publish.workspace = true
 [[bin]]
 name = "mb-app"
 path = "src/main.rs"
+
+[features]
+# Developer and test support that is not part of the product: the windowless driver and the autopilot the
+# integration tests run on, test doubles (`DeferredPack`, `RecordingBackend`), and the program's `--autoplay`
+# and `--exit-after` options. Off in `cargo build` / `cargo run` and in the browser build; on for this crate's
+# own tests through the dev-dependency below.
+dev = []
 
 [dependencies]
 mb-assets = { path = "../mb-assets" }
@@ -19,24 +26,29 @@ mb-render = { path = "../mb-render" }
 mb-engine = { path = "../mb-engine" }
 mb-game = { path = "../mb-game" }
 mb-audio = { path = "../mb-audio" }
-# Window + input event loop (decision recorded in docs/PLAN.md); the web backend comes with it.
+# Window + input event loop for the desktop window and the browser canvas (decision recorded in docs/PLAN.md).
 # 0.30 is the latest stable release (0.31 is still beta).
 winit = "0.30"
 # Same wgpu version as mb-render so Device/Queue/Surface types are shared.
 wgpu = "30"
-# Blocks on the async wgpu adapter/device requests on native (wasm will use wasm-bindgen-futures later).
-pollster = "0.4"
 # Camera/transform maths shared with mb-render's public API.
 glam = "0.30"
-# std::time::Instant panics on wasm32; web-time is a drop-in that re-exports std off the web. Used by `shell`.
+# std::time::Instant panics on wasm32; web-time is a drop-in that re-exports std off the web (load and frame
+# timings, the browser driver's clock).
 web-time = "1"
 
-# Native audio output (the browser shell uses Web Audio instead).
+# The desktop program only (the browser has Web Audio, the Gamepad API and the page's file input instead).
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# Blocks on the async wgpu adapter/device requests (the browser driver awaits them instead).
+pollster = "0.4"
 # Audio device output stream (WASAPI / CoreAudio / ALSA): pulls PCM from mb-audio's mixer.
 cpal = "0.16"
-
 # Native "open file" dialog so the disc image can be picked without a command line.
 rfd = "0.17"
-# Gamepad input (XInput / evdev / IOKit) for the desktop runner; the browser shell uses the Gamepad API.
+# Gamepad input (XInput / evdev / IOKit).
 gilrs = "0.11"
+
+[dev-dependencies]
+# This crate itself with `dev` on: `cargo test` then builds the library, the tests and the binary the kill
+# test starts with the test support compiled in, and needs no flag.
+mb-app = { path = ".", features = ["dev"] }

@@ -21,7 +21,7 @@ game states --(Sfx, roll, stage music, volumes)--> Audio --flush(), once per fra
    MixBackend --MixMsg, bounded queue--> MixDriver { Mixer } <-- pulled by --  cpal callback (native)
                                                                               offline render (tests)
    WebAudio   --AudioBufferSourceNode / GainNode graph, mixed by the browser
-   RecordingBackend (tests), NullBackend (headless, no device wanted)
+   RecordingBackend (tests, `dev` feature), NullBackend (no device wanted)
 ```
 
 * **`Audio`** (`Rc`, cheap clone; game thread only). States call `play(Sfx)`, `play_with(sfx, gain, delay)`,
@@ -33,12 +33,12 @@ game states --(Sfx, roll, stage music, volumes)--> Audio --flush(), once per fra
 * **`Command`**: `Play { sound, bus, volume, pan, rate, delay }`, `LoopStart / LoopSet / LoopStop { slot }`,
   `MusicPlay { volume }`, `MusicStop { fade }`, `BusVolume { bus, volume }`, `StopSounds`. Sounds are named
   by MusyX SFX id. Buses: `Music`, `Sfx`, `Announcer`, each with the saved volume; master gain 0.9 (reference).
-* **`AudioBackend`**: `define_sound(id, Arc<Sound>)` and `define_music(intro, body)` at load time,
+* **`AudioBackend`**: `define_sound(id, Arc<Sound>)` and `define_music(intro, body)` at load time (or
+  `define_music_streams(intro, body)` for a backend that takes the disc's streams undecoded),
   `clear_music()`, `submit`, `frame()` (device upkeep), `set_suspended(bool)`, `report()`.
 
-### Native: cpal (`audio_cpal.rs`), also the Stage 2 Android path
-`CpalBackend` = `MixBackend` + an output stream on the default device. cpal covers WASAPI, CoreAudio, ALSA
-and Android's AAudio, so the Android shell only has to construct the same backend.
+### Desktop: cpal (`audio_cpal.rs`)
+`CpalBackend` = `MixBackend` + an output stream on the default device (WASAPI, CoreAudio, ALSA).
 
 * The game thread sends `MixMsg`s through `std::sync::mpsc::sync_channel(512)` (`try_send`: never blocks; a
   full queue drops the message and counts it). The stream callback takes the `MixDriver` with `try_lock`,
@@ -53,8 +53,9 @@ and Android's AAudio, so the Android shell only has to construct the same backen
   devices with more than two channels the front pair. Formats f32 / i16 / u16 / i32 / u8.
 * No device, or a lost one: not an error. The backend stays silent, advances the mixer by wall-clock time
   so queued sounds end and the music is in the right place, and retries every two seconds.
-* Suspend (window minimized or occluded, later Android pause): the stream is paused, so no callbacks run.
-* Telemetry (`mb-app <disc> 1 --exit-after <s>` prints it; `--mute` opens no device): device name and
+* Suspend (window minimized or occluded): the stream is paused, so no callbacks run.
+* Telemetry (a `dev` build prints it: `cargo run -p mb-app --features dev -- <disc> 1 --exit-after <s>`;
+  `--mute` opens no device): device name and
   format, stream opens and errors, callbacks, frames, peak and RMS of the rendered signal, clamped samples,
   messages applied / dropped, callbacks that found the mixer locked, and "late callbacks" (a gap of more
   than three buffer lengths between callbacks, i.e. the device ran dry). WASAPI does not report underruns
@@ -174,13 +175,21 @@ Measured on the USA disc (Windows 11, release builds; browser = the desktop app'
 |---|---|---|---|
 | 35 sound effects | 1.74 MB | 3.48 MB | desktop 5 ms; browser 7..11 ms (2 ms of it filling buffers) |
 | Music `st1` (65 s) | 12.4 MB | 24.9 MB | desktop 15 ms; browser 29..39 ms (5..8 ms filling buffers) |
-| Largest track, `st2_all` + `st2_lp` (120 s) | 23.1 MB | 46.2 MB (computed) | not measured |
+| Largest track, `st2_all` + `st2_lp` (7.7 MB of streams) | 26.8 MB (computed) | 53.7 MB (computed) | not measured |
 
 Music is decoded whole at stage load, at its native 48 kHz, on the game thread, inside the stage load that
 already takes longer; only the current track is kept (the previous one is released first in the browser).
-While decoding a track in the browser the ADP bytes, the 16-bit PCM and the float buffer exist together
-for a moment (about 1.9 x the float size). During play nothing is decoded: `buffersMade` and
-`lastBufferAt` of `audio_debug_json` do not change.
+On desktop the track is held as 16-bit PCM for the mixer. In the browser it never exists as PCM: the backend
+is offered the disc's streams (`AudioBackend::define_music_streams`) and decodes them 1170 frames at a time
+(`mb_audio::adp::AdpDecoder`) straight into the `AudioBuffer`, so wasm memory, which cannot shrink again,
+holds one stream (at most 4.9 MB, handed over without a copy by `Content::read_once`) and a 131 KB block.
+That took the wasm memory during Beginner from 32 MB to 22 MB. The samples are the same as a whole decode
+(`decoding_in_pieces_gives_the_same_samples`), so the intro-to-loop hand-off on the audio clock is unchanged.
+During play nothing is decoded: `buffersMade` and `lastBufferAt` of `audio_debug_json` do not change.
+
+Not done, on purpose: holding the music as 16-bit in the browser (an `AudioBuffer` is float by
+specification), streaming the loop in segments (buffer boundaries at 48 kHz do not fall on output samples of
+a 44.1 kHz context, so a seam could click; it could not be verified sample-exact here), or lowering the rate.
 
 ## `mb-audio` formats (unchanged facts)
 
@@ -213,8 +222,9 @@ ids tile `0x000..=0x367`. The main game uses `allse` and `comn` only.
 * `cargo test -p mb-app`: `audio.rs` unit tests (batching, roll layers and curves, muting, music changing
   only with the track, `MixBackend`), `audio_cpal` (channel folding; opens whatever device the machine has),
   and `tests/audio.rs` with a disc: the autopilot plays Beginner floor 1 with a recording backend (request
-  sequence) and with the software mixer rendering offline (levels; WAVs go to `MB_AUDIO_OUT` or the system
-  temporary directory, never the repository).
+  sequence) and with the software mixer rendering offline (levels). Nothing is written to disk unless
+  `MB_AUDIO_OUT` names a directory outside the repository; then the mix is saved there as WAV files for
+  listening.
 
 ## Known gaps
 

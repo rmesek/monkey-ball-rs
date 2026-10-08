@@ -1,3 +1,5 @@
 [toolchain]
 channel = "stable"
 components = ["rustfmt", "clippy"]
+# The browser target: rustup installs it with the toolchain, so the web build needs no extra step.
+targets = ["wasm32-unknown-unknown"]

@@ -6,7 +6,8 @@
 //!   requests of a frame are batched and handed to the backend once, in [`Audio::flush`].
 //! * [`AudioBackend`]: what actually makes sound. `MixBackend` feeds `mb-audio`'s software mixer (desktop
 //!   through cpal in `audio_cpal`; also the offline renderer used by tests), the browser
-//!   shell has a Web Audio one (`mb-web`), [`RecordingBackend`] logs requests and [`NullBackend`] is silence.
+//!   shell has a Web Audio one (`mb-web`), [`NullBackend`] is silence, and `RecordingBackend` (tests, behind
+//!   the `dev` feature) logs requests.
 //! * [`StageSounds`]: turns one simulation tick into sound requests, mirroring the call sites of the
 //!   reference's `game.ts` / `audio.ts`.
 //!
@@ -316,6 +317,18 @@ pub trait AudioBackend {
     fn define_sound(&mut self, id: u16, sound: Arc<Sound>);
     /// Hand over the current music (replacing and releasing the previous track). Load time only.
     fn define_music(&mut self, intro: Option<Arc<Sound>>, body: Arc<Sound>);
+    /// Offer the current music as the disc's own streams (DTK ADPCM, see `mb_audio::adp`) before it is
+    /// decoded. A backend that keeps music in its own buffers (Web Audio) decodes it piece by piece into
+    /// them and returns `Ok(true)`, so the track never exists as 16-bit PCM in the engine's memory as well
+    /// (25 MB for the longest one, in a wasm memory that cannot shrink again). The default declines and is
+    /// given [`AudioBackend::define_music`] instead.
+    fn define_music_streams(
+        &mut self,
+        _intro: Option<&[u8]>,
+        _body: &[u8],
+    ) -> Result<bool, String> {
+        Ok(false)
+    }
     /// Release the music buffers.
     fn clear_music(&mut self);
     /// The requests of one frame, in order.
@@ -347,6 +360,7 @@ impl AudioBackend for NullBackend {
 }
 
 /// One thing a [`RecordingBackend`] saw.
+#[cfg(any(test, feature = "dev"))]
 #[derive(Clone, Debug, PartialEq)]
 pub enum Recorded {
     DefineSound(u16),
@@ -360,10 +374,12 @@ pub enum Recorded {
 }
 
 /// Logs everything it is asked to do; for tests.
+#[cfg(any(test, feature = "dev"))]
 pub struct RecordingBackend {
     log: Rc<RefCell<Vec<Recorded>>>,
 }
 
+#[cfg(any(test, feature = "dev"))]
 impl RecordingBackend {
     pub fn new() -> (Self, Rc<RefCell<Vec<Recorded>>>) {
         let log = Rc::new(RefCell::new(Vec::new()));
@@ -371,6 +387,7 @@ impl RecordingBackend {
     }
 }
 
+#[cfg(any(test, feature = "dev"))]
 impl AudioBackend for RecordingBackend {
     fn define_sound(&mut self, id: u16, _sound: Arc<Sound>) {
         self.log.borrow_mut().push(Recorded::DefineSound(id));
@@ -654,20 +671,59 @@ pub fn load_sfx(
     Ok(set)
 }
 
+/// A music stream as it is on the disc: its path and bytes.
+type Stream = (String, Vec<u8>);
+
+/// Read one stage's music streams (`music.paths()`) as they are on the disc: the optional intro and the
+/// loop, each with its path.
+fn read_music(
+    fetch: &mut dyn FnMut(&str) -> io::Result<Vec<u8>>,
+    music: &StageMusic,
+) -> Result<(Option<Stream>, Stream), String> {
+    let mut streams = Vec::new();
+    for path in music.paths() {
+        let bytes = fetch(&path).map_err(|e| format!("{path}: {e}"))?;
+        streams.push((path, bytes));
+    }
+    let body = streams.pop().ok_or("music has no stream")?;
+    Ok((streams.pop(), body))
+}
+
+fn decode_stream((path, bytes): &Stream) -> Result<Sound, String> {
+    decode_adp(bytes)
+        .map(Sound::from_adp_owned)
+        .map_err(|e| format!("{path}: {e}"))
+}
+
 /// Read and decode one stage's music (`music.paths()`): the optional intro and the loop, at the streams'
 /// native 48 kHz.
 pub fn load_music(
     fetch: &mut dyn FnMut(&str) -> io::Result<Vec<u8>>,
     music: &StageMusic,
 ) -> Result<(Option<Sound>, Sound), String> {
-    let mut decoded = Vec::new();
-    for path in music.paths() {
-        let bytes = fetch(&path).map_err(|e| format!("{path}: {e}"))?;
-        let adp = decode_adp(&bytes).map_err(|e| format!("{path}: {e}"))?;
-        decoded.push(Sound::from_adp_owned(adp));
+    let (intro, body) = read_music(fetch, music)?;
+    let intro = intro.as_ref().map(decode_stream).transpose()?;
+    Ok((intro, decode_stream(&body)?))
+}
+
+/// Read one stage's music and hand it to `backend`: as streams when the backend takes those, decoded
+/// otherwise. Returns the bytes of 16-bit PCM the engine now holds for it (none in the first case).
+fn define_music(
+    backend: &mut dyn AudioBackend,
+    fetch: &mut dyn FnMut(&str) -> io::Result<Vec<u8>>,
+    music: &StageMusic,
+) -> Result<usize, String> {
+    let (intro, body) = read_music(fetch, music)?;
+    if backend.define_music_streams(intro.as_ref().map(|(_, b)| b.as_slice()), &body.1)? {
+        return Ok(0);
     }
-    let body = decoded.pop().ok_or("music has no stream")?;
-    Ok((decoded.pop(), body))
+    let intro_sound = intro.as_ref().map(decode_stream).transpose()?;
+    // The stream is not needed once it is decoded: never hold both for longer than one of them takes.
+    drop(intro);
+    let body = decode_stream(&body)?;
+    let bytes = body.byte_len() + intro_sound.as_ref().map_or(0, Sound::byte_len);
+    backend.define_music(intro_sound.map(Arc::new), Arc::new(body));
+    Ok(bytes)
 }
 
 // ---------------------------------------------------------------------------------------------------------
@@ -685,6 +741,7 @@ pub struct LoadReport {
     /// Last music load.
     pub music_key: Option<&'static str>,
     pub music_ms: f64,
+    /// 16-bit PCM the engine holds for the track; zero when the backend took the streams themselves.
     pub music_pcm_bytes: usize,
     pub music_loads: u32,
     /// Messages for the log (load failures).
@@ -782,6 +839,7 @@ impl Audio {
     }
 
     /// An audio system that logs its requests (tests).
+    #[cfg(any(test, feature = "dev"))]
     pub fn recording() -> (Self, Rc<RefCell<Vec<Recorded>>>) {
         let (backend, log) = RecordingBackend::new();
         (Self::new(Box::new(backend)), log)
@@ -961,17 +1019,13 @@ impl Audio {
         }
         if !inner.music.is_some_and(|m| m.key == track.key) {
             let start = Instant::now();
-            match load_music(fetch, &track) {
-                Ok((intro, body)) => {
-                    inner.report.music_pcm_bytes =
-                        body.byte_len() + intro.as_ref().map_or(0, Sound::byte_len);
-                    // Whatever was queued for the old track must not act on the new one.
-                    inner.queue.retain(|c| {
-                        !matches!(c, Command::MusicPlay { .. } | Command::MusicStop { .. })
-                    });
-                    inner
-                        .backend
-                        .define_music(intro.map(Arc::new), Arc::new(body));
+            // Whatever was queued for the old track must not act on the new one.
+            inner
+                .queue
+                .retain(|c| !matches!(c, Command::MusicPlay { .. } | Command::MusicStop { .. }));
+            match define_music(inner.backend.as_mut(), fetch, &track) {
+                Ok(pcm_bytes) => {
+                    inner.report.music_pcm_bytes = pcm_bytes;
                     inner.music = Some(track);
                     inner.report.music_key = Some(track.key);
                     inner.report.music_loads += 1;

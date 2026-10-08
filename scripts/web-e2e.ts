@@ -128,6 +128,9 @@ class Page {
     return false;
   }
   async nav(url: string) { await this.send("Page.navigate", { url }); await sleep(300); }
+  // Run `source` in every new document of this page before its own scripts (to take browser features away).
+  async inject(source: string): Promise<string> { return (await this.send("Page.addScriptToEvaluateOnNewDocument", { source })).result.identifier; }
+  async uninject(identifier: string) { await this.send("Page.removeScriptToEvaluateOnNewDocument", { identifier }); }
   async pick(path: string) {
     const doc = await this.send("DOM.getDocument", {});
     const node = await this.send("DOM.querySelector", { nodeId: doc.result.root.nodeId, selector: "#file" });
@@ -244,7 +247,24 @@ try {
   const audio = JSON.parse((await p.ev("JSON.stringify(mbPerf.audio())")) ?? "{}");
   check("audio is running", audio.state === "Running" && audio.musicPlaying === true && audio.errors === 0, `music ${audio.musicKey}, ${audio.sourcesStarted} sounds started`);
   const mem = `${((await p.ev("mbPerf.wasmMemoryBytes()")) / 1048576).toFixed(0)} MB wasm memory`;
-  console.log(`     while playing: ${mem}; last load ${await p.ev("JSON.stringify(mbPerf.lastLoad())")}`);
+  console.log(`     while playing: ${mem}; last load ${await p.ev("JSON.stringify(mbPerf.lastLoad())")}; music buffers ${(audio.musicBytes / 1048576).toFixed(0)} MB, of it in wasm memory ${(audio.musicPcmBytes / 1048576).toFixed(0)} MB`);
+
+  // ---- 3b. the page is hidden (another tab in front; a web view's onPause) and shown again -------------------
+  await p.waitStatus((x) => /stage 2 .*Playing/.test(x), 15000);
+  const cover = await p.send("Target.createTarget", { url: "about:blank" });
+  const isHidden = await p.wait("document.hidden", 5000);
+  await sleep(600);
+  const frames0 = await p.ev("wasm_bindgen.frame_count()");
+  await sleep(1200);
+  const hiddenAudio = JSON.parse((await p.ev("JSON.stringify(mbPerf.audio())")) ?? "{}");
+  check("hidden page: no frames are produced and the audio clock is stopped", isHidden && (await p.ev("wasm_bindgen.frame_count()")) === frames0 && hiddenAudio.state === "Suspended", `audio ${hiddenAudio.state}`);
+  await p.send("Target.closeTarget", { targetId: cover.result.targetId });
+  await p.send("Page.bringToFront");
+  await p.wait("!document.hidden", 5000);
+  await sleep(600);
+  const shown = await p.status();
+  const shownAudio = JSON.parse((await p.ev("JSON.stringify(mbPerf.audio())")) ?? "{}");
+  check("shown again: the stage was paused while away, frames and audio are back", /stage 2 .*paused/.test(shown) && (await p.ev("wasm_bindgen.frame_count()")) > frames0 && shownAudio.state === "Running", `${shown}; audio ${shownAudio.state}`);
 
   // ---- 4. the tab is closed in the middle of play; a new one starts from the device --------------------
   const fresh = await p.send("Target.createTarget", { url: "about:blank" });
@@ -283,6 +303,7 @@ try {
   await p.tap(180, 784); // the last stage row, now at the bottom of the list
   const last = await p.waitStatus((x) => x.startsWith("stage "), 15000);
   check("touch: dragging reaches the last stage of the list and a tap starts it", last.startsWith("stage 90 "), last);
+  console.log(`     at Expert 50 (stage 90): ${((await p.ev("mbPerf.wasmMemoryBytes()")) / 1048576).toFixed(0)} MB wasm memory, music buffers ${(JSON.parse((await p.ev("JSON.stringify(mbPerf.audio())")) ?? "{}").musicBytes / 1048576).toFixed(0)} MB`);
   await sleep(500);
   await p.tap(361, 864); // the on-screen pause button
   check("touch: the pause button pauses", /paused/.test(await p.status()), await p.status());
@@ -358,6 +379,80 @@ try {
   check("without storage: starts from the picked file", await p.wait(started, 60000) && (await p.ev("mbStats.mode")) === "live", `${Math.round((await p.ev("mbStats.importMs")) ?? 0)} ms to open`);
   await playToFloorTwo(p, "without storage");
   check("without storage: nothing was written", !/game\./.test((await p.ev(stored)) ?? "x"));
+
+  // ---- 7b. playing from the picked file, and the file goes away (a copy of the image, deleted) --------------
+  const copy = `${scratch}/copy.rvz`;
+  Deno.copyFileSync(discPath, copy);
+  await p.nav(base + "?gl=1&nostore=1");
+  await p.wait(pickerReady, 30000);
+  await p.pick(copy);
+  await p.wait(started, 60000);
+  Deno.removeSync(copy);
+  await p.send("Page.bringToFront");
+  await p.ev("document.getElementById('mb-canvas').focus()");
+  await p.key("ArrowDown"); await p.key("Enter"); await p.key("Enter"); await p.key("Enter"); // Practice, Beginner, floor 1
+  const goneShown = await p.wait("!document.getElementById('fatal').hidden", 15000);
+  const goneTitle = (await p.ev("document.getElementById('fatal-title').textContent")) ?? "";
+  const goneStatus = await p.status();
+  check("the picked file disappears mid-session: the game says so and stays alive", goneShown && /no longer be read/.test(goneTitle) && goneStatus.startsWith("menu:"), `'${goneTitle}'; ${goneStatus}`);
+  await p.ev("document.getElementById('reload').click()");
+  await sleep(500);
+  check("... and one button leads back to the file picker", await p.wait(`${pickerReady} && mbStats.mode === 'none'`, 30000));
+
+  // ---- 7c. a bare web view: no private file system, no DOM storage, no service worker, no WebGPU, no extras --
+  const bare = await p.inject(`
+    delete Navigator.prototype.serviceWorker; delete Navigator.prototype.gpu; delete Navigator.prototype.wakeLock;
+    if (self.StorageManager) { delete StorageManager.prototype.getDirectory; delete StorageManager.prototype.persist; delete StorageManager.prototype.estimate; }
+    Object.defineProperty(window, "localStorage", { get() { return null; } });
+    Object.defineProperty(document, "fullscreenEnabled", { get() { return false; } });
+    delete Element.prototype.requestFullscreen; delete window.DeviceOrientationEvent; delete Navigator.prototype.getGamepads;
+    delete WebAssembly.compileStreaming; delete WebAssembly.instantiateStreaming;`);
+  await p.nav(base);
+  check("bare web view: the page loads and explains that nothing can be kept", await p.wait(pickerReady, 30000) && /cannot keep data/.test((await p.ev("document.getElementById('step-keep').textContent")) ?? ""), (await p.ev(landingText)) ?? "");
+  await p.pick(discPath);
+  check("bare web view: plays from the picked file on WebGL2, saves in memory only", await p.wait(started, 60000) && (await p.ev("mbStats.mode")) === "live" && (await p.ev("mbStats.saveMode")) === "memory" && /Gl,/.test((await p.ev("mbStats.gpu")) ?? ""), `${await p.ev("mbStats.gpu")}; saves ${await p.ev("mbStats.saveMode")}; ${await p.ev("mbStats.liveWhy")}`);
+  await playToFloorTwo(p, "bare web view");
+  check("bare web view: no errors in the console", p.problems.filter((x) => !/favicon/.test(x)).length === 0, p.problems.slice(0, 3).join(" || "));
+  await p.uninject(bare);
+
+  // ---- 7d. engines that cannot run the game get a message, not a silent stop ---------------------------------
+  const lacking: [string, string, RegExp][] = [
+    ["no web workers", "delete window.Worker;", /web workers/],
+    ["no WebGL2 and no WebGPU", "delete Navigator.prototype.gpu; const g = HTMLCanvasElement.prototype.getContext; HTMLCanvasElement.prototype.getContext = function (t, ...a) { return /webgl/.test(t) ? null : g.call(this, t, ...a); };", /neither WebGL2 nor WebGPU/],
+    ["a WebAssembly engine that rejects the module", "delete WebAssembly.compileStreaming; WebAssembly.compile = () => Promise.reject(new WebAssembly.CompileError('bulk memory is not supported'));", /cannot run the engine.*Chrome or Android System WebView 97/],
+    ["no WebAssembly", "delete window.WebAssembly;", /no WebAssembly/],
+  ];
+  for (const [name, source, expect] of lacking) {
+    const idn = await p.inject(source);
+    await p.nav(base + "?gl=1");
+    await p.wait("document.getElementById('status').classList.contains('error')", 15000);
+    const msg = (await p.ev(landingText)) ?? "";
+    check(`${name}: the page says what is missing`, expect.test(msg) && (await p.ev("document.getElementById('pick').disabled")) === true, msg.slice(0, 120));
+    await p.uninject(idn);
+  }
+  p.problems.length = 0;
+
+  // ---- 7e. the same files under a sub-path (as an app's asset loader would serve them) ----------------------
+  const nested = `${scratch}/nested/assets/site`;
+  Deno.mkdirSync(`${nested}/pkg`, { recursive: true });
+  for (const e of Deno.readDirSync(dist)) if (e.isFile) Deno.copyFileSync(`${dist}/${e.name}`, `${nested}/${e.name}`);
+  for (const e of Deno.readDirSync(`${dist}/pkg`)) Deno.copyFileSync(`${dist}/pkg/${e.name}`, `${nested}/pkg/${e.name}`);
+  const subServer = new Deno.Command(python, { args: ["-m", "http.server", String(HTTP + 1), "--bind", "127.0.0.1", "--directory", `${scratch}/nested`], stdout: "null", stderr: "null" }).spawn();
+  try {
+    const sub = `http://localhost:${HTTP + 1}/assets/site/`;
+    await p.nav(sub + "index.html?gl=1");
+    await p.wait(pickerReady, 30000);
+    await p.pick(discPath);
+    const subStarted = await p.wait(started, 120000) && (await p.status()) === "menu: title";
+    const outside = (await p.ev(`JSON.stringify(performance.getEntriesByType("resource").map(r => r.name).filter(n => !n.startsWith(${JSON.stringify(sub)})))`)) ?? "?";
+    check("sub-path: imports and starts; every request stays under the sub-path", subStarted && outside === "[]", `mode ${await p.ev("mbStats.mode")}; outside: ${outside}`);
+    const scope = (await p.ev("navigator.serviceWorker.ready.then(r => r.scope)")) ?? "";
+    check("sub-path: the service worker's scope is the site's own folder", scope === sub, scope);
+    await p.ev("mbHost('remove-data')");
+    await p.wait(pickerReady, 20000);
+  } finally {
+    try { subServer.kill(); } catch { /* gone */ }
+  }
 
   if (flags.has("--lan")) {
     const ip = Deno.networkInterfaces().find((i) => i.family === "IPv4" && !i.address.startsWith("127.") && !i.address.startsWith("169.254."))?.address;

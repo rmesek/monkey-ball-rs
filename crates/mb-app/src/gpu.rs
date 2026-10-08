@@ -1,4 +1,5 @@
-//! wgpu instance / adapter / device setup shared by the windowed and headless paths.
+//! wgpu adapter / device setup of the desktop window and the windowless test driver (blocking; the browser
+//! driver sets its device up asynchronously in `shell`), and the surface format both drivers pick.
 
 pub struct Gpu {
     pub instance: wgpu::Instance,
@@ -17,6 +18,7 @@ impl Gpu {
 
 /// Request an adapter and device. With `compatible_surface` the adapter can present to it; without one
 /// (headless) a software adapter is accepted as a fallback so screenshots work on machines without a GPU.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn request_gpu(
     instance: wgpu::Instance,
     compatible_surface: Option<&wgpu::Surface<'_>>,

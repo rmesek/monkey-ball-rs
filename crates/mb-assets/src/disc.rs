@@ -421,7 +421,7 @@ impl<S: DiscStream> Disc<S> {
         v
     }
 
-    /// Content-root path (`smb1_content/test/x`) -> disc path (`test/x`).
+    /// The normalised spelling of a path on the disc (see [`crate::pack::disc_path`]).
     pub fn disc_path(path: &str) -> String {
         disc_path(path)
     }
@@ -618,7 +618,7 @@ pub(crate) mod tests {
         );
         assert_eq!(disc.read_file("opening.bnr").unwrap(), [1, 2, 3]);
         assert_eq!(
-            disc.read_file("smb1_content/test/a.lz").unwrap(),
+            disc.read_file("./test/a.lz").unwrap(),
             (0..200u8).collect::<Vec<_>>()
         );
         let dol = disc.read_file(MAIN_DOL_PATH).unwrap();
@@ -633,10 +633,10 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn maps_content_paths_to_disc_paths() {
+    fn normalises_disc_paths() {
         type D = Disc<Vec<u8>>;
         assert_eq!(
-            D::disc_path("smb1_content/test/st001/STAGE001.lz"),
+            D::disc_path("/test\\st001/STAGE001.lz"),
             "test/st001/STAGE001.lz"
         );
         assert_eq!(
@@ -761,7 +761,7 @@ pub(crate) mod tests {
     fn disc_pack_serves_files() {
         let pack = DiscPack::from_stream(Box::new(sample())).unwrap();
         assert_eq!(pack.game_id(), "GMBE8P");
-        assert!(pack.contains("smb1_content/test/b.tpl") && !pack.contains("test/c"));
+        assert!(pack.contains("./test/b.tpl") && !pack.contains("test/c"));
         assert_eq!(pack.fetch("test/b.tpl").unwrap(), vec![9; 40]);
         assert_eq!(pack.main_dol().unwrap().len(), 0x120);
         assert_eq!(pack.file_len("opening.bnr"), Some(3));

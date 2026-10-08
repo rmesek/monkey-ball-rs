@@ -15,6 +15,7 @@
 if (typeof wasm_bindgen === "undefined") importScripts("./pkg/mb_web.js" + self.location.search);
 
 let job = null; // live mode: the open image
+let readFailed = false; // the browser could not read the picked file (it is gone, or access to it has ended)
 let cancelled = false; // the page asked to stop a "store" import
 
 // Let queued messages (a cancel) be handled in the middle of a long copy.
@@ -60,7 +61,8 @@ async function storeImport(store) {
   }
   let size;
   try {
-    handle.truncate(0);
+    // (Chrome 102 to 107 had truncate, flush, getSize and close return promises; awaiting covers both.)
+    await handle.truncate(0);
     const write = (bytes, at) => {
       const written = handle.write(bytes, { at });
       if (written !== bytes.byteLength) {
@@ -82,8 +84,8 @@ async function storeImport(store) {
     }
     if (cancelled) {
       // Leave nothing behind: empty the file while it is still ours, then delete it.
-      handle.truncate(0);
-      handle.close();
+      await handle.truncate(0);
+      await handle.close();
       handle = null;
       await dir.removeEntry(store.pack).catch(() => {});
       post({ type: "cancelled" });
@@ -92,7 +94,7 @@ async function storeImport(store) {
     size = job.finish(write);
     job.free();
     job = null;
-    handle.flush();
+    await handle.flush();
     // Read the whole pack back and compare checksums before calling it complete.
     post({ type: "progress", phase: "verify", done: total, total });
     const read = (offset, length) => {
@@ -100,9 +102,9 @@ async function storeImport(store) {
       const got = handle.read(bytes, { at: offset });
       return got === length ? bytes : bytes.subarray(0, got);
     };
-    wasm_bindgen.verify_pack(read, handle.getSize());
+    wasm_bindgen.verify_pack(read, await handle.getSize());
   } finally {
-    if (handle) handle.close();
+    if (handle) await handle.close();
   }
   // The marker makes the import count. Written last.
   const marker = await dir.getFileHandle(store.marker, { create: true });
@@ -111,11 +113,11 @@ async function storeImport(store) {
     const text = new TextEncoder().encode(
       JSON.stringify({ size, version: wasm_bindgen.pack_version(), gameId, imported: new Date().toISOString() }),
     );
-    markerHandle.truncate(0);
+    await markerHandle.truncate(0);
     markerHandle.write(text, { at: 0 });
-    markerHandle.flush();
+    await markerHandle.flush();
   } finally {
-    markerHandle.close();
+    await markerHandle.close();
   }
   post({ type: "stored", size });
 }
@@ -127,9 +129,19 @@ self.onmessage = async (event) => {
       cancelled = true;
     } else if (m.type === "import") {
       await wasm_bindgen({ module_or_path: m.module });
+      if (typeof FileReaderSync !== "function") {
+        throw new Error("This browser cannot read a local file from a worker (no FileReaderSync), which the game needs to read the disc image.");
+      }
       const reader = new FileReaderSync();
       const file = m.file;
-      const read = (offset, length) => new Uint8Array(reader.readAsArrayBuffer(file.slice(offset, offset + length)));
+      const read = (offset, length) => {
+        try {
+          return new Uint8Array(reader.readAsArrayBuffer(file.slice(offset, offset + length)));
+        } catch (e) {
+          readFailed = true;
+          throw e;
+        }
+      };
       job = wasm_bindgen.ImportJob.open(read, file.size);
       post({
         type: "opened",
@@ -144,11 +156,13 @@ self.onmessage = async (event) => {
         post({ type: "live", names: job.paths(), gameId: job.gameId() });
       }
     } else if (m.type === "read") {
+      readFailed = false;
       try {
         const files = m.paths.map((path) => job.readFile(path));
         post({ type: "read", id: m.id, files }, files.map((f) => f.buffer));
       } catch (e) {
-        post({ type: "read", id: m.id, error: typeof e === "string" ? e : (e && e.message) || String(e) });
+        // `gone`: not a damaged image but a file the browser can no longer read at all.
+        post({ type: "read", id: m.id, gone: readFailed, error: typeof e === "string" ? e : (e && e.message) || String(e) });
       }
     }
   } catch (e) {

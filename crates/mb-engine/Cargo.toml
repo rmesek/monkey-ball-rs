@@ -10,8 +10,5 @@ publish.workspace = true
 mb-stage = { path = "../mb-stage" }
 
 [dev-dependencies]
-# Tests only: decompress STAGENNN.lz from a local disc image.
+# Tests only: read stagedefs and the game executable (trig tables) out of the user's own disc image.
 mb-assets = { path = "../mb-assets" }
-# Tests only: read the game executable (main.dol) out of the user's own disc image to load the S16 trig tables
-# (already a dependency of mb-assets; same version, no new crate in the lockfile).
-nod = "2.0.0-alpha.9"

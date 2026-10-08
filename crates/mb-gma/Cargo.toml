@@ -9,5 +9,5 @@ publish.workspace = true
 [dependencies]
 
 [dev-dependencies]
-# Tests and the OBJ example read the user's own disc and LZSS-decompress inputs; the library itself stays std-only.
+# Tests only: read the user's own disc image and LZSS-decompress inputs. The library itself stays std-only.
 mb-assets = { path = "../mb-assets" }

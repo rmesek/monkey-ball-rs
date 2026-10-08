@@ -1,5 +1,5 @@
-//! Windowless driver: runs real game states on an offscreen target with scripted input. Used for
-//! screenshots (`--screenshot`), the scripted play-through (`--autoplay`) and the integration tests.
+//! Windowless driver: runs real game states on an offscreen target with scripted input. Used by the
+//! integration tests and the scripted play-through (`--autoplay`). Compiled with the `dev` feature only.
 
 use std::path::{Path, PathBuf};
 
@@ -16,15 +16,6 @@ use crate::ui::{Insets, Layout};
 
 /// One simulation tick, the frame time scripted runs use.
 pub const FRAME: f32 = 1.0 / 60.0;
-
-pub struct Capture {
-    pub width: u32,
-    pub height: u32,
-    pub rgba: Vec<u8>,
-    pub adapter: String,
-    pub status: String,
-    pub draws: usize,
-}
 
 /// A game stack with its own GPU device, renderer and offscreen target.
 pub struct Headless {
@@ -176,27 +167,6 @@ impl Headless {
         };
         self.stack.clear(&mut ctx);
     }
-}
-
-/// Run `game` for one frame at `dt = 0` and read the frame back as RGBA8.
-pub fn capture(
-    content: &Content,
-    game: Box<dyn Game>,
-    size: (u32, u32),
-    force_software: bool,
-) -> Result<Capture, String> {
-    let mut h = Headless::new(content, size, force_software)?;
-    h.push(game)?;
-    h.step(0.0)?;
-    let rgba = h.render()?;
-    Ok(Capture {
-        status: h.status(),
-        draws: h.draws(),
-        width: size.0,
-        height: size.1,
-        rgba,
-        adapter: h.adapter().to_string(),
-    })
 }
 
 /// In-memory save with every stage selectable, so scripted runs never touch the player's own save.

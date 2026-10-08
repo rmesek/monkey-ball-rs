@@ -8,8 +8,9 @@ edition = "2021"
 license = "MIT OR Apache-2.0"
 publish = false
 
-# Third-party dependencies (graphics, audio, serialization, windowing, ...) are
-# intentionally NOT chosen yet. Add them in the phase that needs them.
+# Third-party dependencies are declared per crate, each with a one-line reason (AGENTS.md, hard rule 5).
+# The stack is recorded in docs/PLAN.md: wgpu, winit, glam, bytemuck, ruzstd, web-time; cpal, rfd, gilrs and
+# pollster on the desktop; wasm-bindgen, web-sys and js-sys in the browser. Nothing that talks to a network.
 
 # Browser bundle (scripts/build-web.*: `cargo build -p mb-web --profile web`). Whole-program optimisation
 # pays here: the wasm is downloaded and compiled by every visitor and runs on phones. Measured against plain

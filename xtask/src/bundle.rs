@@ -3,18 +3,19 @@
 //!
 //! Two products:
 //! * the **hosted bundle** (always): `index.html`, `main.js`, `worker.js`, `sw.js` (with a version hash and
-//!   the precache list filled in), the manifest, the icons and `pkg/`. All paths relative, nothing else: the
-//!   developer files in `web/dev/` are never copied.
+//!   the precache list filled in), the manifest, the icons and `pkg/`. All paths relative, and nothing else:
+//!   only the files named here are copied, whatever else lies in `web/`.
 //! * the **single file** (`--single`): `monkey-ball.html` with the scripts inlined as classic scripts, the
 //!   wasm module embedded as base64 (gzipped when the build script supplies a `.gz`), the worker source
 //!   carried as text and the icon as a data URI. No service worker, no manifest. Its Content-Security-Policy
-//!   names the two inline scripts by hash and forbids every connection.
+//!   names the three inline scripts by hash and forbids every connection.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
 /// Files copied verbatim from `web/` into the bundle (and precached by the service worker).
-const STATIC_FILES: [&str; 6] = [
+const STATIC_FILES: [&str; 7] = [
+    "guard.js",
     "main.js",
     "worker.js",
     "manifest.webmanifest",
@@ -168,7 +169,7 @@ pub fn run(opts: Options) -> Result<(), String> {
     // (python -m http.server) cannot pair an old script with a new engine.
     let stamp = format!("<meta name=\"mb-version\" content=\"{version}\">");
     let mut hosted = replace_block(&hosted, "version", &stamp)?;
-    for file in ["./pkg/mb_web.js", "./main.js"] {
+    for file in ["./guard.js", "./pkg/mb_web.js", "./main.js"] {
         let reference = format!("src=\"{file}\"");
         if !hosted.contains(&reference) {
             return Err(format!("index.html no longer loads {file}"));
@@ -199,11 +200,13 @@ pub fn run(opts: Options) -> Result<(), String> {
 
     // ---- single file ------------------------------------------------------------------------------------
     if opts.single {
+        let guard = read_text(&opts.web.join("guard.js"))?;
         let glue = read_text(&pkg_file("pkg/mb_web.js"))?;
         let main = read_text(&opts.web.join("main.js"))?;
         let worker = read_text(&opts.web.join("worker.js"))?;
         let icon = read_text(&opts.web.join("icon.svg"))?;
         for (name, text) in [
+            ("guard.js", &guard),
             ("mb_web.js", &glue),
             ("main.js", &main),
             ("worker.js", &worker),
@@ -215,13 +218,15 @@ pub fn run(opts: Options) -> Result<(), String> {
             None => (read(&pkg_file("pkg/mb_web_bg.wasm"))?, "none"),
         };
         // The browser hashes the script text exactly as it stands between the tags.
+        let guard_block = format!("\n{guard}\n");
         let glue_block = format!("\n{glue}\n");
         let main_block = format!("\n{main}\n");
         let csp = format!(
             "<meta http-equiv=\"Content-Security-Policy\"\n      content=\"default-src 'none'; \
-             script-src 'sha256-{}' 'sha256-{}' 'wasm-unsafe-eval'; style-src 'unsafe-inline'; \
+             script-src 'sha256-{}' 'sha256-{}' 'sha256-{}' 'wasm-unsafe-eval'; style-src 'unsafe-inline'; \
              img-src data: blob:; worker-src blob:; child-src blob:; connect-src 'none'; \
              form-action 'none'; base-uri 'none'\">",
+            base64(&Sha256::digest(guard_block.as_bytes())),
             base64(&Sha256::digest(glue_block.as_bytes())),
             base64(&Sha256::digest(main_block.as_bytes())),
         );
@@ -232,6 +237,7 @@ pub fn run(opts: Options) -> Result<(), String> {
         let scripts = format!(
             "  <script type=\"application/octet-stream\" id=\"mb-wasm\" data-encoding=\"{encoding}\">{}</script>\n  \
              <script type=\"text/plain\" id=\"mb-worker\">\n{worker}\n</script>\n  \
+             <script>{guard_block}</script>\n  \
              <script id=\"mb-glue\">{glue_block}</script>\n  <script>{main_block}</script>",
             base64(&wasm)
         );
@@ -435,6 +441,7 @@ mod tests {
         let index = "<head>\n<!--build:csp-->\n<meta csp>\n<!--/build:csp-->\n\
                      <!--build:version--><!--/build:version-->\n<!--build:head-->\n<link manifest>\n\
                      <!--/build:head-->\n</head><body>\n<!--build:scripts-->\n\
+                     <script src=\"./guard.js\"></script>\n\
                      <script src=\"./pkg/mb_web.js\"></script>\n<script src=\"./main.js\"></script>\n\
                      <!--/build:scripts-->\n</body>";
         write(&web.join("index.html"), index.as_bytes()).unwrap();
@@ -469,6 +476,7 @@ mod tests {
         assert_eq!(
             listed(&out),
             [
+                "guard.js",
                 "icon-192.png",
                 "icon-512.png",
                 "icon.svg",

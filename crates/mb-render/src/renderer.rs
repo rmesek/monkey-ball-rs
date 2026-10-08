@@ -538,22 +538,6 @@ impl Renderer {
         TextureId(self.textures.len() - 1)
     }
 
-    /// Decode and upload every texture of a TPL (with its mip chain). Undecodable entries become `None`
-    /// (materials then fall back to a white texture).
-    pub fn upload_tpl(&mut self, tpl: &mb_tpl::Tpl) -> TextureSet {
-        let mut set: TextureSet = Vec::new();
-        for tex in tpl.textures() {
-            let Some(id) = self.upload_tpl_texture(tex) else {
-                continue;
-            };
-            if set.len() <= tex.index {
-                set.resize(tex.index + 1, None);
-            }
-            set[tex.index] = Some(id);
-        }
-        set
-    }
-
     /// Decode and upload one TPL texture with its mip chain; `None` when it cannot be decoded. Callers
     /// that know which textures their models use upload just those (a stage shows a fraction of the
     /// textures in the background and shared containers).

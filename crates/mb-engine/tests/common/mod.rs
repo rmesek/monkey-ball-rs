@@ -48,14 +48,7 @@ pub fn load_stage(disc: &DiscPack, id: u32) -> Stage {
 
 /// Read `main.dol` from the disc image (it lives outside the file system table).
 pub fn read_main_dol() -> Option<Vec<u8>> {
-    use nod::common::PartitionKind;
-    use nod::read::{DiscOptions, DiscReader, PartitionOptions};
-    let disc = DiscReader::new(find_disc_path()?, &DiscOptions::default()).ok()?;
-    let mut part = disc
-        .open_partition_kind(PartitionKind::Data, &PartitionOptions::default())
-        .ok()?;
-    let meta = part.meta().ok()?;
-    Some(meta.raw_dol.to_vec())
+    open_disc()?.main_dol().ok()
 }
 
 static INSTALLED: OnceLock<bool> = OnceLock::new();
