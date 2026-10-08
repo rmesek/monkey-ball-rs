@@ -32,15 +32,22 @@ binary and the browser build both open the RVZ, show the level select, play a st
 fall-out with a retry, and advance to the next floor.
 
 ### Status
-- Done: workspace scaffold; pack trait with dir/memory/cache/disc backends; LZSS (byte-identical to the
-  reference); stagedef, GMA/GX display list, TPL and NaomiLib parsers; ADP and MusyX decoding to PCM;
-  deterministic engine (bit-identical to the reference on USA stages 1..200 for scripted runs); wgpu renderer
-  with GX material emulation; desktop stage viewer with headless capture; shared window driver for web/mobile.
-- In progress: course/lives state machine (`mb-game::run`), gameplay and menu states, desktop file dialog, web
-  page and build script.
-- Not in Stage 1: SMB2 content, minigames, replays, audio output (PCM decoding exists; a device backend is
-  chosen with Stage 2 unless it lands early), Android packaging.
+Stage 1 is implemented and verified (2026-10-08):
+- Desktop: `cargo run -p mb-app --release -- "<rvz>"` (or no argument for a file dialog) opens the title menu;
+  Course Play and Practice run from fly-in to goal with HUD, pause, retry, game over/continue and saving.
+  Headless autoplay (`--autoplay 1 --screenshot-dir <dir>`) walks the menu and reaches the goal; integration
+  tests in `crates/mb-app/tests/gameplay.rs` cover goal -> next floor, fall-out -> retry, game over/continue.
+- Browser: `scripts/build-web.ps1` then `cargo run -p xtask -- serve-web`; the page takes the RVZ by picker or
+  drop, shows the menu, plays Beginner floor 1 to the goal and loads floor 2, on WebGPU and WebGL2; progress is
+  saved in `localStorage`.
+- Gates: `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
+  `cargo test --workspace`, and wasm32 clippy for `mb-web` are clean.
 
+Not verified: a real phone, a real gamepad, Firefox/Safari, a full course played to its end.
+
+Not in Stage 1 (see `docs/GAMEPLAY.md` for the full list): audio output (PCM decoding exists), the monkey
+inside the ball, ball shadow, goal confetti and other effects, result replays, render interpolation above
+60 Hz, SMB2 content, minigames, Android packaging. `crates/mb-android` is an empty crate reserved for Stage 2.
 ## Stage 2 (next target): standalone Android APK
 Native Android packaging with `android-activity`, gyro tilt through `SensorManager` feeding the tilt axes of
 `InputState`, on-screen touch controls (the layout maths already lives in `mb-app::ui`), disc import through the
