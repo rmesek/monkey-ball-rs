@@ -563,7 +563,12 @@ impl Game for PlayState {
                 let Some(sim) = self.sim.as_mut() else {
                     break;
                 };
+                let was_intro = sim.phase == Phase::Intro;
                 sim.step(stick);
+                if was_intro && sim.phase != Phase::Intro {
+                    // GO: control starts now, so the pose held at this moment is level.
+                    crate::host::post(crate::host::Command::CalibrateTilt);
+                }
                 self.ticks += 1;
                 if let Some(sounds) = self.sounds.as_mut() {
                     sounds.tick(sim, &self.audio);
