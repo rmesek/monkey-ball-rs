@@ -133,13 +133,14 @@ feature, which `cargo test` switches on by itself. A `dev` build of the program 
   and what the audio device played (stream, callbacks, peak / RMS, late callbacks).
 
 ## Not ported from the reference
-- The monkey inside the ball (separate skeletal system in the reference), the projected ball shadow,
+- The projected ball shadow,
   confetti, sparks, streaks and the other `effects.ts` particles, mirror floors, the bonus-wave vertex
   animation, per-background special effects (`Background.ts`), specular suppression on the inner ball shells.
 - Result replays (the reference replays the fall-out and the goal), intro skipping.
 - `JUMP TO FLOOR n` and the warp bonus line of the goal banner (`PlayRequest` carries no jump preview), the
   additive white flash of the `GOAL` and `GO` banners (sprites only multiply).
-- The monkey's voice lines and the sounds listed under "Known gaps" in `docs/AUDIO.md`.
+- Not in the reference either (original game only): the monkey inside the ball, its voice lines and the
+  sounds listed under "Known gaps" in `docs/AUDIO.md`.
 - Multiplayer, netplay, lobby, SMB2 content (out of scope by project rule).
 
 Differences on purpose: lives are shown (the reference hides its counter), the HUD is edge-anchored instead

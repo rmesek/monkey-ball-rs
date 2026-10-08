@@ -53,7 +53,7 @@ first things to look at when work resumes.
 | Largest music track | About 54 MB of float samples in the browser (computed, not measured). 16-bit or segment-streamed music would cut it; not done because a sample-exact loop could not be verified. |
 | Desktop: dropping the image on the window | Not implemented (dialog and command line only). |
 | Pack version | `mb_assets::gamepack::VERSION` must be raised when the list of copied files changes; no test enforces it. |
-| CI workflow | `.github/workflows/ci.yml` (manual only) runs `cargo xtask check`; never triggered, and its Linux package list is unverified. Linux and macOS builds are untested; only Windows has been built and run. |
+| CI workflows | `.github/workflows/ci.yml` (manual only) runs `cargo xtask check`. `release.yml` starts when a release is published on GitHub: it checks that the tag is `v` + the version in `Cargo.toml`, runs `cargo xtask check`, then attaches the Linux, Windows and Apple-silicon executables and the single-file page to the release. Neither has ever run, and their Linux package list is unverified. Linux and macOS builds are untested; only Windows has been built and run, so the first released Linux and macOS executables are unverified (the macOS one is also unsigned). |
 | No fallback without workers | A browser without dedicated workers or `FileReaderSync` gets an "unsupported" message, by decision. |
 | 32-bit overflow fixes in the parsers | Made by inspection; no 32-bit test runner was available (the browser check exercises wasm32 on valid data only). |
 ## Decisions (recorded)
@@ -86,11 +86,12 @@ first things to look at when work resumes.
 
 ## Possible next features
 
-Drawn from the known gaps (`docs/GAMEPLAY.md` "Not ported", `docs/AUDIO.md` "Known gaps"). None is started.
+The order, budgets and checkpoints for bringing these to parity with the reference are in
+`docs/PARITY_PLAN.md`. Drawn from the known gaps (`docs/GAMEPLAY.md` "Not ported", `docs/AUDIO.md` "Known gaps"). None is started.
 
 | Feature | Where it would live | Notes |
 |---|---|---|
-| The monkey inside the ball | `mb-gma` (skeletal models), `mb-app/play_scene.rs` | a separate skeletal system in the reference; its files must be added to `StageFiles` / `common_files` |
+| The monkey inside the ball | `mb-gma` (skeletal models), `mb-app/play_scene.rs` | in the original only: the reference draws the ball's shells and no monkey, so this is outside parity (`docs/PARITY_PLAN.md`, D2) |
 | Ball shadow | `mb-render`, `mb-app/play_scene.rs` | projected shadow as in the reference's renderer |
 | Effects: goal confetti, sparks, streaks, banner flashes | `mb-engine` (state), `mb-render` (additive sprites), `mb-app` | `effects.ts` in the reference |
 | Remaining sounds: monkey voices, softest impact tier, time-over explosion, jingles, menu music | `mb-app/audio.rs`, `mb-audio` | more banks and streams mean a larger import; update `sfx_paths` and the file lists |

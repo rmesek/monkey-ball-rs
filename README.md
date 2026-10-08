@@ -154,6 +154,7 @@ disc image, and says what is missing otherwise.
 | | |
 |---|---|
 | [docs/PLAN.md](docs/PLAN.md) | current state, open items, recorded decisions, possible next features |
+| [docs/PARITY_PLAN.md](docs/PARITY_PLAN.md) | the plan for reaching parity with the reference: phases, budgets, checkpoints |
 | [CHANGELOG.md](CHANGELOG.md) | what each version contains |
 | [docs/WEB.md](docs/WEB.md) | the web site: build, hosting, storage model, browser requirements, measurements |
 | [docs/ANDROID_WEBVIEW.md](docs/ANDROID_WEBVIEW.md) | putting the site inside an Android app |
