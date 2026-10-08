@@ -53,7 +53,7 @@ first things to look at when work resumes.
 | Largest music track | About 54 MB of float samples in the browser (computed, not measured). 16-bit or segment-streamed music would cut it; not done because a sample-exact loop could not be verified. |
 | Desktop: dropping the image on the window | Not implemented (dialog and command line only). |
 | Pack version | `mb_assets::gamepack::VERSION` must be raised when the list of copied files changes; no test enforces it. |
-| CI workflow | `.github/workflows/ci.yml` (manual only) runs `cargo xtask check`; never triggered, and its Linux package list is unverified. Linux and macOS builds are untested; only Windows has been built and run. |
+| CI workflows | `.github/workflows/ci.yml` (manual only) runs `cargo xtask check`. `release.yml` starts when a release is published on GitHub: it checks that the tag is `v` + the version in `Cargo.toml`, runs `cargo xtask check`, then attaches the Linux, Windows and Apple-silicon executables and the single-file page to the release. Neither has ever run, and their Linux package list is unverified. Linux and macOS builds are untested; only Windows has been built and run, so the first released Linux and macOS executables are unverified (the macOS one is also unsigned). |
 | No fallback without workers | A browser without dedicated workers or `FileReaderSync` gets an "unsupported" message, by decision. |
 | 32-bit overflow fixes in the parsers | Made by inspection; no 32-bit test runner was available (the browser check exercises wasm32 on valid data only). |
 ## Decisions (recorded)

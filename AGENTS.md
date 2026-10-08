@@ -140,8 +140,10 @@ Rules of thumb:
   that drive the real states (and the window), in the browser through `scripts/web-e2e.ts`, extended to cover
   the new behaviour. State what was not verified (real phones, other browsers).
 - **Git checkpoints.** One logical change per commit, gates green, a message that says what now works.
-- **No paid services.** CI is `workflow_dispatch` only; run the checks locally. No cloud or remote agents, no
-  hosted builders.
+- **No paid services.** Nothing runs on a push, a tag or a schedule. `ci.yml` (the gates) is
+  `workflow_dispatch` only; `release.yml` starts only when a release is published on the GitHub website and
+  attaches that version's builds to it (the gates, then Linux, Windows and Apple-silicon executables and the
+  single-file page). Run the checks locally. No cloud or remote agents, no hosted builders.
 - Match the surrounding code's style; keep comments sparse and explain *why*.
 
 ## Subagent orchestration
