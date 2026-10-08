@@ -2,11 +2,15 @@
 //! ball whose position stops being a number must end the attempt instead of hanging it. No game data: the
 //! stages are built in code, encoded to the stagedef format and corrupted there, so every field the parser
 //! can hand to the engine is reached. The last test repeats this on stagedefs read from the user's disc
-//! (in memory only) and skips without one.
+//! (in memory only) and skips without one. The display-only particles run inside the tick, so every
+//! campaign here runs them too, and two tests go for them directly.
 
 mod common;
 
+use mb_engine::collision::PhysBall;
 use mb_engine::determinism::QuantizedInput;
+use mb_engine::effects::{CONFETTI_PER_GOAL, MAX_BALL_EFFECTS};
+use mb_engine::math::Vec3 as V3;
 use mb_engine::{Outcome, Phase, Sim, SimConfig};
 use mb_stage::*;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -457,6 +461,12 @@ fn drive(sim: &mut Sim, ticks: usize, rng: &mut Rng) {
         };
         sim.step(input);
         let _ = sim.hash();
+        let _ = sim.hash_visual();
+        assert!(sim.runtime.effects.len() <= MAX_BALL_EFFECTS);
+        assert!(sim.runtime.confetti.len() <= CONFETTI_PER_GOAL * sim.runtime.goal_bags.len());
+        if !sim.runtime.effects.is_empty() || !sim.runtime.confetti.is_empty() {
+            PARTICLE_TICKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
         if sim.is_finished() {
             return;
         }
@@ -469,6 +479,14 @@ fn drive(sim: &mut Sim, ticks: usize, rng: &mut Rng) {
             );
         }
     }
+}
+
+/// Ticks of [`drive`] on which particles were alive: the campaigns must reach the particle code to prove
+/// anything about it.
+static PARTICLE_TICKS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+fn particle_ticks() -> usize {
+    PARTICLE_TICKS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 fn short_cfg(rng: &mut Rng) -> SimConfig {
@@ -541,6 +559,8 @@ fn corrupted_stagedefs_never_panic_or_hang() {
         simulated > 1500 && rejected > 50,
         "{simulated} / {rejected}"
     );
+    // The ball drops onto the floor in most of them, so the particle code ran on corrupted stages too.
+    assert!(particle_ticks() > 10_000, "{}", particle_ticks());
     let _ = done.send(());
 }
 
@@ -761,6 +781,171 @@ fn a_nan_ball_falls_out_instead_of_hanging() {
     let sim = run_to_end(&stage, SimConfig::retry(1), 60 * 70);
     assert_eq!(sim.phase, Phase::Finished(Outcome::TimeOver));
     assert!(sim.ball.pos.y.is_finite());
+    let _ = done.send(());
+}
+
+/// The particles are display only, but they are simulated inside the tick and read the stage (the ground
+/// under them) and the ball. Numbers that are not numbers must cost nothing but the look: no panic, no
+/// endless loop, no growth, and every particle still ends when its life does.
+#[test]
+fn poisoned_particles_never_panic_hang_or_grow() {
+    let done = watchdog(120);
+    let poisons = [
+        f64::NAN,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        1e300,
+        -1e300,
+        1e-320,
+        -0.0,
+        0.0,
+    ];
+    for (round, poison) in poisons.into_iter().enumerate() {
+        guarded(&format!("particles poisoned with {poison}"), || {
+            let mut cfg = SimConfig::retry(1 + round as u32);
+            cfg.intro_frames = 26;
+            let mut sim = Sim::new(&rich_stage(), cfg);
+            let pool = sim.runtime.effects.as_ptr();
+            while sim.phase == Phase::Intro {
+                sim.step(QuantizedInput::default());
+            }
+            // A hard landing throws a full burst; opening both bags throws their confetti, the second
+            // time with a ball velocity that is no number.
+            sim.ball.vel = V3::new(0.0, -0.8, 0.0);
+            sim.step(QuantizedInput::default());
+            assert!(sim.runtime.effects.len() > 30);
+            let mut ball = PhysBall::new();
+            sim.runtime.break_goal_tape(0, &ball);
+            ball.vel = V3::new(poison, -poison, poison);
+            sim.runtime.break_goal_tape(1, &ball);
+            sim.runtime.break_goal_tape(7, &ball);
+            assert_eq!(sim.runtime.confetti.len(), 2 * CONFETTI_PER_GOAL);
+
+            // Every float a particle carries, on some particle.
+            for (i, e) in sim.runtime.effects.iter_mut().enumerate() {
+                match i % 9 {
+                    0 => e.pos.x = poison,
+                    1 => e.pos.y = poison,
+                    2 => e.vel = V3::new(poison, poison, poison),
+                    3 => {
+                        e.has_ground = true;
+                        e.ground_normal = V3::new(poison, 1.0, -poison);
+                    }
+                    4 => {
+                        e.has_ground = true;
+                        e.ground_pos.y = poison;
+                        e.ground_vel.z = poison;
+                    }
+                    5 => e.scale = poison,
+                    6 => e.glow_dist = poison,
+                    7 => e.surface_normal = V3::new(poison, poison, poison),
+                    _ => e.alpha = poison,
+                }
+            }
+            for (i, c) in sim.runtime.confetti.iter_mut().enumerate() {
+                match i % 8 {
+                    0 => c.pos.z = poison,
+                    1 => c.vel = V3::new(-poison, poison, poison),
+                    2 => c.scale = poison,
+                    3 => {
+                        c.on_ground = true;
+                        c.ground_normal = V3::new(poison, poison, poison);
+                    }
+                    4 => {
+                        c.on_ground = true;
+                        c.ground_pos.y = poison;
+                    }
+                    5 => c.ground_bias = poison,
+                    6 => c.ground_vel = V3::new(poison, 0.0, 0.0),
+                    _ => {}
+                }
+            }
+
+            let mut rng = Rng(0x5eed_0040 + round as u64);
+            for tick in 0..300 {
+                if !sim.is_finished() {
+                    // The ball itself goes bad a little later, while it throws sparks.
+                    if tick == 20 {
+                        sim.ball.vel = V3::new(poison, -0.5, 0.0);
+                    }
+                    sim.step(QuantizedInput {
+                        x: rng.below(255) as i32 - 127,
+                        y: rng.below(255) as i32 - 127,
+                    });
+                } else {
+                    // The attempt is over; the stage runtime alone carries the particles to their end,
+                    // under a gravity that is no direction.
+                    let gravity = V3::new(poison, -1.0, poison);
+                    sim.runtime.advance(&sim.geom, gravity, None, None, None);
+                }
+                let _ = sim.hash_visual();
+                assert!(sim.runtime.effects.len() <= MAX_BALL_EFFECTS);
+                assert!(sim.runtime.confetti.len() <= 2 * CONFETTI_PER_GOAL);
+            }
+            // Lives are counted in ticks whatever the numbers are: at most 269 for confetti, 74 for an
+            // effect (and a finished attempt steps no ball, so nothing new is thrown).
+            assert!(sim.runtime.confetti.is_empty(), "poison {poison}");
+            if sim.is_finished() {
+                for _ in 0..80 {
+                    let gravity = sim.shared_world.gravity;
+                    sim.runtime.advance(&sim.geom, gravity, None, None, None);
+                }
+                assert!(sim.runtime.effects.is_empty(), "poison {poison}");
+            }
+            assert_eq!(sim.runtime.effects.as_ptr(), pool, "the pool never moved");
+        });
+    }
+    let _ = done.send(());
+}
+
+/// A ball at a speed no stage allows asks for more sparks than the pool holds, every tick, on every kind of
+/// floor a broken stage can offer.
+#[test]
+fn absurd_speeds_fill_the_particle_pool_and_no_more() {
+    let done = watchdog(120);
+    let mut degenerate = floor_group();
+    for t in &mut degenerate.triangles {
+        t.normal = v(f32::NAN, 1.0, 0.0);
+        t.edge3_normal = Vec2 {
+            x: f32::INFINITY,
+            y: 0.0,
+        };
+    }
+    let mut steep = floor_group();
+    for t in &mut steep.triangles {
+        t.normal = v(0.0, 1e30, 0.0);
+    }
+    let stages = [
+        rich_stage(),
+        bare_stage(vec![degenerate]),
+        bare_stage(vec![steep]),
+        bare_stage(vec![floor_group(), empty_group()]),
+    ];
+    let mut filled = 0;
+    for (si, stage) in stages.iter().enumerate() {
+        for speed in [10.0, 1e4, 1e30, 1e300, f64::MAX, f64::INFINITY, f64::NAN] {
+            guarded(&format!("stage {si}, speed {speed}"), || {
+                let mut cfg = SimConfig::retry(1);
+                cfg.intro_frames = 26;
+                let mut sim = Sim::new(stage, cfg);
+                while sim.phase == Phase::Intro {
+                    sim.step(QuantizedInput::default());
+                }
+                for _ in 0..40 {
+                    sim.ball.pos = V3::new(0.0, 0.5, 0.0);
+                    sim.ball.vel = V3::new(0.0, -speed, 0.0);
+                    sim.step(QuantizedInput { x: 127, y: 0 });
+                    let _ = sim.hash_visual();
+                    assert!(sim.runtime.effects.len() <= MAX_BALL_EFFECTS);
+                    assert_eq!(sim.runtime.effects.capacity(), MAX_BALL_EFFECTS);
+                    if sim.runtime.effects.len() == MAX_BALL_EFFECTS {
+                        filled += 1;
+                    }
+                }
+            });
+        }
+    }
+    assert!(filled > 100, "the pool was full on {filled} ticks");
     let _ = done.send(());
 }
 

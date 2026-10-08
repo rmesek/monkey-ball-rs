@@ -2,8 +2,7 @@
 //! (intro, tilt, stage objects, ball step, fall-out, banana pickup, goal entry, timers, gameplay camera),
 //! one fixed 60 Hz tick per [`Sim::step`].
 //!
-//! Not modelled (render/UI/meta only): result replays, audio and effect triggers,
-//! course progression. A finished sequence is reported through [`Phase::Finished`] instead of loading the next
+//! Not modelled (render/UI/meta only): result replays, audio triggers, course progression. A finished sequence is reported through [`Phase::Finished`] instead of loading the next
 //! stage.
 
 use crate::ball::{check_ball_entered_goal, Ball, GoalHit, PhysicsCtx};
@@ -12,7 +11,7 @@ use crate::collision::{intersects_moving_spheres, PhysBall};
 use crate::constants::*;
 use crate::determinism::QuantizedInput;
 use crate::geom::StageGeom;
-use crate::hash::hash_sim_state;
+use crate::hash::{hash_sim_state, hash_sim_state_visual};
 use crate::math::*;
 use crate::stage_runtime::{
     BoundSphere, CameraRef, StageRuntime, BANANA_HOLD_FRAMES, BANANA_STATE_HOLDING,
@@ -43,6 +42,9 @@ pub struct SimConfig {
     pub goal_tape_anchor_y: f64,
     /// Replace the collision-derived fly-in bounds (the reference uses the stage model's bounds).
     pub bound_sphere: Option<BoundSphere>,
+    /// Simulate the display-only particles (`runtime.effects`, `runtime.confetti`). Off is the reference's
+    /// `suppressVisualEffects`; the simulation itself is the same either way.
+    pub visual_effects: bool,
 }
 
 impl SimConfig {
@@ -55,6 +57,7 @@ impl SimConfig {
             bonus_stage: (BONUS_STAGE_MIN_ID..=BONUS_STAGE_MAX_ID).contains(&stage_id),
             goal_tape_anchor_y: GOAL_TAPE_ANCHOR_Y,
             bound_sphere: None,
+            visual_effects: true,
         }
     }
 
@@ -169,6 +172,7 @@ impl Sim {
     pub fn new(stage: &Stage, cfg: SimConfig) -> Sim {
         let geom = StageGeom::from_stage(stage, cfg.stage_id);
         let mut runtime = StageRuntime::new(&geom, cfg.goal_tape_anchor_y);
+        runtime.visuals_enabled = cfg.visual_effects;
         runtime.reset_timer();
         runtime.update_anim_groups(&geom, 0.0);
         runtime.compute_bound_sphere(&geom);
@@ -231,6 +235,15 @@ impl Sim {
     /// `hashSimState([ball], [sharedWorld, playerWorld], stageRuntime)`.
     pub fn hash(&self) -> u32 {
         hash_sim_state(
+            &[&self.ball],
+            &[&self.shared_world, &self.world],
+            &self.runtime,
+        )
+    }
+
+    /// `hashSimState(.., { includeVisual: true })`: [`Sim::hash`] extended by the confetti and ball effects.
+    pub fn hash_visual(&self) -> u32 {
+        hash_sim_state_visual(
             &[&self.ball],
             &[&self.shared_world, &self.world],
             &self.runtime,
