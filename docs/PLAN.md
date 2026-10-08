@@ -34,10 +34,28 @@ takes.
 - Saves in two checksummed slots; the import is atomic; both survive a kill at any moment. The options screen
   shows what is kept on the device and removes it.
 
-Verified by `cargo test --workspace` (398 tests with the disc; without it the disc-backed ones skip) and `deno run -A scripts/web-e2e.ts` (60
+Verified by `cargo test --workspace` (406 tests with the disc; without it the disc-backed ones skip) and `deno run -A scripts/web-e2e.ts` (60
 checks in the installed Chrome). Not verified: a real phone, an Android web view, iOS, Firefox, Safari, a
 real gamepad, a full course played to its end by a person.
 
+## Open items
+
+Known when version 0.1.0 was cut. Each is small and none blocks play on the tested setups; they are the
+first things to look at when work resumes.
+
+| Item | State |
+|---|---|
+| Sound has never been listened to | Verified by signal measurement only (levels, no clipping, the right requests at the right times). Balance, and whether each sample is the right one, need ears. |
+| Phones | Nothing has run on a real phone, in an Android web view, on iOS, in Safari, or (by us) in Firefox. The project owner tried the site on their own phone (Firefox for Android among the browsers); the touch, tilt and file-chooser fixes came from those reports and were not confirmed there afterwards. |
+| File chooser on phones | The input asks for `application/octet-stream` so Firefox for Android stops asking for camera and "record audio" permission (`web/main.js`, "picking the file"). Unconfirmed on a device; a file manager that reports the image under another type would grey it out, hence the "show all files" button. |
+| Tilt steering | Recentres at stage load, at GO and from the on-screen crosshair button; the stick is hidden while tilt steers. If the device never delivers sensor readings (permission denied on iOS) there is no stick to fall back on: the player has to switch Options -> Controls back. Showing the stick again when no readings arrive would fix it (`mb-app/src/play.rs` `tilt_steering`, `mb-web` tilt feed). |
+| Continue rule | "Continue resets the score to 0 and keeps the banana counter" (`mb-game/src/run.rs`) comes from memory of the original, not from a source. Game over, 5 continues and a 1UP per 100 bananas likewise: the reference has none of them. |
+| Largest music track | About 54 MB of float samples in the browser (computed, not measured). 16-bit or segment-streamed music would cut it; not done because a sample-exact loop could not be verified. |
+| Desktop: dropping the image on the window | Not implemented (dialog and command line only). |
+| Pack version | `mb_assets::gamepack::VERSION` must be raised when the list of copied files changes; no test enforces it. |
+| CI workflow | `.github/workflows/ci.yml` (manual only) runs `cargo xtask check`; never triggered, and its Linux package list is unverified. Linux and macOS builds are untested; only Windows has been built and run. |
+| No fallback without workers | A browser without dedicated workers or `FileReaderSync` gets an "unsupported" message, by decision. |
+| 32-bit overflow fixes in the parsers | Made by inspection; no 32-bit test runner was available (the browser check exercises wasm32 on valid data only). |
 ## Decisions (recorded)
 
 - **Graphics:** `wgpu`, one API for desktop and browser; nothing beyond `downlevel_webgl2_defaults`.

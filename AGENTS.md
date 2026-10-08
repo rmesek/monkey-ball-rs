@@ -5,7 +5,8 @@ Guidance for AI agents and contributors working in `monkey-ball-rs`.
 ## Goal
 A Rust port of Super Monkey Ball 1 that mirrors WebMonkeyBall (TypeScript) as closely as possible, fully
 offline. Do not invent a new game, art, audio or levels. The current state, the recorded decisions and the
-list of possible next features are in `docs/PLAN.md`; keep it current.
+list of possible next features are in `docs/PLAN.md`; keep it current. **Start there when picking the work up:** its
+"Open items" table is the list of what is unverified or unfinished.
 
 ## The two targets
 Exactly two, and every change must keep both working:
@@ -46,8 +47,8 @@ user what is kept and lets them erase it; the game runs and survives a sudden ex
    reference's `netplay`, `netcode_protocol`, `rollback` and lobby code. The page makes no request except for
    its own bundle files, and its Content-Security-Policy says so. Deterministic simulation and `sim_hash`
    stay, for replays and tests.
-6. **Rust only** for the game. The exceptions are the page (`web/*.html`, `web/*.js`), the build and check
-   scripts, and the browser test (`scripts/web-e2e.ts`). Keep `mb-assets`, the parsers, `mb-audio`,
+6. **Rust only** for the game. The build tool is Rust too (`xtask`, standard library only; no shell scripts). The
+   exceptions are the page (`web/*.html`, `web/*.js`) and the browser test (`scripts/web-e2e.ts`). Keep `mb-assets`, the parsers, `mb-audio`,
    `mb-engine` and `mb-game` free of GPU, windowing and browser code.
 7. **Every third-party dependency needs a one-line justification** in its `Cargo.toml` and in the commit
    message. The recorded stack is in `docs/PLAN.md` and the root `Cargo.toml`. Remove a dependency when its

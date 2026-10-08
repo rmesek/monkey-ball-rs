@@ -153,7 +153,8 @@ disc image, and says what is missing otherwise.
 
 | | |
 |---|---|
-| [docs/PLAN.md](docs/PLAN.md) | current state, recorded decisions, possible next features |
+| [docs/PLAN.md](docs/PLAN.md) | current state, open items, recorded decisions, possible next features |
+| [CHANGELOG.md](CHANGELOG.md) | what each version contains |
 | [docs/WEB.md](docs/WEB.md) | the web site: build, hosting, storage model, browser requirements, measurements |
 | [docs/ANDROID_WEBVIEW.md](docs/ANDROID_WEBVIEW.md) | putting the site inside an Android app |
 | [docs/GAMEPLAY.md](docs/GAMEPLAY.md) | states, HUD, menus, controls, what is not ported |
