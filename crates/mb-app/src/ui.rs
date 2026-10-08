@@ -1,6 +1,6 @@
 //! Responsive, touch-first UI primitives: safe-area insets, portrait/landscape layout, HUD scale, big tap
 //! targets and an on-screen virtual stick + buttons that feed [`InputState`]. Pure maths (no GPU, no
-//! windowing) so it is unit-tested and shared by desktop, Android and web shells.
+//! windowing) so it is unit-tested and shared by the desktop and web shells.
 
 use std::collections::HashMap;
 

@@ -5,7 +5,7 @@
 #   needs: rustup target add wasm32-unknown-unknown
 #          cargo install wasm-bindgen-cli --version <the wasm-bindgen version in Cargo.lock> --locked
 # web/dist/ is a static site: host it anywhere, or try it with the developer server:
-#   cargo run -p xtask -- serve-web
+#   cd web/dist && python -m http.server 8080      (then open http://localhost:8080/)
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root"
@@ -58,4 +58,4 @@ fi
 cargo run --quiet -p xtask --target-dir "$target_dir" -- "${bundle[@]}"
 
 size="$(wc -c < "$root/web/dist/pkg/mb_web_bg.wasm")"
-echo "built web/dist ($((size / 1024)) KiB wasm). Try it with: cargo run -p xtask -- serve-web"
+echo "built web/dist ($((size / 1024)) KiB wasm). Serve it with: cd web/dist; python -m http.server 8080"

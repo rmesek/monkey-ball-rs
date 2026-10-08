@@ -1,6 +1,6 @@
 # Plan
 
-Goal: a Rust parser and engine mirroring WebMonkeyBall, fully offline. SMB1 first. Two stages.
+Goal: a Rust parser and engine mirroring WebMonkeyBall, fully offline. SMB1 first.
 
 ## Stage 1 (current goal): complete playable game on desktop and web browser (WASM)
 The full offline Super Monkey Ball loop, running on native desktop and in modern browsers through
@@ -12,7 +12,7 @@ WebAssembly with WebGPU or the WebGL2 fallback.
 - **Complete gameplay.** Level/course select, deterministic 60 Hz physics (stage tilt, sphere rolling,
   collision, camera tracking, goal triggers, fall-out resets), lives/score/timer HUD, next-floor progression.
 - **Decoupled input.** Desktop keyboard/gamepad and web controls map to normalized tilt/action values in
-  `InputState`; nothing above the shells sees a device. Stage 2 injects gyro and touch through the same seam.
+  `InputState`; nothing above the shells sees a device. Touch and device tilt come in through the same seam.
 - **Low-power, web-friendly graphics.** Cached GPU buffers and textures, shared pipelines, per-frame uniform
   updates only; nothing beyond WebGL2 downlevel limits.
 
@@ -32,42 +32,53 @@ binary and the browser build both open the RVZ, show the level select, play a st
 fall-out with a retry, and advance to the next floor.
 
 ### Status
-Stage 1 is implemented and verified (2026-10-08):
+Implemented and verified (2026-10-08):
 - Desktop: `cargo run -p mb-app --release -- "<rvz>"` (or no argument for a file dialog) opens the title menu;
   Course Play and Practice run from fly-in to goal with HUD, pause, retry, game over/continue and saving.
-  Headless autoplay (`--autoplay 1 --screenshot-dir <dir>`) walks the menu and reaches the goal; integration
-  tests in `crates/mb-app/tests/gameplay.rs` cover goal -> next floor, fall-out -> retry, game over/continue.
-- Browser: `scripts/build-web.ps1` then `cargo run -p xtask -- serve-web`; the page takes the RVZ by picker or
-  drop, shows the menu, plays Beginner floor 1 to the goal and loads floor 2, on WebGPU and WebGL2; progress is
-  saved in `localStorage`.
+  Headless autoplay (`--autoplay 1 --screenshot-dir <dir>`) walks the menu and reaches the goal.
+- Browser: `scripts/build-web.*` produces the static site `web/dist/` (and, with `--single`, one
+  self-contained `.html`); served by `python -m http.server` the page imports the picked image once into
+  on-device storage (144 MB of 475 MB), starts without a picker afterwards, and plays on WebGPU and WebGL2.
+  Without storage (plain http on a network address, a page opened from disk) it plays from the picked file.
+  `deno run -A scripts/web-e2e.ts` checks all of this in the installed Chrome.
+- Touch-only menus (scrolling, Back button), device tilt, stage loading with a progress screen, in-place
+  retry after a lost life, load failures reported in the menu, crash-safe saves and import.
 - Gates: `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
   `cargo test --workspace`, and wasm32 clippy for `mb-web` are clean.
 
-Not verified: a real phone, a real gamepad, Firefox/Safari, a full course played to its end.
+Not verified: a real phone, an Android web view, iOS, Firefox/Safari, a real gamepad, a full course played to
+its end.
 
-Not in Stage 1 (see `docs/GAMEPLAY.md` for the full list): the monkey's voices, the monkey
-inside the ball, ball shadow, goal confetti and other effects, result replays, SMB2 content, minigames, Android packaging.
-## Stage 2 (next target): standalone Android APK
-Native Android packaging with `android-activity`, gyro tilt through `SensorManager` feeding the tilt axes of
-`InputState`, on-screen touch controls (the layout maths already lives in `mb-app::ui`), disc import through the
-Storage Access Framework, safe-area insets, suspend/resume surface handling.
+Not in scope (see `docs/GAMEPLAY.md` for the full list): the monkey's voices, the monkey inside the ball, ball
+shadow, goal confetti and other effects, result replays, SMB2 content, minigames.
+
+## Targets
+Exactly two: the desktop executable and the static web site. There is no native Android target; the site is
+plain files with relative paths, no server-side component and no dependency on a service worker, with WebGL2
+as a first-class backend, so it can be placed inside another application's web view by whoever packages one.
 
 ## Asset policy
-Code only. The engine reads the user's own disc image through a pack-provider trait (disc, directory, memory
+Code only. The engine reads the user's own disc image through a pack-provider trait (disc image, imported pack, memory
 backends). The repo never contains or fetches original game files.
 
 ## Decisions (recorded)
-- Graphics: `wgpu` (Vulkan/Metal/DX12/GL + WebGPU/WebGL2): one API for desktop, browser and Android.
-- Windowing/input: `winit` (desktop, web canvas, Android via android-activity).
-- Disc reading: `nod` (feature `disc`) on native. nod's RVZ reader calls `std::time::Instant` and panics on
-  wasm32, so the browser uses the pure-Rust GameCube RVZ reader in `mb-assets::rvz` (compression "none" and
-  Zstandard via `ruzstd`; verified byte-identical to nod over the whole disc with `xtask check-rvz`) and nod only
-  parses the resulting ISO stream. RVZ with bzip2/LZMA/LZMA2, WIA and GCZ are refused in the browser with a message.
-- Web: `wasm-bindgen` + `web-sys`, built with `wasm-bindgen-cli`; the disc image stays on the JS heap in 8 MiB
-  pieces and only requested ranges are copied into wasm memory (see `docs/WEB.md`).
+- Graphics: `wgpu` (Vulkan/Metal/DX12/GL + WebGPU/WebGL2): one API for desktop and browser.
+- Windowing/input: `winit` (desktop, web canvas).
+- Disc reading: the project's own readers in `mb-assets` on every target: `rvz.rs` (RVZ, none and Zstandard
+  via `ruzstd`) and `disc.rs` (GameCube header, file table, `main.dol`), plain ISO/GCM included. The `nod` crate
+  is a dev-dependency of the comparison test and of `xtask check-rvz` only (identical over the whole tested
+  disc). Other containers are refused with a message that says what the file is and what is supported.
+- Web: `wasm-bindgen` + `web-sys`, built with `wasm-bindgen-cli --target no-modules` (classic scripts, so the
+  same glue runs in the page, in the import worker and inlined in the single file). The disc image is never
+  held in memory: a worker copies the files the game uses into one pack in the Origin Private File System
+  (or serves them from the picked file where that is unavailable); the game prepares files asynchronously
+  before each state that needs them (see `docs/WEB.md`).
+- Saves: two checksummed slots per value (`mb_game::SlotStorage`) over files (desktop), the private file
+  system or `localStorage` (browser): crash-safe without relying on an atomic rename.
+- Hosting: any static server; the reference is `python -m http.server`. There is no project web server.
 - Parsers (`mb-tpl`, `mb-gma`, `mb-stage`) are std-only.
-- Audio: `mb-audio` decodes and mixes with no output dependency; device output is `cpal` on native (desktop,
-  Android in Stage 2) and Web Audio (`web-sys`) in the browser, where the browser does the mixing. See `docs/AUDIO.md`.
+- Audio: `mb-audio` decodes and mixes with no output dependency; device output is `cpal` on desktop and Web
+  Audio (`web-sys`) in the browser, where the browser does the mixing. See `docs/AUDIO.md`.
 
 ## Scope rule: strictly offline
 No networking of any kind: no multiplayer, lobbies, netplay, rollback netcode, WebRTC, telemetry, update checks or

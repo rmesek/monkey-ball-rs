@@ -9,7 +9,7 @@ publish.workspace = true
 [dependencies]
 mb-gma = { path = "../mb-gma" }
 mb-tpl = { path = "../mb-tpl" }
-# GPU API for desktop, Android and browser (decision recorded in docs/PLAN.md). The caller owns the
+# GPU API for desktop and browser (decision recorded in docs/PLAN.md). The caller owns the
 # Device/Queue/Surface; this crate never creates windows. Default features keep all native backends.
 wgpu = "30"
 # Plain-old-data casts for uniform/vertex buffers (tiny, no deps beyond derive).

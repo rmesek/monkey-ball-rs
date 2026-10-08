@@ -51,6 +51,8 @@ const NOTICE_COLOR: Color = rgb(0xff8c60);
 /// A notice is wrapped to lines of about this many characters, at most [`NOTICE_LINES`] of them.
 const NOTICE_WIDTH: usize = 30;
 const NOTICE_LINES: usize = 4;
+/// Storage lines on the options screen (they hold paths) are wrapped to this many characters.
+const INFO_WIDTH: usize = 46;
 
 /// Jump straight into a stage or course when the menu opens (developer command line, autoplay).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -149,6 +151,8 @@ enum OptionRow {
     TiltRange,
     Fullscreen,
     RemoveData,
+    ForgetImage,
+    EraseSaves,
     Back,
 }
 
@@ -211,8 +215,8 @@ pub struct Menu {
     back_tap: Tap,
     /// Scroll the list to its selection at the next layout (a screen just opened).
     reveal: bool,
-    /// "Remove game data" was chosen once; choosing it again does it.
-    confirm_remove: bool,
+    /// A destructive options row was chosen once; choosing the same row again does it.
+    confirm: Option<OptionRow>,
 }
 
 impl Menu {
@@ -227,15 +231,15 @@ impl Menu {
             report: PlayReport::new(),
             notice: None,
             autostart: None,
-            // A page or an Android activity is left through the system, not from a menu entry.
-            allow_quit: cfg!(not(any(target_arch = "wasm32", target_os = "android"))),
+            // A page is left through the browser, not from a menu entry.
+            allow_quit: cfg!(not(target_arch = "wasm32")),
             texture_base: 0,
             audio: Audio::silent(),
             shared: StageShared::default(),
             parked: None,
             back_tap: Tap::default(),
             reveal: true,
-            confirm_remove: false,
+            confirm: None,
         }
     }
 
@@ -274,6 +278,10 @@ impl Menu {
         if caps.remove_data {
             rows.push(OptionRow::RemoveData);
         }
+        if caps.forget_image {
+            rows.push(OptionRow::ForgetImage);
+        }
+        rows.push(OptionRow::EraseSaves);
         rows.push(OptionRow::Back);
         rows
     }
@@ -337,7 +345,7 @@ impl Menu {
         self.screen = screen;
         self.list = ListState::new(selected);
         self.reveal = true;
-        self.confirm_remove = false;
+        self.confirm = None;
     }
 
     fn unlock_all(&self) -> bool {
@@ -413,6 +421,12 @@ impl Menu {
                 lines
             }
             Screen::StageSelect(_) => vec![("PICK A STAGE".into(), INFO_COLOR)],
+            // What is kept on this device and where, so it can be found and removed.
+            Screen::Options => host::info()
+                .iter()
+                .flat_map(|line| wrap(&line.to_uppercase(), INFO_WIDTH, 2))
+                .map(|line| (line, INFO_COLOR))
+                .collect(),
             _ => Vec::new(),
         }
     }
@@ -510,8 +524,10 @@ impl Menu {
                         OptionRow::Fullscreen => {
                             row_with("FULLSCREEN", on_off(host::is_fullscreen()), true)
                         }
-                        OptionRow::RemoveData if self.confirm_remove => row("TAP AGAIN TO REMOVE"),
+                        r if self.confirm == Some(r) => row("TAP AGAIN TO CONFIRM"),
                         OptionRow::RemoveData => row("REMOVE GAME DATA"),
+                        OptionRow::ForgetImage => row("FORGET GAME IMAGE"),
+                        OptionRow::EraseSaves => row("ERASE SAVE DATA"),
                         OptionRow::Back => row("BACK"),
                     })
                     .collect()
@@ -761,7 +777,43 @@ impl Menu {
             }
             Screen::Options => {
                 let chosen = self.option_rows().get(index).copied();
-                let confirming = std::mem::take(&mut self.confirm_remove);
+                let confirmed = self.confirm.take();
+                if let Some(
+                    r @ (OptionRow::RemoveData | OptionRow::ForgetImage | OptionRow::EraseSaves),
+                ) = chosen
+                {
+                    // Deleting wants a second tap on the same row.
+                    if confirmed != Some(r) {
+                        self.confirm = Some(r);
+                        return Transition::None;
+                    }
+                    match r {
+                        OptionRow::RemoveData => host::post(host::Command::RemoveGameData),
+                        OptionRow::ForgetImage => {
+                            self.notice =
+                                Some(match self.storage.remove(crate::content::LAST_DISC_KEY) {
+                                    Ok(()) => {
+                                        "THE GAME IMAGE WILL BE ASKED FOR AT THE NEXT START".into()
+                                    }
+                                    Err(e) => {
+                                        format!("COULD NOT FORGET THE IMAGE: {e}").to_uppercase()
+                                    }
+                                });
+                        }
+                        _ => {
+                            let erased = (self.storage.remove(mb_game::progress::PROFILE_KEY))
+                                .and(self.storage.remove(mb_game::progress::BACKUP_KEY));
+                            self.profile = Profile::default();
+                            self.apply_volumes();
+                            self.apply_controls();
+                            self.notice = Some(match erased {
+                                Ok(()) => "SAVE DATA ERASED".into(),
+                                Err(e) => format!("COULD NOT ERASE: {e}").to_uppercase(),
+                            });
+                        }
+                    }
+                    return Transition::None;
+                }
                 let s = &mut self.profile.settings;
                 match chosen {
                     Some(OptionRow::UnlockAll) => s.unlock_all = !s.unlock_all,
@@ -794,16 +846,13 @@ impl Menu {
                         host::post(host::Command::SetFullscreen(!host::is_fullscreen()));
                         return Transition::None;
                     }
-                    Some(OptionRow::RemoveData) => {
-                        // Deleting what took a minute to import wants a second tap.
-                        if confirming {
-                            host::post(host::Command::RemoveGameData);
-                        } else {
-                            self.confirm_remove = true;
-                        }
-                        return Transition::None;
-                    }
-                    Some(OptionRow::Back) | None => {
+                    Some(
+                        OptionRow::Back
+                        | OptionRow::RemoveData
+                        | OptionRow::ForgetImage
+                        | OptionRow::EraseSaves,
+                    )
+                    | None => {
                         self.go(Screen::Title, 2);
                         return Transition::None;
                     }
@@ -1073,6 +1122,7 @@ impl Game for Menu {
                 .update(ctx.input, back_button_rect(&ctx.layout), ctx.dt);
         if back || ctx.input.pressed(Action::Cancel) {
             self.notice = None;
+            self.confirm = None;
             self.audio.play(Sfx::MenuCancel);
             transition = self.back();
         } else if let Some(i) = self.list.update(ctx.input, &layout, &enabled, ctx.dt) {
@@ -1187,8 +1237,68 @@ mod tests {
         assert_eq!(saved.settings.announcer_volume, 0);
         assert_eq!(volume_label(0), "OFF");
         assert_eq!(next_volume(95), 100);
+        // "Erase save data" asks first: one tap arms it, moving on disarms it, two taps do it.
+        let labels = |m: &Menu| -> Vec<String> { m.rows().into_iter().map(|r| r.label).collect() };
+        assert_eq!(labels(&m)[5..], ["ERASE SAVE DATA", "BACK"]);
         m.activate(5);
+        assert_eq!(labels(&m)[5], "TAP AGAIN TO CONFIRM");
+        assert!(m.profile.settings.unlock_all, "nothing erased yet");
+        m.activate(2);
+        assert_eq!(labels(&m)[5], "ERASE SAVE DATA");
+        m.activate(5);
+        m.activate(5);
+        assert_eq!(m.profile, Profile::default());
+        assert_eq!(m.notice.as_deref(), Some("SAVE DATA ERASED"));
+        let (saved, warning) = Profile::load(m.storage.as_mut());
+        assert_eq!((saved, warning), (Profile::default(), None));
+        m.activate(6);
         assert_eq!(m.screen_name(), "title");
+    }
+
+    /// Rows that only some platforms have appear when the platform says so, and the options screen says
+    /// where data is kept.
+    #[test]
+    fn platform_rows_and_storage_info_follow_the_host() {
+        let mut m = menu();
+        m.go(Screen::Options, 0);
+        host::set_caps(host::Caps {
+            remove_data: true,
+            fullscreen: true,
+            tilt: true,
+            forget_image: true,
+        });
+        host::set_info(vec!["Game data: 137 MB in this browser".into()]);
+        let labels: Vec<String> = m.rows().into_iter().map(|r| r.label).collect();
+        assert_eq!(
+            labels[5..],
+            [
+                "CONTROLS",
+                "FULLSCREEN",
+                "REMOVE GAME DATA",
+                "FORGET GAME IMAGE",
+                "ERASE SAVE DATA",
+                "BACK"
+            ]
+        );
+        assert_eq!(m.info()[0].0, "GAME DATA: 137 MB IN THIS BROWSER");
+        // Tilt adds its range row; removing data and forgetting the image want a second tap.
+        m.activate(5);
+        assert_eq!(m.rows()[6].label, "TILT RANGE");
+        m.activate(8);
+        assert!(host::drain()
+            .iter()
+            .all(|c| !matches!(c, host::Command::RemoveGameData)));
+        m.activate(8);
+        assert!(host::drain().contains(&host::Command::RemoveGameData));
+        m.storage
+            .write(crate::content::LAST_DISC_KEY, b"C:/x.rvz")
+            .unwrap();
+        m.activate(9);
+        m.activate(9);
+        assert_eq!(m.storage.read(crate::content::LAST_DISC_KEY).unwrap(), None);
+        assert!(m.notice.as_deref().unwrap().contains("NEXT START"));
+        host::set_caps(host::Caps::default());
+        host::set_info(Vec::new());
     }
 
     /// The flow without a renderer: results are applied to the run exactly as when a stage pops.

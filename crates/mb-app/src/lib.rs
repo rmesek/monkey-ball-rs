@@ -20,7 +20,7 @@ pub mod anim;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod app;
 pub mod audio;
-// Device output through cpal: desktop and (later) Android. The browser shell has its own Web Audio backend.
+// Device output through cpal on desktop. The browser shell has its own Web Audio backend.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod audio_cpal;
 pub mod autopilot;

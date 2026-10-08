@@ -25,6 +25,10 @@ use mb_game::Difficulty;
 
 use crate::stage_info::{bg_by_name, bg_for_stage_or_nearest, BgInfo};
 
+/// Storage key under which the desktop program remembers the path of the disc image (the image itself is
+/// read in place and never copied).
+pub const LAST_DISC_KEY: &str = "last_disc";
+
 /// State of an asynchronous fetch.
 pub enum Fetch {
     /// Nothing was requested (or the result was already handed over).

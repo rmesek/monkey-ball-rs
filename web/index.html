@@ -11,6 +11,7 @@
 <meta http-equiv="Content-Security-Policy"
       content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; worker-src 'self'; manifest-src 'self'">
 <!--/build:csp-->
+<!--build:version--><!--/build:version-->
 <title>Monkey Ball (Rust)</title>
 <!--build:head-->
 <link rel="manifest" href="./manifest.webmanifest">
@@ -102,14 +103,19 @@
   <main id="landing">
     <div class="card">
       <h1>Monkey Ball, Rust port</h1>
-      <p>This page contains only the engine. To play you need <strong>your own disc image</strong> of
-         Super Monkey Ball (GameCube).</p>
+      <p>This page contains only the engine. To play you need <strong>your own game file</strong>: a disc
+         image of <strong>Super Monkey Ball</strong> for the Nintendo GameCube (2001).</p>
       <ol id="steps">
-        <li><strong>Choose the disc image</strong>: an <code>.rvz</code>, <code>.iso</code> or
-            <code>.gcm</code> file.</li>
-        <li>The page <strong>copies the game's files</strong> (about 145 MB) out of it into this browser's
-            storage on this device. That takes a moment and happens once.</li>
-        <li><strong>Play.</strong> From then on the game starts without asking for the file again.</li>
+        <li><strong>Choose the game file.</strong> Accepted: an RVZ image (uncompressed or Zstandard) or a
+            plain ISO / GCM image, of the USA disc (id GMBE8P, the tested one), the European disc (GMBP8P) or
+            the Japanese disc (GMBJ8P). A typical file is
+            <code>Super&nbsp;Monkey&nbsp;Ball&nbsp;(USA).rvz</code>, about 475 MB.</li>
+        <li id="step-keep">The page copies the files the game uses (about 145 MB) out of it into this
+            browser's private storage on this device. That takes a few seconds and happens once; the big
+            file itself is not kept.</li>
+        <li><strong>Play.</strong> From then on the game starts without asking for the file again. The game
+            data and your saves stay on this device until you remove them (Options in the game, or the
+            button below).</li>
       </ol>
 
       <div id="drop">

@@ -1,5 +1,6 @@
 //! The seam between game states and the platform shell for the few things only the platform can do:
-//! leaving or entering fullscreen, deleting the imported game data, switching device tilt on.
+//! leaving or entering fullscreen, deleting the imported game data, switching device tilt on; and for what
+//! only the platform knows: where the game's data and saves are kept ([`info`]).
 //!
 //! States never see the platform. They read what it offers ([`caps`], set once by the shell before the game
 //! starts) and post [`Command`]s; the shell drains them once per frame ([`drain`]) and reports back the
@@ -15,6 +16,8 @@ pub struct Caps {
     pub fullscreen: bool,
     /// The device reports its orientation, so tilt can steer.
     pub tilt: bool,
+    /// The path of the disc image is remembered between runs and can be forgotten (desktop).
+    pub forget_image: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -32,7 +35,10 @@ pub enum Command {
 }
 
 thread_local! {
-    static CAPS: Cell<Caps> = const { Cell::new(Caps { remove_data: false, fullscreen: false, tilt: false }) };
+    static CAPS: Cell<Caps> = const {
+        Cell::new(Caps { remove_data: false, fullscreen: false, tilt: false, forget_image: false })
+    };
+    static INFO: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
     static FULLSCREEN: Cell<bool> = const { Cell::new(false) };
     static QUEUE: RefCell<Vec<Command>> = const { RefCell::new(Vec::new()) };
 }
@@ -44,6 +50,16 @@ pub fn set_caps(caps: Caps) {
 
 pub fn caps() -> Caps {
     CAPS.with(Cell::get)
+}
+
+/// Shell: what is kept on this device and where (game data, saves), one short line each. The options
+/// screen shows it, so the player knows what takes up space and can remove it.
+pub fn set_info(lines: Vec<String>) {
+    INFO.with(|i| *i.borrow_mut() = lines);
+}
+
+pub fn info() -> Vec<String> {
+    INFO.with(|i| i.borrow().clone())
 }
 
 /// Shell: the page is (not) fullscreen now.

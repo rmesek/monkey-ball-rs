@@ -96,21 +96,34 @@ fn the_import_copies_exactly_what_the_game_reads() {
         importer.total_bytes() as f64 / 1e6,
         bytes.len()
     );
-    // By kind, for the documentation.
-    let mut kinds = [("music", 0u64), ("sounds", 0), ("stages", 0), ("other", 0)];
+    // By kind, for the documentation: everything in the pack is something a loader reads.
+    let mut kinds = [
+        ("stages", 0u64),
+        ("backgrounds", 0),
+        ("shared models", 0),
+        ("HUD and fonts", 0),
+        ("music", 0),
+        ("sound effects", 0),
+        ("executable", 0),
+    ];
     for name in pack.index().names() {
         let len = u64::from(pack.index().get(name).unwrap().len);
-        let kind = if name.contains("/snd/adp/") {
-            0
-        } else if name.contains("/snd/") {
-            1
-        } else if name.contains("/st") || name.contains("/bg/") {
-            2
-        } else {
-            3
+        let kind = match name {
+            n if n.contains("/snd/adp/") => 4,
+            n if n.contains("/snd/") => 5,
+            n if n.contains("/bg/") => 1,
+            n if n.contains("/init/") => 2,
+            n if n.contains("/bmp/") => 3,
+            n if n.starts_with("sys/") => 6,
+            n if n.contains("/st") => 0,
+            other => panic!("{other} is in the pack but belongs to no category"),
         };
         kinds[kind].1 += len;
     }
+    assert_eq!(
+        kinds.iter().map(|k| k.1).sum::<u64>(),
+        importer.total_bytes()
+    );
     eprintln!("  {kinds:?}");
 }
 
@@ -411,4 +424,59 @@ fn a_stage_that_fails_to_load_returns_to_the_menu_with_a_notice() {
     assert!(h.top().unwrap().notice().is_none());
     assert_eq!(content.prepared_bytes(), 0);
     h.shutdown();
+}
+
+/// The import protocol against a sudden exit: the importer's writes (file pieces in order, then the index,
+/// then the header) are replayed onto an empty file and cut off after every possible number of them. What
+/// is left is never accepted as a pack until the very last write has landed, so a start after a crash
+/// always sees "no game data" (and cleans up), never a half-imported game.
+#[test]
+fn an_import_cut_off_after_any_write_is_never_taken_for_a_pack() {
+    let Some(disc) = find_disc() else {
+        eprintln!("skipped: no disc image (set MB_DISC)");
+        return;
+    };
+    // Record the writes: (offset, bytes).
+    let mut importer = Importer::open(FileStream::open(&disc).unwrap()).unwrap();
+    let mut writes: Vec<(u64, Vec<u8>)> = Vec::new();
+    while let Some((at, bytes)) = importer.step().unwrap() {
+        writes.push((at, bytes.to_vec()));
+    }
+    let done = importer.finish().unwrap();
+    writes.push((done.index_offset, done.index.clone()));
+    writes.push((0, done.header.to_vec()));
+    assert!(writes.len() > 100, "{} writes", writes.len());
+
+    // The file as it grows. Checking a prefix of the writes costs a header parse, so every count is tried.
+    let mut file: Vec<u8> = Vec::new();
+    let apply = |file: &mut Vec<u8>, (at, bytes): &(u64, Vec<u8>)| {
+        let at = *at as usize;
+        if file.len() < at + bytes.len() {
+            file.resize(at + bytes.len(), 0);
+        }
+        file[at..at + bytes.len()].copy_from_slice(bytes);
+    };
+    for (n, write) in writes.iter().enumerate() {
+        let header = mb_assets::gamepack::Header::parse(&file, file.len() as u64);
+        assert!(
+            header.is_err(),
+            "accepted after only {n} of {} writes",
+            writes.len()
+        );
+        // A write that itself was cut short (half of its bytes) is no better.
+        let half = (write.0, write.1[..write.1.len() / 2].to_vec());
+        let mut torn = file.clone();
+        apply(&mut torn, &half);
+        if n + 1 == writes.len() {
+            assert!(
+                PackBytes::open(torn).is_err(),
+                "accepted with half a header"
+            );
+        } else {
+            assert!(mb_assets::gamepack::Header::parse(&torn, torn.len() as u64).is_err());
+        }
+        apply(&mut file, write);
+    }
+    let pack = PackBytes::open(file).expect("complete after the last write");
+    assert!(pack.index().len() > 300);
 }

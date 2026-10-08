@@ -21,4 +21,4 @@ pub use course::{Course, Difficulty, FloorEntry};
 pub use play::{PlayMode, PlayReport, PlayRequest, PlayResult};
 pub use progress::{Profile, Progress, Settings};
 pub use run::{CourseRun, Floor, GoalType, Rules, StageOutcome, Step};
-pub use storage::{FileStorage, MemoryStorage, Storage};
+pub use storage::{FileStorage, MemoryStorage, SlotStorage, Storage};

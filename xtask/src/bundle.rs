@@ -149,6 +149,7 @@ pub fn run(opts: Options) -> Result<(), String> {
         hasher.update(bytes);
         write(&opts.out.join(name), bytes)
     };
+    // The page itself is hashed before the version is stamped into it, and written afterwards.
     put("index.html", hosted.as_bytes())?;
     for name in STATIC_FILES {
         let path = opts.web.join(name);
@@ -163,6 +164,18 @@ pub fn run(opts: Options) -> Result<(), String> {
         put(name, &read(&pkg_file(name))?)?;
     }
     let version = hex(&hasher.finish()[..8]);
+    // Every reference to a bundle file carries the version, so a server that sends no cache headers
+    // (python -m http.server) cannot pair an old script with a new engine.
+    let stamp = format!("<meta name=\"mb-version\" content=\"{version}\">");
+    let mut hosted = replace_block(&hosted, "version", &stamp)?;
+    for file in ["./pkg/mb_web.js", "./main.js"] {
+        let reference = format!("src=\"{file}\"");
+        if !hosted.contains(&reference) {
+            return Err(format!("index.html no longer loads {file}"));
+        }
+        hosted = hosted.replace(&reference, &format!("src=\"{file}?v={version}\""));
+    }
+    write(&opts.out.join("index.html"), hosted.as_bytes())?;
     let mut files = vec!["./".to_string(), "index.html".to_string()];
     files.extend(STATIC_FILES.iter().chain(&PKG_FILES).map(|f| f.to_string()));
     let list = files
@@ -223,6 +236,7 @@ pub fn run(opts: Options) -> Result<(), String> {
             base64(&wasm)
         );
         let mut single = replace_block(&index, "csp", &csp)?;
+        single = replace_block(&single, "version", "")?;
         single = replace_block(&single, "head", &head)?;
         single = replace_block(&single, "scripts", &scripts)?;
         let path = opts.out.join(SINGLE_FILE);
@@ -418,8 +432,10 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("mb-bundle-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         let web = dir.join("web");
-        let index = "<head>\n<!--build:csp-->\n<meta csp>\n<!--/build:csp-->\n<!--build:head-->\n<link manifest>\n\
-                     <!--/build:head-->\n</head><body>\n<!--build:scripts-->\n<script src=x></script>\n\
+        let index = "<head>\n<!--build:csp-->\n<meta csp>\n<!--/build:csp-->\n\
+                     <!--build:version--><!--/build:version-->\n<!--build:head-->\n<link manifest>\n\
+                     <!--/build:head-->\n</head><body>\n<!--build:scripts-->\n\
+                     <script src=\"./pkg/mb_web.js\"></script>\n<script src=\"./main.js\"></script>\n\
                      <!--/build:scripts-->\n</body>";
         write(&web.join("index.html"), index.as_bytes()).unwrap();
         for name in STATIC_FILES {
@@ -468,8 +484,20 @@ mod tests {
         assert_eq!(listed(&out.join("pkg")), ["mb_web.js", "mb_web_bg.wasm"]);
         let hosted = fs::read_to_string(out.join("index.html")).unwrap();
         assert!(hosted.contains("<meta csp>") && !hosted.contains("build:"));
+        let version = hosted
+            .split("name=\"mb-version\" content=\"")
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .expect("the page carries the build version");
+        assert_eq!(version.len(), 16);
+        assert!(hosted.contains(&format!("src=\"./main.js?v={version}\"")));
+        assert!(hosted.contains(&format!("src=\"./pkg/mb_web.js?v={version}\"")));
         let sw = fs::read_to_string(out.join("sw.js")).unwrap();
         assert!(sw.contains("\"pkg/mb_web_bg.wasm\"") && !sw.contains("__MB_"));
+        assert!(
+            sw.contains(&format!("\"{version}\"")),
+            "the cache is named by the same version"
+        );
         assert!(!sw.contains("dev"));
         // Line ends are normalised, so the hash in the policy is over what the browser parses.
         assert!(!fs::read_to_string(out.join("main.js"))
@@ -485,6 +513,7 @@ mod tests {
         assert!(single.contains("connect-src 'none'") && single.contains("id=\"mb-wasm\""));
         assert!(single.contains("data-encoding=\"none\">AGFzbQ==</script>"));
         assert!(!single.contains("manifest") && !single.contains("sw.js"));
+        assert!(!single.contains("mb-version") && !single.contains("build:"));
         // A second run starts from a clean directory.
         write(&out.join("stale.txt"), b"x").unwrap();
         let mut opts = parse_args(std::iter::empty(), web).unwrap();

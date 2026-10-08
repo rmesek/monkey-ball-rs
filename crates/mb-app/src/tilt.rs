@@ -1,5 +1,5 @@
 //! Device tilt as a steering input: turns the orientation a phone reports into the `TiltX` / `TiltY` axes of
-//! [`crate::input::InputState`]. Pure maths, so the browser shell (and later the Android one) only forward
+//! [`crate::input::InputState`]. Pure maths, so the browser shell only forwards
 //! raw sensor angles.
 //!
 //! Angles are the W3C `deviceorientation` ones in degrees: `beta` is the front-to-back tilt (positive when

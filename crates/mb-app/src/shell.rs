@@ -1,10 +1,9 @@
-//! Shared windowed driver for the mobile and browser shells (`mb-android`, `mb-web`).
+//! Windowed driver for the browser shell (`mb-web`).
 //!
 //! The desktop driver in [`crate::app`] blocks on GPU setup and uses `std::time`; neither works in the
-//! browser (no blocking, `Instant::now` panics), and Android additionally loses its surface on suspend.
-//! This driver therefore (a) runs GPU setup through a [`Platform::run_local`] hook so the web shell can spawn it
-//! on the JS event loop, (b) uses `web_time` clocks, and (c) drops/recreates only the surface across
-//! suspend/resume. Platform specifics (safe-area insets, gamepad, tilt, error display) are the [`Platform`] trait.
+//! browser (no blocking, `Instant::now` panics). This driver therefore (a) runs GPU setup through a
+//! [`Platform::run_local`] hook so the web shell can spawn it on the JS event loop and (b) uses `web_time`
+//! clocks. Platform specifics (safe-area insets, gamepad, tilt, error display) are the [`Platform`] trait.
 //!
 //! Frame pacing: the event loop sleeps (`ControlFlow::Wait`) and every frame asks for the next one with
 //! `request_redraw`, which is `requestAnimationFrame` in the browser and the compositor's frame callback
@@ -49,6 +48,13 @@ pub trait Platform: 'static {
     /// Called every frame with the top state's [`Game::nav_depth`]: while it is not zero a system "back"
     /// should go back inside the game instead of leaving it.
     fn on_nav_depth(&mut self, _depth: u32) {}
+    /// Whether the shell wants [`Platform::on_status`] this frame (building the text costs an allocation,
+    /// so it is only done on request: automated checks).
+    fn wants_status(&mut self) -> bool {
+        false
+    }
+    /// The top state's status line (`Game::status`), when asked for.
+    fn on_status(&mut self, _status: String) {}
     /// Drive a future to completion. Native blocks; the web shell spawns it on the JS event loop.
     fn run_local(&mut self, fut: Pin<Box<dyn Future<Output = ()>>>) {
         pollster::block_on(fut);
@@ -103,7 +109,7 @@ type GpuInit = Result<(wgpu::Surface<'static>, Gpu), String>;
 
 struct Live {
     window: Arc<Window>,
-    /// `None` while suspended (Android destroys the native window surface).
+    /// Always present once set up (kept optional so a frame without a surface is simply skipped).
     surface: Option<wgpu::Surface<'static>>,
     config: wgpu::SurfaceConfiguration,
     gpu: Gpu,
@@ -430,6 +436,9 @@ impl<P: Platform> Shell<P> {
             return;
         };
         self.platform.on_nav_depth(top.nav_depth());
+        if self.platform.wants_status() {
+            self.platform.on_status(top.status());
+        }
         let camera = top.camera();
         let animating = top.play_view().is_some_and(|v| !v.paused);
         let ticks = match (tick_before, top.play_view().map(|v| v.sim.tick)) {
@@ -484,27 +493,7 @@ impl<P: Platform> Shell<P> {
 
 impl<P: Platform> ApplicationHandler for Shell<P> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if let Some(st) = self.live.as_mut() {
-            // Android resume: the native window is new, so make a fresh surface for the existing device.
-            if st.surface.is_none() {
-                match st.gpu.instance.create_surface(st.window.clone()) {
-                    Ok(s) => {
-                        let size = st.window.inner_size();
-                        let scaled = |v: u32| ((v as f32 * self.scale).round() as u32).max(1);
-                        st.config.width = scaled(size.width);
-                        st.config.height = scaled(size.height);
-                        s.configure(&st.gpu.device, &st.config);
-                        st.surface = Some(s);
-                        st.renderer.invalidate();
-                        st.window.request_redraw();
-                        self.resync = true;
-                    }
-                    Err(e) => self.fail(event_loop, format!("surface: {e}")),
-                }
-            }
-            return;
-        }
-        if self.window.is_some() {
+        if self.live.is_some() || self.window.is_some() {
             return;
         }
         if let Err(e) = self.create_window(event_loop) {
@@ -514,9 +503,6 @@ impl<P: Platform> ApplicationHandler for Shell<P> {
 
     fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
         self.release_held();
-        if let Some(st) = self.live.as_mut() {
-            st.surface = None;
-        }
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -541,7 +527,7 @@ impl<P: Platform> ApplicationHandler for Shell<P> {
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 if let PhysicalKey::Code(code) = event.physical_key {
-                    // The Android back button arrives as BrowserBack.
+                    // A hardware or keyboard "back" key arrives as BrowserBack.
                     let action = match code {
                         KeyCode::BrowserBack => Some(Action::Cancel),
                         c => action_for_key(c),
@@ -639,7 +625,7 @@ impl<P: Platform> ApplicationHandler for Shell<P> {
     }
 }
 
-/// Build the wgpu instance for an event loop (shares the display handle, required on Android/Wayland).
+/// Build the wgpu instance for an event loop (shares the display handle, required on Wayland).
 /// Not used in the browser: there the backend has to be detected asynchronously (see `web_instance`).
 pub fn new_instance(event_loop: &EventLoop<()>) -> wgpu::Instance {
     wgpu::Instance::new(wgpu::InstanceDescriptor::new_with_display_handle(Box::new(

@@ -76,7 +76,7 @@ pub trait Game {
     }
 
     /// How many "back" steps lead from here to the title screen's top level (0 there). Shells with a
-    /// system back gesture (browser history, Android) keep it inside the game while this is not zero.
+    /// system back gesture (browser history) keep it inside the game while this is not zero.
     fn nav_depth(&self) -> u32 {
         0
     }

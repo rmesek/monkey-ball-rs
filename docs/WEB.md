@@ -1,13 +1,17 @@
 # Browser build
 
-The game runs in a browser tab as WebAssembly (`crates/mb-web`) behind a small static page (`web/`).
-The page contains the engine only. The user opens their own disc image with the file picker or by dropping it
-on the page; it is read inside the tab and never leaves the device. The page's Content-Security-Policy allows
-connections to its own origin only.
+The game runs in a browser as WebAssembly (`crates/mb-web`) behind a small static page (`web/`). The page
+contains the engine only. The player supplies their own disc image through the file picker (or by dropping it
+on the page); it is read on the device and never uploaded. The page makes no network requests except for its
+own bundle files, and its Content-Security-Policy forbids anything else.
+
+The output is a **static site**: plain files, relative paths only, no server-side component, no dependency on
+a service worker, WebGL2 as a first-class backend. It can be hosted by any static file server, installed as a
+PWA, placed inside another application's web view, or opened as a single `.html` file.
 
 ## Build
 
-Needs the wasm target and the wasm-bindgen CLI, at exactly the version of the `wasm-bindgen` crate in
+Needs the wasm target and the wasm-bindgen CLI at exactly the version of the `wasm-bindgen` crate in
 `Cargo.lock` (pinned in `crates/mb-web/Cargo.toml`, currently 0.2.129):
 
 ```
@@ -15,193 +19,246 @@ rustup target add wasm32-unknown-unknown
 cargo install wasm-bindgen-cli --version 0.2.129 --locked
 ```
 
-One command builds `web/pkg/` (git-ignored: `mb_web.js` + `mb_web_bg.wasm`):
+One command builds the site into `web/dist/` (git-ignored):
 
 ```
-scripts\build-web.ps1        # Windows PowerShell
-scripts/build-web.sh         # bash
+scripts\build-web.ps1 [-Single] [-Dev]       # Windows PowerShell
+scripts/build-web.sh [--single] [--dev]      # bash
 ```
 
-Both check the CLI version against `Cargo.lock`, run
-`cargo build -p mb-web --target wasm32-unknown-unknown --profile web` and then
-`wasm-bindgen --target web --no-typescript --out-dir web/pkg`. `-Dev` / `--dev` builds unoptimised.
-`CARGO_TARGET_DIR` is honoured.
+It checks the CLI version, runs `cargo build -p mb-web --target wasm32-unknown-unknown --profile web`,
+`wasm-bindgen --target no-modules`, and `cargo run -p xtask -- bundle-web`, which assembles the directory:
 
-The `web` profile (workspace `Cargo.toml`) is `release` plus fat LTO, one codegen unit and `panic = "abort"`.
-Measured against plain `--release` on the same sources: 5.20 MB instead of 6.00 MB (1.71 MB gzipped), and
-12 % less render CPU time per frame under 6x CPU throttling (4.5 ms to 4.0 ms on a 250-draw stage, WebGL2).
-`wasm-opt` is optional: it is not required and the scripts do not run it. With binaryen installed,
-`wasm-opt -O3 web/pkg/mb_web_bg.wasm -o web/pkg/mb_web_bg.wasm` can be run after the build; its effect was
-not measured here (the tool is not installed on the build machine).
+| File | What |
+|---|---|
+| `index.html` | the page (stamped with a version hash of the bundle) |
+| `main.js`, `worker.js` | the page's script and the import worker (classic scripts, no modules) |
+| `pkg/mb_web.js`, `pkg/mb_web_bg.wasm` | the engine: 5.0 MB wasm (1.56 MB gzipped), 0.19 MB glue |
+| `sw.js`, `manifest.webmanifest`, `icon*.{svg,png}` | offline start and installation (optional at run time) |
+| `monkey-ball.html` | with `-Single` / `--single`: everything in one file, 2.3 MB (1.6 MB gzipped) |
 
-To deploy, copy `web/index.html`, `web/main.js` and `web/pkg/` to any static host that serves `.wasm` as
-`application/wasm`. No server-side code, no other files.
+`-Dev` / `--dev` builds unoptimised. The `web` profile (workspace `Cargo.toml`) is `release` plus fat LTO, one
+codegen unit and `panic = "abort"`. `wasm-opt` is not used (not required; not installed on the build machine).
 
-## Serve locally
+## Run
 
-```
-cargo run -p xtask -- serve-web [port] [--disc <disc image>] [--root <dir>]
-```
-
-A static file server made of `std::net` only: binds to 127.0.0.1 (default port 8080), serves `web/` with the
-right MIME types, `Cache-Control: no-store`, GET/HEAD and byte ranges. Open `http://localhost:8080/`.
-(Opening `index.html` from disk does not work: ES modules and wasm need http.)
-
-### Developer disc path
-
-File dialogs cannot be driven by browser automation, so the dev server can expose the developer's own image:
+Any static server works. The reference one is Python's:
 
 ```
-cargo run -p xtask -- serve-web 8080 --disc "..\Super Monkey Ball (USA).rvz"
+cd web/dist
+python -m http.server 8080
 ```
 
-and `http://localhost:8080/?dev-disc=1` loads it from `/dev-disc` with range requests, through the same code
-as the picker and drag-and-drop (`loadDisc` in `web/main.js`; only the byte source differs). The page uses
-this only when its hostname is `localhost`/`127.0.0.1`, and only this dev server has the route. Nothing from
-the disc is written anywhere.
+then open `http://localhost:8080/`. Add `--bind 0.0.0.0` to reach it from a phone on the same network at
+`http://<this machine's address>:8080/`; plain http on a network address is not a secure context, so there the
+browser offers no private storage, no service worker and no WebGPU, and the page plays from the picked file
+for the session on WebGL2 (see below).
 
-Page parameters: `?gl=1` forces WebGL2 even where WebGPU is available; `?scale=0.5` renders at that fraction
-of the device resolution (0.25 to 1); `?autoscale=0` turns the automatic resolution fallback off;
-`?fps=1` shows the frame timing overlay. `window.mbStats` holds disc load timings.
+What `python -m http.server` implies, and how the page copes:
 
-### Frame timing (`?fps=1`, `window.mbPerf`)
+* `.wasm` is served as `application/wasm` by current Pythons; the page compiles with `compileStreaming` and
+  falls back to compiling from the bytes when a server labels it otherwise.
+* No cache headers: every script and the wasm are requested with the build's version (`?v=<hash>`), so an
+  old script is never paired with a new engine, and the service worker's cache is named by the same hash.
+* No COOP/COEP headers: nothing here needs `SharedArrayBuffer` or threads. No range requests are needed.
 
-The engine records every frame of play (not menus or the pause screen) into a ring of 1024 frames
-(`mb_app::perf`): time since the previous frame, CPU time of the game update and of rendering (acquire,
-encode, submit, present), simulation ticks run, draw calls, state changes and bytes uploaded. Recording is off
-unless `?fps=1` is given or `mbPerf.enable()` is called. The overlay shows, twice a second: average / p99 /
-worst frame interval and how many frames were longer than 1.5 times the median, update and render time,
-the ticks-per-frame distribution, draws, binds, upload size, event-loop wake-ups per frame and a histogram of
-frame intervals. From the console: `mbPerf.summary()`, `mbPerf.frames()` (raw rows), `mbPerf.reset()`,
-`mbPerf.log()`, and `mbPerf.lastLoad()` for where the time of the last stage load went (disc read, LZSS,
-parsing, texture decode, texture upload, meshes and pipelines).
+### The single file
+
+`web/dist/monkey-ball.html` (built with `-Single`) has the scripts inlined as classic scripts, the wasm
+embedded as gzipped base64 (unpacked with `DecompressionStream`), the import worker started from a Blob, and the
+icon inlined. No service worker, no manifest. Its policy lists the two inline scripts by SHA-256 hash and has
+`connect-src 'none'`. Copy the one file anywhere and open it.
+
+What a page opened from disk may do depends on the browser. Measured in Chrome 154 on Windows: it is treated as
+a secure context and gets WebGPU, but no private file system, so the session plays from the picked file and
+saves go to `localStorage`. Not verified: Android, where opening a local `.html` from a file manager gives the
+browser a `content://` address (whether Blob workers and `FileReaderSync` work there is untested), and iOS.
+If the single file does not work somewhere, host `web/dist/` instead.
+
+### Page parameters
+
+`?gl=1` forces WebGL2 where WebGPU is available; `?scale=0.5` renders at that fraction of the device
+resolution (0.25 to 1); `?autoscale=0` turns the automatic resolution fallback off; `?fps=1` shows the frame
+timing overlay; `?nostore=1` skips on-device storage (plays from the picked file); `?tilt=1` offers tilt
+control on a device without a touch screen. `window.mbStats` holds what happened at start-up (mode, import
+time, pack size, save mode), `window.mbPerf` frame timings and load breakdowns (`summary()`, `lastLoad()`,
+`status()`, `preparedBytes()`, `wasmMemoryBytes()`, `audio()`).
+
+## The game file
+
+The page asks for a disc image of **Super Monkey Ball** (Nintendo GameCube, 2001):
+
+| | |
+|---|---|
+| Formats | RVZ with no compression or Zstandard; plain ISO / GCM |
+| Discs | USA `GMBE8P` (the tested one), Europe `GMBP8P`, Japan `GMBJ8P` (accepted by id; not tested here) |
+| Typical file | `Super Monkey Ball (USA).rvz`, about 475 MB |
+| The tested RVZ file | 497,668,128 bytes, SHA-1 `AFAC5395934DF849552396C43EDDA0BA064B9E3C`, SHA-256 `CE2D2DFA75EE4CED285538233B62CD73FB9561DD8F7C109AA7789692DE6271DC` |
+
+A different dump or compression of the same disc has a different file hash and is accepted just the same: the
+game identifies the disc by its id and validates the headers and tables it reads; it never hashes the whole
+file (that would cost a phone time and battery for nothing). Every other file gets a message that says what it
+is and what is supported (other RVZ compressions, WIA, GCZ, CISO, WBFS, Wii discs, other games, empty,
+truncated or damaged files), and the picker stays usable.
+
+Reading is done by the project's own code on every target (`crates/mb-assets`): `rvz.rs` (the RVZ container)
+and `disc.rs` (GameCube boot header, file table, `main.dol`). Sizes and offsets from the file are checked
+against the format and the file before anything is allocated or read; tests feed truncated, bit-flipped and
+hostile-size inputs under an allocation-counting allocator. `cargo run --release -p xtask -- check-rvz <image>`
+compares the readers with the `nod` crate over a whole image (identical on the tested file: 1,459,978,240 disc
+bytes, 897 files, `main.dol`); `nod` is a test and tool dependency only.
+
+## Storage model
+
+### What is kept, and where
+
+| | Browser | Desktop |
+|---|---|---|
+| Game data | one **pack** file in the page's Origin Private File System: `monkey-ball/game.pack` plus the marker `monkey-ball/game.json` | nothing is copied: the image is read in place; only its path is remembered (`last_disc`) |
+| Saves | files in `monkey-ball/saves/` next to the pack; where the private file system is unavailable, `localStorage`; where neither works, memory for the session, and every save says so in the menu. Exactly one of the three, never two. | the per-user data directory (`%APPDATA%\monkey-ball-rs`, `~/Library/Application Support/monkey-ball-rs`, `$XDG_DATA_HOME/monkey-ball-rs`; `MB_SAVE_DIR` overrides) |
+
+The pack holds only what the game reads, 144.1 MB of the 475 MB image (382 of 897 files, USA disc):
+
+| Category | Size |
+|---|---|
+| Stages (stagedef, models, textures of the 109 course stages) | 70.4 MB |
+| Music (the 10 tracks the courses use, intro + loop) | 45.5 MB |
+| Backgrounds | 18.4 MB |
+| Sound effects (the two banks the main game uses) | 4.5 MB |
+| HUD and fonts | 2.0 MB |
+| `main.dol` (trig tables, sound table) | 2.0 MB |
+| Shared models (ball, bananas, goal, clock digits) | 1.2 MB |
+
+Not copied: minigames, the other sound banks, unused music, previews, replay data, character models. The list
+is one function, `mb_app::content::all_files`, built from the same per-stage file list the stage loader reads
+through; a test checks that the pack contains exactly that and that every stage of every course loads from it
+without a single unprepared read.
+
+### Rules
+
+* **Availability.** The private file system needs a secure context (`https`, `http://localhost`) and a
+  browser that has it; private windows and some web views do not. Then, or when the quota is too small or a
+  write fails, the page does not store anything: the import worker stays alive and hands the game single
+  files straight from the picked image for the session (still never holding the image in memory), and the
+  file is asked for again next time.
+* **Space.** About 145 MB; `navigator.storage.estimate()` is checked first.
+* **No duplicates.** There is one pack. Importing again, the same disc or another region, replaces it.
+* **Expiry.** A browser may clear a site's storage under pressure. After an import the page asks for
+  persistence (`navigator.storage.persist()`); the landing page and the options screen say whether the data is
+  "kept" or "may be cleared". If the data is gone or incomplete, the page says so and asks for the image again.
+  The desktop program's data never expires.
+* **Versioning.** The marker records the pack format version (`mb_assets::gamepack::VERSION`). A page with
+  another version deletes the old pack and asks for the image once more.
+* **Reclaiming.** The page says before the import that it keeps game data and saves on the device. In the
+  game, Options shows what is kept and where, with "Remove game data" (deletes the pack, returns to the
+  import screen, keeps the saves) and "Erase save data", each asking for a second tap. The landing page and the
+  error dialog also offer the removal. On desktop, Options shows the save folder and the remembered image
+  path, with "Forget game image" and "Erase save data".
+
+### Sudden exit
+
+Closing the tab or killing the process at any moment leaves the old complete state or the new complete one.
+
+* **Import.** The pack's header is written last and the marker after that; a pack without a valid marker is
+  an interrupted import and is deleted at the next start. The worker reads the whole pack back and compares
+  checksums before writing the marker. Every file in the pack carries a CRC-32 that is checked again when it
+  is read during play.
+* **Saves.** `mb_game::SlotStorage` keeps every value in two slots, each record with a generation number and
+  a checksum; a write always replaces the older slot. A read takes the newest complete record, so a write cut
+  short costs nothing but itself, on any backend. Below it, the desktop writes a temp file, syncs it and
+  renames it into place; the browser uses `createWritable()` (write, then swap) or one `localStorage` item.
+  Saves are written when they happen (after each stage result, on every options change), not at exit.
+* **Play.** Nothing is written while a stage runs; a stage that ends writes its result once.
+
+Tests: a unit test kills the save backend at every operation with every length of torn write (over 800
+crash points) and checks the value read afterwards is the old or the new one; a test replays the importer's writes
+and cuts them off after every one, checking the result is never accepted as a pack; `tests/kill.rs` kills the
+real desktop program mid-run three times and reads its saves; the browser check closes the tab mid-play and
+mid-import and restarts.
+
+Two tabs of the game on one origin share the saves without coordination: each works on its own copy and the
+tab that saves last wins.
+
+## How the browser build works
+
+```
+picked File --> import worker (worker.js + the same wasm module)
+                  reads with FileReaderSync, a megabyte or one RVZ group at a time
+                  |-- "store": writes game.pack with a sync access handle, verifies, writes game.json
+                  `-- "live":  keeps the File, serves single files on request
+page (main.js + wasm)
+   GameData = pack Blob + its index   |   live file service
+   state needs files -> prepare (async slices of the Blob / a message to the worker) -> loading screen
+        -> the usual synchronous loaders read from memory -> files released
+```
+
+* The worker runs the same wasm module as the page (compiled once, posted to the worker), so there is one
+  artifact and one copy of the readers. It is the only place with synchronous file reads.
+* The game loop stays on the main thread. A state that needs files asks for them first
+  (`Content::prepare`, polled once per frame), shows a loading screen meanwhile, loads, and releases them
+  (`Content::release`). Reading a file that was not prepared is a loud error and is recorded
+  (`mbPerf.misses()`, always empty).
+* **Stage loading** (`mb_app::loading`): fetch, parse, music, build, one phase per frame so the loading
+  screen is up before the work starts. Only textures the stage's models use are decoded and uploaded
+  (stage 1: 68 instead of 124; Expert 50: 105 instead of 292). The shared files and the last background stay
+  parsed between stages (about 1.2 MB + 0.5 to 3.5 MB). A stage that cannot be fetched or parsed returns to the
+  menu with a notice; the session goes on.
+* **A lost life** in course play restarts the floor on the scene that is already loaded (nothing is read or
+  built), as practice always did.
+
+## Mobile
+
+* Menus work with touch alone: drag to scroll (with a short glide), page arrows and a scroll bar beside long
+  lists, a Back button in the top-left corner of every screen but the title (and on the pause screen). A tap
+  is a press and release without movement, however long; a drag never activates.
+* The browser's back gesture goes one step back inside the game while it is in a sub-menu or a stage (one
+  history entry is kept for that); at the title it leaves the page as usual.
+* Options: fullscreen (with an attempt to lock landscape), controls by device tilt (calibrated to the pose
+  the device is held in when a stage starts; iOS asks for permission at the next tap), remove game data,
+  erase save data.
+* The screen is kept awake while the page is visible (Screen Wake Lock, re-acquired on return).
+* Portrait and landscape both work; no rotate hint is shown.
+* A lost graphics context or a fatal error shows a dialog with one button that restarts the page, which is
+  quick now (the title menu is back in a fraction of a second).
 
 ## Browser requirements
 
-- WebAssembly and ES modules.
-- WebGPU, or WebGL2 as the automatic fallback. `mb-app/src/shell.rs` builds the wgpu instance with
-  `wgpu::util::new_instance_with_webgpu_detection` over `BROWSER_WEBGPU | GL`, which asks the browser for a
-  WebGPU adapter and drops to WebGL2 when there is none (having `navigator.gpu` is not enough to know). On a
-  GL adapter the device is requested with `Limits::downlevel_webgl2_defaults()` raised to the adapter's
-  texture size; the renderer stays within those limits.
-- Enough memory for the image (see below).
+WebAssembly; WebGPU, or WebGL2 (automatic fallback, and the only backend on plain http and in most web views);
+`Worker` and `FileReaderSync`. On-device storage additionally needs the Origin Private File System with
+`createSyncAccessHandle` (Chrome 102+, Firefox 111+, Safari 15.2+); the single file needs
+`DecompressionStream` (Chrome 80+, Firefox 113+, Safari 16.4+).
 
-The canvas fills the window and follows resizes and orientation changes. The render resolution is capped at
-2 device pixels per CSS pixel (`MAX_PIXEL_RATIO` in `crates/mb-web/src/lib.rs`); pointer positions, the HUD
-layout scale and the safe-area insets (`--sai-*` CSS variables from `env(safe-area-inset-*)`) follow the
-capped size. The cap is applied to the ratio the canvas really has (winit's physical size over the canvas'
-CSS size), not to `devicePixelRatio`: the two disagree under device emulation, where capping by the reported
-ratio shrank the picture to a third.
+## Measurements
 
-Render scale: `?scale=` multiplies the capped resolution. Unless `?autoscale=0` is given, the game lowers it by
-itself when at least 60 % of the frames of a two-second stretch of play take longer than 21 ms: steps of 0.8
-down to 0.5, never back up (no oscillation). The HUD layout follows the new size.
+Chrome 154, Windows 11, RTX 4080, 165 Hz display, the tested RVZ; `scripts/web-e2e.ts` prints most of these.
 
-## Frame pacing and power
-
-- The event loop sleeps between frames (`ControlFlow::Wait`); each frame requests the next one, which is
-  `requestAnimationFrame` in the browser. It used to poll, which ran the browser's event loop about 800 times
-  per frame and made Chrome drop 3 to 4 % of the frames during play (see "What was verified").
-- Nothing runs while the tab is hidden. Hiding the tab or taking focus from the canvas pauses a stage that is
-  being played, and the time away is not simulated when the player returns.
-- A frame identical to the one on screen (a still menu, the pause screen) is not drawn or presented again.
-- The browser is asked for the low-power GPU.
-- `webglcontextlost` is handled (with `preventDefault`) by a message asking to reload, as is a lost WebGPU
-  device; the engine does not rebuild its GPU state in place. Progress is saved at every stage.
-- The gamepad is polled only while one is connected (`gamepadconnected` / `gamepaddisconnected`).
-
-Input: keyboard through winit (the canvas takes focus on start and on click; held keys are released when the
-tab loses focus), touch (on-screen stick and buttons), mouse (left button works the touch controls, right
-drag looks around), and the Gamepad API (first connected pad, polled every frame while one is connected; it only writes axes and
-buttons when they change, so an idle pad does not override keyboard or touch, and a pad that disconnects is
-released).
-
-## Disc formats
-
-| Container | Browser | Desktop |
+| | Before (image held in the tab) | Now |
 |---|---|---|
-| RVZ, Zstandard (Dolphin's default) | yes | yes |
-| RVZ, no compression | yes | yes |
-| ISO / GCM, CISO, WBFS, TGC | yes (through nod; only RVZ was exercised in a browser) | yes |
-| RVZ with bzip2, LZMA or LZMA2 | no, clear message | yes |
-| WIA, GCZ | no, clear message | yes |
+| JS heap with the game running | 509 MB | 1.7 MB |
+| wasm memory while playing | (plus the above) | 32 MB (Beginner), 40 MB (Expert 50) |
+| Game files held in memory between loads | all | 0 bytes (largest single stage fetch: 10.6 MB, released after the load) |
+| First run: pick to menu | read 475 MB every visit | 1.3 s import (copy 144 MB, verify), once |
+| Later runs: page load to first frame | same as first | 0.1 s after the engine is compiled; no picker |
+| Whole browser during import (12 processes, private bytes) | | +132 MB at the peak, back to baseline after |
+| Stage load, Beginner 1 / Expert 50, WebGL2 | 176 ms / 432 ms at 6x CPU throttle | 82 ms / 28 ms unthrottled; Expert 50 at 6x: 137 ms |
+| Frames, 30 s of steering, Expert 50, WebGL2, 6x throttle | 2 long of 4963 | 2 long of 4917, p99 6.6 ms |
+| Frames, 30 s, Beginner 2, WebGPU | 0 of 5783, p99 6.6 ms | 1 of 4997, p99 6.5 ms |
+| A still menu | | 1.9 % of one core (no redraw without change) |
+| Play, 165 fps | | 27 % of one core on the main thread |
 
-Unsupported containers are recognised from the first 80 bytes, before the file is read, and the page says what
-the file is and how to convert it in Dolphin (Convert File, RVZ, Zstandard).
+Not measured: any real phone, iOS, an Android web view, Firefox, Safari.
 
-Why the browser has its own RVZ reader (`crates/mb-assets/src/rvz.rs`): nod's WIA/RVZ reader calls
-`std::time::Instant::now()`, which panics on `wasm32-unknown-unknown`, and nod decodes Zstandard, bzip2 and
-LZMA with C libraries that need a C toolchain for wasm (none is required to build this project). The built-in
-reader handles GameCube RVZ with "none" or Zstandard (pure-Rust `ruzstd`), including RVZ-packed junk data, and
-hands nod a plain ISO stream, which nod reads without either problem. It does not check the SHA-1 hashes in
-the RVZ headers. Desktop builds use nod for everything. `cargo test -p mb-assets` compares the two readers on
-a sample of the disc when an image is available, and
+## Checking it
 
 ```
-cargo run --release -p xtask -- check-rvz <image.rvz>
+deno run -A scripts/web-e2e.ts [--lan]
 ```
 
-compares the whole disc (both the "none" and a Zstandard conversion of the USA image are byte-identical over
-all 1,459,978,240 bytes).
-
-## Memory behaviour
-
-The game loads files synchronously and nod's `DiscStream` is synchronous, but a browser's main thread can
-only read a `File` asynchronously. So the whole image is read once, up front, and kept while the game runs.
-
-It is kept on the JavaScript heap as 8 MiB `Uint8Array` pieces (`DiscImage` in `crates/mb-web`), not in wasm
-memory. Reads copy just the requested range into wasm (`ChunkStream`). Compared with copying the file into
-one wasm `Vec` (the earlier design):
-
-- wasm32 linear memory is limited to 4 GiB, never shrinks, and has to grow as one contiguous block; a single
-  0.5 to 1.4 GB allocation is what fails first on phones. Many 8 MiB buffers do not need contiguous space and
-  leave wasm memory for the game itself.
-- The cost is the same total: the tab holds the file size in RAM (about 0.5 GB for the uncompressed RVZ,
-  0.3 GB for a Zstandard RVZ, 1.46 GB for an ISO). Measured: 509 MB JS heap with the 475 MB RVZ loaded.
-  Zstandard RVZ is the best choice for memory. A decoded-group cache of 4 MiB sits on top.
-- If the browser cannot provide the memory, the load stops with a message and the page stays usable.
-
-Not done: keeping only the `File` handle and reading ranges on demand. That needs synchronous file reads,
-which exist only in workers (`FileReaderSync`), so the whole game loop would have to move to a worker with an
-`OffscreenCanvas`, or all game loading would have to become asynchronous. Either is a larger change than
-Stage 1 needs; it is the way to go if phones with little memory become a target.
-
-## What was verified
-
-In the Claude desktop app's built-in browser (Chromium, Windows 11, NVIDIA RTX 4080), served by
-`xtask serve-web`:
-
-- WebGPU: menu, course select, Beginner floor 1 played to the goal with the keyboard, floor 2 loads.
-- WebGL2 (`?gl=1`, ANGLE/D3D11): same content renders the same.
-- Frame pacing, measured in Chrome 154 (same machine, 165 Hz display, 1084x805 canvas) with the engine's own
-  recorder over 30 s of steering per run, stage loads excluded. "Long" = frames over 1.5 times the median
-  interval; update / render = CPU ms per frame; 6x = Chrome's CPU throttling.
-
-  | Stage, backend | Build | Long frames | p99 / worst interval | Update | Render | Draws |
-  |---|---|---|---|---|---|---|
-  | Beginner 1, WebGL2 | before | 166 of 4857 | 14.2 / 17.7 ms | 0.03 | 0.90 | 314 |
-  | | after | 0 of 5707 | 6.5 / 7.0 ms | 0.03 | 0.53 | 130-220 |
-  | Beginner 1, WebGPU | before | 178 of 4865 | 14.2 / 18.1 ms | 0.03 | 0.19 | 314 |
-  | | after | 0 of 5783 | 6.6 / 7.2 ms | 0.03 | 0.13 | 170-230 |
-  | Beginner 10, WebGL2 | before | 158 of 4899 | 13.8 / 16.6 ms | 0.03 | 1.26 | 437 |
-  | | after | 1 of 5706 | 6.6 / 11.2 ms | 0.03 | 0.66 | 130-270 |
-  | Beginner 10, WebGL2, 6x | before | 196 of 2379 (80 fps) | 18.6 / 61.2 ms | 0.31 | 9.86 | 428 |
-  | | after | 58 of 4936 (172 fps) | 8.7 / 13.5 ms | 0.15 | 4.24 | 250 |
-  | Expert 50, WebGL2 | before | 144 of 4864 | 13.6 / 16.7 ms | 0.03 | 1.50 | 572 |
-  | | after | 2 of 4963 | 6.5 / 17.1 ms | 0.02 | 0.39 | 217 |
-
-  The few long frames left are the first frames after a stage (re)load in that run. The old build with only
-  the event-loop change (`Poll` to `Wait`) already measured 0 long frames on both backends, which is what
-  identifies polling as the cause of the dropped frames; the rest is CPU headroom for slower devices.
-- Uncompressed RVZ (497,668,128 bytes) and a Zstandard conversion of it (307,854,016 bytes) both load and
-  play; an LZMA2 conversion is refused immediately with the message above; a non-disc file reports a format
-  error and the picker stays usable.
-- Drop path: a `File` dropped on the page (synthetic `drop` event) loads and starts; reading 475 MB from the
-  `File` took 0.12 s (in-memory blob), opening the disc 0.1 to 0.8 s (1.7 s for Zstandard), first frame about
-  1.1 s after that. Entering a stage freezes for roughly one second while it loads.
-- Touch stick and left-mouse drag move the ball (synthetic pointer events); resizing between 375x812 and
-  1024x768 reconfigures the canvas.
-- No wgpu validation errors or panics in the console.
-
-Not verified: a real phone (memory limits, the pixel-ratio cap, safe-area insets), a real gamepad, Firefox
-and Safari, the native file dialog itself, ISO/CISO/WBFS images in a browser.
+serves `web/dist` with `python -m http.server`, starts the installed Chrome with a throw-away profile and
+drives it over the DevTools protocol, setting the real disc image on the page's real file input. It needs the
+bundle, Chrome, Python and the image (`MB_DISC`, or `Super Monkey Ball*.rvz` next to the repository) and says
+what is missing otherwise. 45 checks (48 with `--lan`): wrong, empty, random and truncated files; import and
+storage contents; play floor 1 into floor 2; in-place retry; audio; closing the tab mid-play and mid-import;
+touch-only menus at 412x915; the back gesture; idle cost; tilt with an emulated sensor; remove data; cancel;
+play without storage; the network address (with `--lan`); the single file opened from disk; start with the
+server stopped (service worker).

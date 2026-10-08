@@ -19,7 +19,7 @@ mb-render = { path = "../mb-render" }
 mb-engine = { path = "../mb-engine" }
 mb-game = { path = "../mb-game" }
 mb-audio = { path = "../mb-audio" }
-# Window + input event loop (decision recorded in docs/PLAN.md); Android/web backends come with it.
+# Window + input event loop (decision recorded in docs/PLAN.md); the web backend comes with it.
 # 0.30 is the latest stable release (0.31 is still beta).
 winit = "0.30"
 # Same wgpu version as mb-render so Device/Queue/Surface types are shared.
@@ -31,13 +31,11 @@ glam = "0.30"
 # std::time::Instant panics on wasm32; web-time is a drop-in that re-exports std off the web. Used by `shell`.
 web-time = "1"
 
-# Native audio output (desktop now, Android later; the browser shell uses Web Audio instead).
+# Native audio output (the browser shell uses Web Audio instead).
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-# Audio device output stream (WASAPI / CoreAudio / ALSA, AAudio on Android): pulls PCM from mb-audio's mixer.
+# Audio device output stream (WASAPI / CoreAudio / ALSA): pulls PCM from mb-audio's mixer.
 cpal = "0.16"
 
-# Desktop-only conveniences (never built for the browser or Android).
-[target.'cfg(not(any(target_arch = "wasm32", target_os = "android")))'.dependencies]
 # Native "open file" dialog so the disc image can be picked without a command line.
 rfd = "0.17"
 # Gamepad input (XInput / evdev / IOKit) for the desktop runner; the browser shell uses the Gamepad API.

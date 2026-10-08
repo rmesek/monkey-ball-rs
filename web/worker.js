@@ -11,7 +11,8 @@
 // Either way the image is never held in memory: reads are a megabyte or one RVZ group at a time.
 "use strict";
 
-if (typeof wasm_bindgen === "undefined") importScripts("./pkg/mb_web.js");
+// (The page passes the build's version in this script's URL; the glue is fetched with the same one.)
+if (typeof wasm_bindgen === "undefined") importScripts("./pkg/mb_web.js" + self.location.search);
 
 let job = null; // live mode: the open image
 let cancelled = false; // the page asked to stop a "store" import
@@ -50,6 +51,7 @@ async function storeImport(store) {
   if (typeof fileHandle.createSyncAccessHandle !== "function") {
     throw storageError("this browser cannot write files from a worker");
   }
+  const gameId = job.gameId();
   let handle;
   try {
     handle = await fileHandle.createSyncAccessHandle();
@@ -106,7 +108,9 @@ async function storeImport(store) {
   const marker = await dir.getFileHandle(store.marker, { create: true });
   const markerHandle = await marker.createSyncAccessHandle();
   try {
-    const text = new TextEncoder().encode(JSON.stringify({ size, imported: new Date().toISOString() }));
+    const text = new TextEncoder().encode(
+      JSON.stringify({ size, version: wasm_bindgen.pack_version(), gameId, imported: new Date().toISOString() }),
+    );
     markerHandle.truncate(0);
     markerHandle.write(text, { at: 0 });
     markerHandle.flush();

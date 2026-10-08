@@ -8,18 +8,21 @@ use std::path::{Path, PathBuf};
 use glam::Vec3;
 use mb_app::app::WindowOptions;
 use mb_app::audio::Audio;
-use mb_app::content::{open_disc_image, Content};
+use mb_app::content::{open_disc_image, Content, LAST_DISC_KEY};
 use mb_app::game::Game;
 use mb_app::headless::{autoplay, AutoplayOptions};
 use mb_app::menu::{Autostart, Menu};
 use mb_app::stage_info::bg_by_name;
 use mb_app::viewer::{FlyCamera, StageViewer};
-use mb_game::{Difficulty, FileStorage, MemoryStorage, Storage};
+use mb_game::{Difficulty, FileStorage, MemoryStorage, SlotStorage, Storage};
 
-const USAGE: &str = "usage: mb-app [disc image | content dir] [stage] [options]
+const USAGE: &str = "usage: mb-app [disc image] [stage] [options]
 
-With no arguments the last disc image is reopened, or a file dialog asks for one.
-A stage number starts practice on that stage directly.
+The disc image is your own copy of Super Monkey Ball (Nintendo GameCube, 2001): an RVZ (uncompressed or
+Zstandard) or ISO/GCM file, for example 'Super Monkey Ball (USA).rvz' (about 475 MB). Disc ids GMBE8P (USA,
+the tested one), GMBP8P (Europe) and GMBJ8P (Japan) are accepted. The image is read in place: nothing is
+copied, only its path is remembered. With no arguments the image used last time is reopened, or a file
+dialog asks for one. A stage number starts practice on that stage directly.
 
   --pick                   ask for the disc image even if one is remembered
   --fullscreen             start in fullscreen (F11 or Alt+Enter toggles)
@@ -33,9 +36,6 @@ A stage number starts practice on that stage directly.
   --software               use the software adapter for headless runs
   --mute                   do not open an audio device
   --exit-after <seconds>   close the window after that long and print frame pacing and audio output";
-
-/// Storage key of the remembered disc image path.
-const LAST_DISC_KEY: &str = "last_disc";
 
 struct Args {
     source: Option<PathBuf>,
@@ -174,10 +174,15 @@ fn parse_cam(s: &str) -> Result<FlyCamera, String> {
     })
 }
 
-/// The per-user save directory, or memory when there is none.
+/// The per-user save directory, or memory when there is none. Values are kept in two checksummed slots
+/// (`SlotStorage`) written through a temp file and a rename, so killing the program at any moment leaves
+/// the previous save or the new one.
 fn open_storage() -> Box<dyn Storage> {
     match FileStorage::default_dir() {
-        Some(dir) => Box::new(FileStorage::new(dir)),
+        Some(dir) => {
+            mb_app::host::set_info(vec![format!("Saves: {}", dir.display())]);
+            Box::new(SlotStorage::new(FileStorage::new(dir)))
+        }
         None => {
             eprintln!("no save directory found; progress will not be kept");
             Box::new(MemoryStorage::new())
@@ -193,7 +198,7 @@ fn remembered_disc(storage: &dyn Storage) -> Option<PathBuf> {
 
 fn pick_disc() -> Option<PathBuf> {
     rfd::FileDialog::new()
-        .set_title("Open your Super Monkey Ball disc image")
+        .set_title("Open your Super Monkey Ball (GameCube) disc image: RVZ, ISO or GCM")
         .add_filter("GameCube disc image", &["rvz", "iso", "gcm"])
         .add_filter("All files", &["*"])
         .pick_file()
@@ -241,6 +246,24 @@ fn resolve_content(args: &Args, storage: &mut dyn Storage) -> Result<Content, St
 
 fn remember(storage: &mut dyn Storage, path: &Path) {
     let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    // The options screen shows where things are and offers to forget the image.
+    let mut info = mb_app::host::info();
+    info.push(format!(
+        "Game image (read in place): {}",
+        absolute.display()
+    ));
+    mb_app::host::set_info(info);
+    mb_app::host::set_caps(mb_app::host::Caps {
+        forget_image: true,
+        ..mb_app::host::caps()
+    });
+    // Unchanged: nothing to write.
+    let same = storage
+        .read(LAST_DISC_KEY)
+        .is_ok_and(|v| v.as_deref() == Some(absolute.to_string_lossy().as_bytes()));
+    if same {
+        return;
+    }
     if let Err(e) = storage.write(LAST_DISC_KEY, absolute.to_string_lossy().as_bytes()) {
         eprintln!("could not remember the disc image: {e}");
     }

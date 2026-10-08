@@ -14,8 +14,13 @@
 
   // Where the imported data lives in the Origin Private File System. worker.js writes it, this file reads
   // and deletes it. The marker is written last: a pack without one is an interrupted import.
-  const STORE = { dir: "monkey-ball", pack: "game.pack", marker: "game.json" };
+  // There is one pack: importing again (the same disc or another region) replaces it, never adds to it.
+  const STORE = { dir: "monkey-ball", pack: "game.pack", marker: "game.json", saves: "saves" };
   const MB = 1048576;
+  // Stamped by the build: makes every bundle file's URL new with every build, so a plain static server
+  // without cache headers cannot hand out a stale script next to a new engine.
+  const versionMeta = document.querySelector('meta[name="mb-version"]');
+  const VERSION_QUERY = versionMeta && versionMeta.content ? "?v=" + versionMeta.content : "";
 
   const $ = (id) => document.getElementById(id);
   const landing = $("landing");
@@ -73,7 +78,7 @@
       const stream = new Blob([raw]).stream().pipeThrough(new DecompressionStream("gzip"));
       return WebAssembly.compile(await new Response(stream).arrayBuffer());
     }
-    const url = "./pkg/mb_web_bg.wasm";
+    const url = "./pkg/mb_web_bg.wasm" + VERSION_QUERY;
     if (WebAssembly.compileStreaming) {
       try {
         return await WebAssembly.compileStreaming(fetch(url));
@@ -91,7 +96,7 @@
   // carried in the page, started from a Blob.
   function makeWorker() {
     const source = $("mb-worker");
-    if (!source) return new Worker("./worker.js");
+    if (!source) return new Worker("./worker.js" + VERSION_QUERY);
     const blob = new Blob([$("mb-glue").textContent, "\n", source.textContent], { type: "text/javascript" });
     const url = URL.createObjectURL(blob);
     const w = new Worker(url);
@@ -161,12 +166,93 @@
     try {
       pack = await (await dir.getFileHandle(STORE.pack)).getFile();
     } catch (e) {}
-    if (marker && pack && pack.size === marker.size) return pack;
+    if (marker && pack && pack.size === marker.size) {
+      // A pack written by another version of the page (other format, other set of files): gone, ask again.
+      if (marker.version === wasm.pack_version()) return pack;
+      await removeStored();
+      return { outdated: true };
+    }
     if (marker || pack) {
       await removeStored();
       return { incomplete: Boolean(marker) };
     }
     return null;
+  }
+
+  // ---- saves ----------------------------------------------------------------------------------------------
+  // Exactly one place: files in the private file system next to the game pack where that exists, else
+  // localStorage, else nowhere (the game then says so at every save). The engine keeps each value in two
+  // checksummed slots (mb_game::SlotStorage), so a write cut short by a closed tab loses nothing older.
+
+  let savesDir = null;
+  let saveChain = Promise.resolve();
+
+  async function prepareSaves() {
+    const dir = await storeDir(true);
+    try {
+      if (dir && "createWritable" in FileSystemFileHandle.prototype) {
+        savesDir = await dir.getDirectoryHandle(STORE.saves, { create: true });
+        for await (const [name, handle] of savesDir.entries()) {
+          if (handle.kind !== "file" || name.endsWith(".crswap")) continue;
+          wasm.preload_save(name, new Uint8Array(await (await handle.getFile()).arrayBuffer()));
+        }
+        wasm.set_save_mode("opfs");
+        return "opfs";
+      }
+    } catch (e) {
+      savesDir = null;
+    }
+    try {
+      localStorage.setItem("monkey-ball-rs.probe", "1");
+      localStorage.removeItem("monkey-ball-rs.probe");
+      wasm.set_save_mode("local");
+      return "local";
+    } catch (e) {
+      wasm.set_save_mode("memory");
+      return "memory";
+    }
+  }
+
+  // Called by the engine. Writes are queued so they land in order; each one is the browser's own
+  // write-then-swap (createWritable), on top of the engine's two slots.
+  window.mbSaveWrite = (key, bytes) => {
+    saveChain = saveChain
+      .then(async () => {
+        const handle = await savesDir.getFileHandle(key, { create: true });
+        const writable = await handle.createWritable();
+        await writable.write(bytes);
+        await writable.close();
+      })
+      .catch((e) => wasm.save_failed("browser storage: " + describeError(e)));
+  };
+  window.mbSaveRemove = (key) => {
+    saveChain = saveChain.then(() => savesDir.removeEntry(key)).catch(() => {});
+  };
+
+  // What the options screen says about data on this device.
+  async function storageInfo(mode, saveMode) {
+    const lines = [];
+    if (mode === "stored") {
+      let kept = false;
+      try {
+        kept = navigator.storage.persisted ? await navigator.storage.persisted() : false;
+      } catch (e) {}
+      lines.push(
+        `Game data: ${Math.round((stats.packBytes || 0) / MB)} MB in this browser` +
+          (kept ? "" : " (the browser may clear it)"),
+      );
+    } else {
+      lines.push("Game data: read from the picked file, not kept");
+    }
+    lines.push(
+      saveMode === "opfs"
+        ? "Saves: in this browser, next to the game data"
+        : saveMode === "local"
+          ? "Saves: in this browser (local storage)"
+          : "Saves: not kept (this page has no storage)",
+    );
+    stats.saveMode = saveMode;
+    return lines;
   }
 
   async function describeStorage() {
@@ -195,6 +281,8 @@
     const scale = Number(params.get("scale") || 1);
     wasm.set_render_options(scale > 0 ? scale : 1, params.get("autoscale") !== "0");
     wasm.set_caps(mode === "stored", fullscreenSupported(), tiltSupported());
+    stats.mode = mode;
+    wasm.set_storage_info(await storageInfo(mode, await prepareSaves()));
     const t0 = performance.now();
     try {
       // `?gl=1` skips WebGPU (for machines where the browser's WebGPU misbehaves).
@@ -219,7 +307,9 @@
     if (!found) return false;
     if (!(found instanceof Blob)) {
       // Leftovers were cleaned up. A marker without its pack means the browser dropped the data.
-      if (found.incomplete) {
+      if (found.outdated) {
+        setStatus("This version of the page stores the game data differently. Choose the disc image once more.");
+      } else if (found.incomplete) {
         setStatus(
           "The imported game data on this device was incomplete or has been removed by the browser. " +
             "Choose the disc image again.",
@@ -345,7 +435,11 @@
       setStatus("Import cancelled. Nothing was kept.");
     };
     try {
-      if (!(file.size > 0)) throw new Error("The file is empty. Supported: RVZ (uncompressed or Zstandard) and ISO/GCM images of Super Monkey Ball (USA/EUR/JPN).");
+      if (!(file.size > 0)) {
+        throw new Error(
+          "The file is empty. Supported: RVZ (uncompressed or Zstandard) and ISO/GCM images of Super Monkey Ball (USA/EUR/JPN).",
+        );
+      }
       // The first bytes say what the file is: refuse anything unsupported before spending time on it.
       const head = new Uint8Array(await file.slice(0, wasm.header_len()).arrayBuffer());
       wasm.check_header(head);
@@ -386,7 +480,9 @@
       cancel.hidden = true;
       if (result.kind === "stored") {
         stopWorker();
-        if (navigator.storage.persist) navigator.storage.persist().catch(() => {});
+        // Ask the browser not to clear the data under storage pressure (it may say no; the options
+        // screen and the landing page say which).
+        if (navigator.storage.persist) stats.persisted = await navigator.storage.persist().catch(() => false);
         if (!(await startFromStorage())) throw new Error("The copied game data could not be opened again.");
       } else {
         // The worker stays: it hands out single files from the image for this session.
@@ -411,6 +507,7 @@
     }
   }
 
+  // Remove the imported game data. Saves stay (the game has its own "erase save data").
   async function removeData() {
     stopWorker();
     await removeStored();
@@ -480,7 +577,7 @@
     acquire();
   }
 
-  // The browser's (or Android's) back gesture goes back inside the game while there is somewhere to go:
+  // The browser's back gesture (the system one on a phone) goes back inside the game while there is somewhere to go:
   // one extra history entry exists exactly while the game is in a sub-menu or a stage, so "back" pops it
   // (and the game takes one step back) instead of leaving the page. At the title menu there is no entry
   // and "back" leaves the page as usual.
@@ -572,6 +669,8 @@
     wasmMemoryBytes: () => wasm.wasm_memory_bytes(),
     audio: () => JSON.parse(wasm.audio_debug_json()),
     navDepth: () => wasm.nav_depth(),
+    // What the game is showing, one frame old on the first call ("menu: title", "loading stage 3", ...).
+    status: () => wasm.game_status(),
   };
 
   const HIST_LABELS = ["<=6", "<=10", "<=14", "<=20", "<=34", "<=50", ">50"];
@@ -703,10 +802,10 @@
     }
     pick.disabled = false;
     if (!window.isSecureContext || !(navigator.storage && navigator.storage.getDirectory)) {
-      $("steps").children[1].innerHTML =
-        "The game then reads what it needs <strong>straight from the file</strong>. This page cannot keep " +
-        "data here (it is not served securely, or the browser has no private storage), so it asks for the " +
-        "file again next time.";
+      $("step-keep").textContent =
+        "The game reads what it needs straight from the file while you play. This page cannot keep data on " +
+        "the device (it was opened from a file or over plain http, or the browser has no private storage), " +
+        "so it asks for the file again next time.";
     } else {
       describeStorage();
     }

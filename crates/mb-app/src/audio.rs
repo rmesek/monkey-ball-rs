@@ -5,7 +5,7 @@
 //! * [`Audio`]: the handle states hold. They ask for sounds, the ball roll, stage music and volumes; the
 //!   requests of a frame are batched and handed to the backend once, in [`Audio::flush`].
 //! * [`AudioBackend`]: what actually makes sound. `MixBackend` feeds `mb-audio`'s software mixer (desktop
-//!   through cpal in `audio_cpal`, later Android; also the offline renderer used by tests), the browser
+//!   through cpal in `audio_cpal`; also the offline renderer used by tests), the browser
 //!   shell has a Web Audio one (`mb-web`), [`RecordingBackend`] logs requests and [`NullBackend`] is silence.
 //! * [`StageSounds`]: turns one simulation tick into sound requests, mirroring the call sites of the
 //!   reference's `game.ts` / `audio.ts`.

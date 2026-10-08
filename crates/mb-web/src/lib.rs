@@ -61,6 +61,8 @@ mod web {
         static NAV_DEPTH: Cell<u32> = const { Cell::new(0) };
         /// The page saw a "back" gesture (history `popstate`); delivered as Cancel at the next frame.
         static BACK_PENDING: Cell<bool> = const { Cell::new(false) };
+        /// The top state's status line, refreshed only after [`game_status`] was called.
+        static STATUS: RefCell<(bool, String)> = const { RefCell::new((false, String::new())) };
         /// Device tilt steering, fed by [`device_orientation`].
         static TILT: RefCell<TiltSteering> = RefCell::new(TiltSteering::default());
         /// Prepared game files held in memory right now, in bytes (for `mbStats`).
@@ -220,6 +222,7 @@ mod web {
             remove_data,
             fullscreen,
             tilt,
+            forget_image: false,
         });
     }
 
@@ -236,6 +239,17 @@ mod web {
         NAV_DEPTH.with(Cell::get)
     }
 
+    /// What the game is showing ("menu: title", "loading stage 3", "stage 3 ... | Playing | tick 120"), as
+    /// of the frame after the previous call. For automated checks; nothing is built unless this is called.
+    #[wasm_bindgen]
+    pub fn game_status() -> String {
+        STATUS.with(|s| {
+            let mut s = s.borrow_mut();
+            s.0 = true;
+            s.1.clone()
+        })
+    }
+
     /// The browser's back gesture: one step back in the game (the Cancel action).
     #[wasm_bindgen]
     pub fn nav_back() {
@@ -246,6 +260,13 @@ mod web {
     #[wasm_bindgen]
     pub fn device_orientation(beta: f32, gamma: f32, screen_angle: i32) {
         TILT.with(|t| t.borrow_mut().sample(beta, gamma, screen_angle));
+    }
+
+    /// Format version of the game pack this build writes and reads. The page stores it with an import and
+    /// asks for the image again when it differs.
+    #[wasm_bindgen]
+    pub fn pack_version() -> u32 {
+        mb_assets::gamepack::VERSION
     }
 
     /// Number of bytes from the start of the file [`check_header`] wants.
@@ -716,7 +737,7 @@ mod web {
             WebPlatform::new(force_webgl),
             content,
             mb_app::initial_game_with_audio(
-                Box::new(LocalStorage::default()),
+                Box::new(mb_app::mb_game::SlotStorage::new(WebStorage::new())),
                 crate::audio::create(),
             ),
         )
@@ -726,41 +747,98 @@ mod web {
     // -----------------------------------------------------------------------------------------------------
     // Saves.
 
-    /// Save data in the browser's `localStorage` (hex text, since values are opaque bytes).
-    ///
-    /// Where storage is unavailable or refuses a write (private mode, blocked site data, a `file://` page,
-    /// a full quota) the write is reported as an error, so the menu says "could not save", and the value is
-    /// kept in memory instead: the session goes on and reads back what it wrote. Two tabs of the game share
-    /// the store without coordination: each keeps its own copy of the profile, and the tab that saves last
-    /// wins (see docs/WEB.md).
-    #[derive(Default)]
-    struct LocalStorage {
-        /// Values that could not be stored, and so live here for the session.
-        fallback: mb_app::mb_game::MemoryStorage,
-        in_fallback: HashSet<String>,
+    /// Where the page keeps saves, chosen once at start-up by `web/main.js`: exactly one place, never two.
+    #[derive(Clone, Copy, PartialEq, Eq, Default)]
+    enum SaveMode {
+        /// Files next to the game pack in the Origin Private File System. The page loads them before the
+        /// game starts ([`preload_save`]) and writes them when the game saves (`window.mbSaveWrite`).
+        Opfs,
+        /// `localStorage` (hex text), where the private file system is unavailable.
+        Local,
+        /// Neither works (a page opened from disk in some browsers, blocked site data): saves live until
+        /// the page closes, and every save says so.
+        #[default]
+        Memory,
     }
 
-    impl LocalStorage {
+    thread_local! {
+        static SAVE_MODE: Cell<SaveMode> = const { Cell::new(SaveMode::Memory) };
+        /// Saves read from the private file system before start.
+        static SAVE_PRELOAD: RefCell<Vec<(String, Vec<u8>)>> = const { RefCell::new(Vec::new()) };
+        /// A file write the page could not complete, to be reported by the next save.
+        static SAVE_ERROR: RefCell<Option<String>> = const { RefCell::new(None) };
+    }
+
+    /// Tell the engine where saves go: `"opfs"`, `"local"` or anything else for memory only.
+    #[wasm_bindgen]
+    pub fn set_save_mode(mode: &str) {
+        SAVE_MODE.with(|m| {
+            m.set(match mode {
+                "opfs" => SaveMode::Opfs,
+                "local" => SaveMode::Local,
+                _ => SaveMode::Memory,
+            })
+        });
+    }
+
+    /// Hand over one save file found in the private file system (before [`start`]).
+    #[wasm_bindgen]
+    pub fn preload_save(key: String, bytes: Vec<u8>) {
+        SAVE_PRELOAD.with(|p| p.borrow_mut().push((key, bytes)));
+    }
+
+    /// The page could not write a save file; the next save reports it in the menu.
+    #[wasm_bindgen]
+    pub fn save_failed(message: String) {
+        SAVE_ERROR.with(|e| *e.borrow_mut() = Some(message));
+    }
+
+    /// What the options screen says about data kept on this device (set by the page, which knows).
+    #[wasm_bindgen]
+    pub fn set_storage_info(lines: Vec<String>) {
+        host::set_info(lines);
+    }
+
+    /// The browser side of the save store. Values arrive already crash-safe (`SlotStorage` wraps this: two
+    /// checksummed slots per value), so a write that is cut short costs nothing but itself.
+    struct WebStorage {
+        mode: SaveMode,
+        /// `Opfs`: every value (the files are only read at start). `Memory`: the session's values.
+        values: std::collections::HashMap<String, Vec<u8>>,
+    }
+
+    impl WebStorage {
         const PREFIX: &'static str = "monkey-ball-rs.";
 
-        fn store() -> Option<web_sys::Storage> {
-            web_sys::window()?.local_storage().ok()?
+        fn new() -> Self {
+            let mode = SAVE_MODE.with(Cell::get);
+            let preload = SAVE_PRELOAD.with(|p| std::mem::take(&mut *p.borrow_mut()));
+            Self {
+                mode,
+                values: if mode == SaveMode::Opfs {
+                    preload.into_iter().collect()
+                } else {
+                    Default::default()
+                },
+            }
+        }
+
+        fn local() -> io::Result<web_sys::Storage> {
+            web_sys::window()
+                .and_then(|w| w.local_storage().ok().flatten())
+                .ok_or_else(|| io::Error::other(NO_STORAGE))
         }
     }
 
     const NO_STORAGE: &str =
         "this browser gives the page no storage; progress lasts until the page closes";
 
-    impl mb_app::mb_game::Storage for LocalStorage {
+    impl mb_app::mb_game::Storage for WebStorage {
         fn read(&self, key: &str) -> io::Result<Option<Vec<u8>>> {
-            if self.in_fallback.contains(key) {
-                return self.fallback.read(key);
+            if self.mode != SaveMode::Local {
+                return Ok(self.values.get(key).cloned());
             }
-            let Some(store) = Self::store() else {
-                // Nothing was ever stored: a fresh profile, not an error (the first save says so).
-                return Ok(None);
-            };
-            let hex = match store.get_item(&format!("{}{key}", Self::PREFIX)) {
+            let hex = match Self::local()?.get_item(&format!("{}{key}", Self::PREFIX)) {
                 Ok(Some(hex)) => hex,
                 Ok(None) => return Ok(None),
                 Err(e) => return Err(io::Error::other(describe(&e))),
@@ -780,38 +858,43 @@ mod web {
         }
 
         fn write(&mut self, key: &str, data: &[u8]) -> io::Result<()> {
-            let hex: String = data.iter().map(|b| format!("{b:02x}")).collect();
-            let result = match Self::store() {
-                Some(s) => s
-                    .set_item(&format!("{}{key}", Self::PREFIX), &hex)
-                    .map_err(|e| io::Error::other(format!("browser storage: {}", describe(&e)))),
-                None => Err(io::Error::other(NO_STORAGE)),
-            };
-            match result {
-                Ok(()) => {
-                    // Stored for real again: stop serving the session copy.
-                    if self.in_fallback.remove(key) {
-                        let _ = self.fallback.remove(key);
+            match self.mode {
+                SaveMode::Opfs => {
+                    self.values.insert(key.to_string(), data.to_vec());
+                    call_page(
+                        "mbSaveWrite",
+                        &[JsValue::from_str(key), Uint8Array::from(data).into()],
+                    );
+                    // The file write is asynchronous: a failure of an earlier one is reported now.
+                    match SAVE_ERROR.with(|e| e.borrow_mut().take()) {
+                        Some(e) => Err(io::Error::other(e)),
+                        None => Ok(()),
                     }
-                    Ok(())
                 }
-                Err(e) => {
-                    self.fallback.write(key, data)?;
-                    self.in_fallback.insert(key.to_string());
-                    Err(e)
+                SaveMode::Local => {
+                    let hex: String = data.iter().map(|b| format!("{b:02x}")).collect();
+                    Self::local()?
+                        .set_item(&format!("{}{key}", Self::PREFIX), &hex)
+                        .map_err(|e| io::Error::other(format!("browser storage: {}", describe(&e))))
+                }
+                SaveMode::Memory => {
+                    self.values.insert(key.to_string(), data.to_vec());
+                    Err(io::Error::other(NO_STORAGE))
                 }
             }
         }
 
         fn remove(&mut self, key: &str) -> io::Result<()> {
-            if self.in_fallback.remove(key) {
-                let _ = self.fallback.remove(key);
-            }
-            match Self::store() {
-                Some(s) => s
+            self.values.remove(key);
+            match self.mode {
+                SaveMode::Opfs => {
+                    call_page("mbSaveRemove", &[JsValue::from_str(key)]);
+                    Ok(())
+                }
+                SaveMode::Local => Self::local()?
                     .remove_item(&format!("{}{key}", Self::PREFIX))
                     .map_err(|e| io::Error::other(describe(&e))),
-                None => Ok(()),
+                SaveMode::Memory => Ok(()),
             }
         }
     }
@@ -1052,6 +1135,14 @@ mod web {
 
         fn on_nav_depth(&mut self, depth: u32) {
             NAV_DEPTH.with(|d| d.set(depth));
+        }
+
+        fn wants_status(&mut self) -> bool {
+            STATUS.with(|s| s.borrow().0)
+        }
+
+        fn on_status(&mut self, status: String) {
+            STATUS.with(|s| *s.borrow_mut() = (false, status));
         }
 
         /// Called once per presented frame, which also makes it the frame counter.

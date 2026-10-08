@@ -6,7 +6,6 @@ use std::path::PathBuf;
 
 mod bundle;
 mod check_rvz;
-mod serve;
 
 const USAGE: &str = "usage:
   xtask disc-info <disc image>                       (RVZ none/Zstandard, ISO, GCM)
@@ -16,11 +15,7 @@ const USAGE: &str = "usage:
                                                       nod crate: every disc byte, the file list, every file)
   xtask bundle-web [--single] [--pkg <dir>] [--out <dir>] [--wasm-gz <file>]
                                                      (assemble web/dist from web/ and the wasm-bindgen
-                                                      output; scripts/build-web runs it)
-  xtask serve-web [port] [--root <dir>] [--lan] [--disc <disc image>]
-                                                     (developer tool: serve web/dist on
-                                                      http://localhost:8080; --lan for a phone on the same
-                                                      network; see docs/WEB.md)";
+                                                      output; scripts/build-web runs it)";
 
 fn main() {
     let mut args = std::env::args().skip(1);
@@ -86,17 +81,6 @@ fn main() {
                 .join("web");
             if let Err(e) = bundle::parse_args(args, web).and_then(bundle::run) {
                 eprintln!("bundle-web: {e}");
-                std::process::exit(2);
-            }
-        }
-        Some("serve-web") => {
-            // The workspace's web/ directory, wherever cargo was started from.
-            let web = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("..")
-                .join("web");
-            let result = serve::parse_args(args, web).and_then(serve::run);
-            if let Err(e) = result {
-                eprintln!("serve-web: {e}");
                 std::process::exit(2);
             }
         }

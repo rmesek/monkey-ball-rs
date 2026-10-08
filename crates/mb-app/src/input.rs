@@ -3,7 +3,7 @@
 //!
 //! What a shell feeds, once per event or per frame:
 //! * keys / buttons: [`InputState::set_action`]; sticks: [`InputState::set_axis`] (`MoveX`/`MoveY`, +Y = forward);
-//!   device tilt (Stage 2 gyro): `TiltX`/`TiltY`, same sign convention, non-zero tilt wins over the stick.
+//!   device tilt (`tilt`): `TiltX`/`TiltY`, same sign convention, non-zero tilt wins over the stick.
 //! * pointer (mouse cursor or the primary touch), in target pixels with the origin top-left:
 //!   [`InputState::set_pointer`] on every move (`None` when the cursor leaves the window),
 //!   [`InputState::set_pointer_down`] for the primary button or touch contact, [`InputState::add_scroll`]
@@ -44,7 +44,7 @@ pub enum Axis {
     MoveY,
     LookX,
     LookY,
-    /// Device tilt (accelerometer), reserved for the Android/web shells.
+    /// Device tilt (the browser shell feeds it from `deviceorientation`, see `tilt`).
     TiltX,
     TiltY,
 }

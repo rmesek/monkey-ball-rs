@@ -34,7 +34,10 @@ self.addEventListener("fetch", (event) => {
   event.respondWith(
     caches.open(CACHE).then(async (cache) => {
       // The page itself may be asked for with a query string (?gl=1, ?fps=1): the bundle has one page.
-      const hit = (await cache.match(request)) || (request.mode === "navigate" ? await cache.match("./") : null);
+      // Bundle files are also asked for with the build's ?v= stamp, which the cache name already covers.
+      const hit =
+        (await cache.match(request, { ignoreSearch: true })) ||
+        (request.mode === "navigate" ? await cache.match("./") : null);
       return hit || fetch(request);
     }),
   );

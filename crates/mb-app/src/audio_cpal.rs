@@ -1,4 +1,4 @@
-//! Native audio output through cpal (WASAPI, CoreAudio, ALSA; AAudio on Android): the device's callback
+//! Native audio output through cpal (WASAPI, CoreAudio, ALSA): the device's callback
 //! pulls stereo PCM from `mb-audio`'s mixer.
 //!
 //! Threads: the game thread owns [`CpalBackend`] and sends `MixMsg`s through the mixer's bounded queue
