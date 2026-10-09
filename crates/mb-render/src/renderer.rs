@@ -16,18 +16,22 @@ use crate::camera::Camera;
 use crate::effects::{
     BlendMode, DrawOrder, InstanceBatchId, InstanceStyle, Quad, Shadow, DRAW_ORDERS,
 };
-use crate::gpu_types::{InstanceRaw, MaterialUniform, ObjectUniform, SceneUniform, Vertex};
+use crate::gpu_types::{
+    InstanceRaw, MaterialUniform, ObjectExtra, ObjectSlot, ObjectUniform, SceneUniform, Vertex,
+};
 use crate::instances::InstanceStore;
 use crate::lighting::Lighting;
 use crate::material::{
-    material_uniform, naomi_material_uniform, naomi_pipeline_key, naomi_sampler_key, pipeline_key,
-    sampler_key, LayerKind, PipelineKey, SamplerKey, WrapKey,
+    material_uniform_layers, naomi_material_uniform, naomi_pipeline_key, naomi_sampler_key,
+    opaque_at_full_alpha, pipeline_key, sampler_key, LayerInfo, LayerKind, PipelineKey, SamplerKey,
+    WrapKey,
 };
 // Only the readback path (`render_to_rgba`) names the type, and that path does not exist on wasm32.
 #[cfg(not(target_arch = "wasm32"))]
 use crate::offscreen::OffscreenTarget;
 use crate::quads::QuadBatcher;
-use crate::sprite::{Sprite, SpriteRenderer};
+use crate::sprite::{Sprite, SpriteBlend, SpriteRenderer};
+use crate::wave::WaveParams;
 
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
@@ -61,6 +65,26 @@ pub struct LoadStats {
     pub texture_upload_ms: f64,
     /// Display-list decoding, vertex packing, buffer and pipeline creation.
     pub mesh_ms: f64,
+}
+
+/// GPU objects the renderer has created since it was made, never reset. Creating any of them costs a
+/// driver call (and on WebGL2 often a stall), so none may be created while a stage is played: a test
+/// reads the counters before and after some frames and compares. Not counted: shader modules and layouts
+/// (made once, at construction and at the first quad reservation), texture views, and what an
+/// [`OffscreenTarget`](crate::OffscreenTarget) creates for itself.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GpuCounters {
+    pub buffers: u64,
+    pub textures: u64,
+    pub pipelines: u64,
+    pub bind_groups: u64,
+    pub samplers: u64,
+}
+
+impl GpuCounters {
+    pub fn total(&self) -> u64 {
+        self.buffers + self.textures + self.pipelines + self.bind_groups + self.samplers
+    }
 }
 
 /// Which pass an object is drawn in.
@@ -135,6 +159,8 @@ struct GpuModel {
     /// Bounding sphere of all vertices in model space, for frustum culling.
     center: Vec3,
     radius: f32,
+    /// The bounding sphere the model file states (centre, radius): the specular tex gens use it.
+    bound: [f32; 4],
 }
 
 struct Object {
@@ -149,6 +175,17 @@ struct Object {
     tilted: bool,
     /// The projected shadow of the scene uniform falls on it.
     receiver: bool,
+    /// Rows of the texture matrix (`RenderParams.texMtx`).
+    tex_matrix: [[f32; 4]; 2],
+    /// The texture matrix applies to every diffuse and alpha layer, not only to the flagged ones.
+    tex_every_layer: bool,
+    /// `RenderParams.disableSpecular`.
+    specular_disabled: bool,
+    /// World-specular layers add nothing (the reference's background light groups).
+    world_specular_disabled: bool,
+    wave: Option<WaveParams>,
+    /// `RenderParams.depthOffset`: added to the sort distance of the object's blended meshes.
+    depth_offset: f32,
     dirty: bool,
     /// Bounding sphere in world space before the tilt (refreshed with the uniform).
     center: Vec3,
@@ -247,6 +284,12 @@ pub struct Renderer {
     pipelines: Vec<wgpu::RenderPipeline>,
     pipeline_index: HashMap<PipelineVariant, usize>,
     textures: Vec<GpuTexture>,
+    /// RGBA bytes of each texture, all mip levels.
+    texture_sizes: Vec<usize>,
+    counters: GpuCounters,
+    /// Frame time of the vertex wave, and how many objects have one.
+    wave_time: f32,
+    wave_objects: usize,
     white: TextureId,
     samplers: HashMap<SamplerKey, wgpu::Sampler>,
     materials: Vec<wgpu::BindGroup>,
@@ -272,7 +315,7 @@ pub struct Renderer {
     scene_data: [Option<SceneUniform>; 2],
     depth: Option<(wgpu::Texture, wgpu::TextureView, (u32, u32))>,
     sprites: SpriteRenderer,
-    sprite_queue: Vec<Sprite>,
+    sprite_queue: Vec<(Sprite, SpriteBlend)>,
     /// Opaque draws per layer (see `rebuild_opaque`); rebuilt only when objects are added or change pass.
     solid: [Vec<DrawItem>; 2],
     ordered: [Vec<DrawItem>; 2],
@@ -311,7 +354,8 @@ fn uniform_entry(binding: u32, visibility: wgpu::ShaderStages) -> wgpu::BindGrou
     }
 }
 
-const OBJECT_UNIFORM_SIZE: usize = std::mem::size_of::<ObjectUniform>();
+/// One slot of the object uniform buffer: `Object` in shader.wgsl.
+const OBJECT_UNIFORM_SIZE: usize = std::mem::size_of::<ObjectSlot>();
 
 fn layer_index(layer: Layer) -> usize {
     match layer {
@@ -469,11 +513,14 @@ impl Renderer {
         let object_stride = OBJECT_UNIFORM_SIZE.div_ceil(align) * align;
         let mut slots = vec![0u8; object_stride * 2];
         for (i, tilted) in [0.0, 1.0].into_iter().enumerate() {
-            let u = ObjectUniform {
-                model: Mat4::IDENTITY.to_cols_array_2d(),
-                normal_mat: Mat4::IDENTITY.to_cols_array_2d(),
-                color_mul: [1.0; 4],
-                params: [1.0, tilted, 0.0, 0.0],
+            let u = ObjectSlot {
+                base: ObjectUniform {
+                    model: Mat4::IDENTITY.to_cols_array_2d(),
+                    normal_mat: Mat4::IDENTITY.to_cols_array_2d(),
+                    color_mul: [1.0; 4],
+                    params: [1.0, tilted, 0.0, 0.0],
+                },
+                extra: ObjectExtra::default(),
             };
             slots[i * object_stride..i * object_stride + OBJECT_UNIFORM_SIZE]
                 .copy_from_slice(bytemuck::bytes_of(&u));
@@ -507,6 +554,15 @@ impl Renderer {
             pipelines: Vec::new(),
             pipeline_index: HashMap::new(),
             textures: Vec::new(),
+            texture_sizes: Vec::new(),
+            // Two scene buffers, the instance object buffer and its bind group, and the sprite renderer.
+            counters: GpuCounters {
+                buffers: 3 + SpriteRenderer::CREATED.buffers,
+                bind_groups: 1 + SpriteRenderer::CREATED.bind_groups,
+                ..SpriteRenderer::CREATED
+            },
+            wave_time: 0.0,
+            wave_objects: 0,
             white: TextureId(0),
             samplers: HashMap::new(),
             materials: Vec::new(),
@@ -558,6 +614,7 @@ impl Renderer {
         let (texture, key) = self.shadow_mask.unwrap_or((self.white, fallback));
         let sampler = self.sampler(key);
         let view = &self.textures[texture.0].view;
+        self.counters.bind_groups += self.scene_buffers.len() as u64;
         self.scene_groups = (self.scene_buffers.iter())
             .map(|buffer| {
                 self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -611,6 +668,7 @@ impl Renderer {
         let (w, h, _) = levels[0];
         let max_levels = 32 - w.max(h).max(1).leading_zeros();
         let count = (levels.len() as u32).min(max_levels).max(1);
+        self.counters.textures += 1;
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("tpl texture"),
             size: wgpu::Extent3d {
@@ -647,12 +705,14 @@ impl Renderer {
             );
         }
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        self.load_stats.textures += 1;
-        self.load_stats.texture_bytes += levels
+        let bytes = levels
             .iter()
             .take(count as usize)
             .map(|l| l.2.len())
             .sum::<usize>();
+        self.texture_sizes.push(bytes);
+        self.load_stats.textures += 1;
+        self.load_stats.texture_bytes += bytes;
         self.load_stats.texture_upload_ms += ms_since(started);
         self.changed = true;
         self.textures.push(GpuTexture {
@@ -685,9 +745,11 @@ impl Renderer {
 
     fn sampler(&mut self, key: SamplerKey) -> wgpu::Sampler {
         let device = &self.device;
+        let counters = &mut self.counters;
         self.samplers
             .entry(key)
             .or_insert_with(|| {
+                counters.samplers += 1;
                 device.create_sampler(&wgpu::SamplerDescriptor {
                     label: Some("tev sampler"),
                     address_mode_u: key.wrap_s.to_wgpu(),
@@ -736,6 +798,7 @@ impl Renderer {
             return *i;
         }
         let PipelineVariant { key, samples, .. } = variant;
+        self.counters.pipelines += 1;
         let layouts = [Some(Vertex::layout()), Some(InstanceRaw::layout())];
         let blend = key.blend.map(|(src, dst)| wgpu::BlendState {
             color: wgpu::BlendComponent {
@@ -836,6 +899,7 @@ impl Renderer {
             pipeline_blend
         };
         let verts = pack_vertices(v);
+        self.counters.buffers += 2;
         let vertex = self
             .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -892,12 +956,15 @@ impl Renderer {
                 }
             };
             let key = pipeline_key(&shape.material, mesh.cull);
-            // `Some(uses vertex colours)`: the material itself never produces alpha below one.
-            let solid = match material.2 {
-                Some(true) => mesh.vertices.colors.iter().all(|c| c[3] == 255),
-                Some(false) => true,
-                None => false,
-            };
+            // `Some(uses vertex colours)`: the material itself never produces alpha below one. Blending
+            // is a no-op then only for factors that reduce to "source" at full alpha: an additive
+            // material adds whatever its alpha is.
+            let solid = opaque_at_full_alpha(&shape.material)
+                && match material.2 {
+                    Some(true) => mesh.vertices.colors.iter().all(|c| c[3] == 255),
+                    Some(false) => true,
+                    None => false,
+                };
             out.push(self.make_mesh(
                 &mesh.vertices,
                 &mesh.indices,
@@ -908,7 +975,8 @@ impl Renderer {
             ));
         }
         self.load_stats.mesh_ms += ms_since(started);
-        Ok(self.push_model(out, bounds))
+        let [x, y, z] = model.bound_sphere_center;
+        Ok(self.push_model(out, bounds, [x, y, z, model.bound_sphere_radius]))
     }
 
     /// Upload a NaomiLib model (stages such as 10, 19, 20, 30, ...). `textures` belongs to the stage
@@ -954,15 +1022,22 @@ impl Renderer {
             ));
         }
         self.load_stats.mesh_ms += ms_since(started);
-        self.push_model(out, bounds)
+        let [x, y, z] = model.bound_sphere_center;
+        self.push_model(out, bounds, [x, y, z, model.bound_sphere_radius])
     }
 
-    fn push_model(&mut self, meshes: Vec<GpuMesh>, (center, radius): (Vec3, f32)) -> ModelId {
+    fn push_model(
+        &mut self,
+        meshes: Vec<GpuMesh>,
+        (center, radius): (Vec3, f32),
+        bound: [f32; 4],
+    ) -> ModelId {
         self.models.push(GpuModel {
             has_translucent: meshes.iter().any(|m| m.translucent),
             meshes,
             center,
             radius,
+            bound,
         });
         ModelId(self.models.len() - 1)
     }
@@ -978,27 +1053,21 @@ impl Renderer {
         let mut layers: Vec<(TextureId, SamplerKey)> = Vec::new();
         if m.flags & mb_gma::material_flags::SIMPLE_MATERIAL == 0 {
             for layer in model.shape_tev_layers(shape).take(3) {
-                kinds.push(LayerKind::from_flags(layer.flags));
+                kinds.push(LayerInfo::from_flags(layer.flags));
                 let id = self.texture_or_white(textures, usize::try_from(layer.tex_idx).ok());
                 let (w, h) = (self.textures[id.0].width, self.textures[id.0].height);
                 layers.push((id, sampler_key(layer, w, h)));
             }
         }
-        let uniform = material_uniform(m, &kinds);
-        let mut samples = 0;
-        for (i, kind) in kinds.iter().enumerate() {
-            samples |= match kind {
-                LayerKind::Diffuse | LayerKind::AlphaBlend => 1 << i,
-                LayerKind::ViewSpecular => 8 << i,
-                LayerKind::WorldSpecular => 0,
-            };
-        }
+        let uniform = material_uniform_layers(m, &kinds);
+        // Every layer fetches its texture once, through the coordinates the vertex shader generates.
+        let samples = (1u32 << kinds.len()) - 1;
         // Alpha is one unless the material, an alpha layer or a texture with an alpha channel lowers it.
         let opaque = uniform.mat_color[3] >= 1.0
             && kinds
                 .iter()
                 .zip(&layers)
-                .all(|(kind, (tex, _))| match kind {
+                .all(|(layer, (tex, _))| match layer.kind {
                     LayerKind::Diffuse => !self.textures[tex.0].alpha,
                     LayerKind::AlphaBlend => false,
                     LayerKind::ViewSpecular | LayerKind::WorldSpecular => true,
@@ -1031,6 +1100,8 @@ impl Renderer {
         if let Some(i) = self.material_index.get(&key) {
             return *i;
         }
+        self.counters.buffers += 1;
+        self.counters.bind_groups += 1;
         let buffer = self
             .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -1097,6 +1168,12 @@ impl Renderer {
             sort_bias: None,
             tilted: false,
             receiver: false,
+            tex_matrix: ObjectExtra::default().tex_mtx,
+            tex_every_layer: false,
+            specular_disabled: false,
+            world_specular_disabled: false,
+            wave: None,
+            depth_offset: 0.0,
             dirty: true,
             center: Vec3::ZERO,
             radius: 0.0,
@@ -1175,6 +1252,97 @@ impl Renderer {
         }
     }
 
+    /// The object's texture matrix, the reference's `RenderParams.texMtx` (GX `TEXMTX1`), as its two rows:
+    /// a layer's coordinates become `(dot(rows[0], (s, t, 1, 1)), dot(rows[1], (s, t, 1, 1)))`. It
+    /// applies to the diffuse and alpha layers flagged `EnableUvScroll` in the model file, like the
+    /// reference; [`Renderer::set_tex_matrix_every_layer`] widens that. Identity until set.
+    /// [`crate::material::tex_matrix_rows`] converts a 4x4.
+    pub fn set_tex_matrix(&mut self, object: ObjectId, rows: [[f32; 4]; 2]) {
+        let o = &mut self.objects[object.0];
+        if o.tex_matrix != rows {
+            o.tex_matrix = rows;
+            o.dirty = true;
+        }
+    }
+
+    /// [`Renderer::set_tex_matrix`] for a plain scroll: `mat4.fromTranslation(texMtx, [s, t, 0])`.
+    pub fn set_tex_offset(&mut self, object: ObjectId, offset: [f32; 2]) {
+        self.set_tex_matrix(
+            object,
+            [[1.0, 0.0, 0.0, offset[0]], [0.0, 1.0, 0.0, offset[1]]],
+        );
+    }
+
+    /// Apply the object's texture matrix to all its diffuse and alpha layers, whatever their flags
+    /// (specular layers keep their generated coordinates). No layer on the SMB1 disc carries the
+    /// `EnableUvScroll` flag, so the reference's own scrolls do nothing there; this is the switch that
+    /// makes a scroll show.
+    pub fn set_tex_matrix_every_layer(&mut self, object: ObjectId, every_layer: bool) {
+        let o = &mut self.objects[object.0];
+        if o.tex_every_layer != every_layer {
+            o.tex_every_layer = every_layer;
+            o.dirty = true;
+        }
+    }
+
+    /// The reference's `RenderParams.disableSpecular` (its hack for the inner ball shells): view- and
+    /// world-specular layers of the object add nothing.
+    pub fn set_specular_disabled(&mut self, object: ObjectId, disabled: bool) {
+        let o = &mut self.objects[object.0];
+        if o.specular_disabled != disabled {
+            o.specular_disabled = disabled;
+            o.dirty = true;
+        }
+    }
+
+    /// World-specular layers of the object add nothing while view-specular ones stay: what the
+    /// reference does to background objects in a light group (`LightingGroups.getForBgFlags`, a
+    /// specular colour scale of zero for `flags >>> 28 != 0`).
+    pub fn set_world_specular_disabled(&mut self, object: ObjectId, disabled: bool) {
+        let o = &mut self.objects[object.0];
+        if o.world_specular_disabled != disabled {
+            o.world_specular_disabled = disabled;
+            o.dirty = true;
+        }
+    }
+
+    /// Displace the object's vertices by the bonus wave in the vertex shader (positions and normals, in
+    /// model space, about the model's y axis), or stop doing so with `None`. The wave follows
+    /// [`Renderer::set_wave_time`]. Instance batches are not waved.
+    pub fn set_wave(&mut self, object: ObjectId, wave: Option<WaveParams>) {
+        let o = &mut self.objects[object.0];
+        if o.wave != wave {
+            self.wave_objects =
+                self.wave_objects + wave.is_some() as usize - o.wave.is_some() as usize;
+            o.wave = wave;
+            o.dirty = true;
+        }
+    }
+
+    /// The time of the vertex wave in 60 Hz frames (the reference's `u_SceneTimeFrames`; use the stage
+    /// timer the collision ripple runs on, blended between ticks). Costs nothing while no object has a
+    /// wave, and one object upload per waved object when it changes.
+    pub fn set_wave_time(&mut self, frames: f32) {
+        if self.wave_time == frames {
+            return;
+        }
+        self.wave_time = frames;
+        if self.wave_objects > 0 {
+            for o in self.objects.iter_mut().filter(|o| o.wave.is_some()) {
+                o.dirty = true;
+            }
+        }
+    }
+
+    /// The reference's `RenderParams.depthOffset`: added to the distance by which the object's blended
+    /// meshes are sorted (larger = drawn earlier). Background objects use 400 there. Unlike
+    /// [`Renderer::set_sort_bias`] it leaves opaque meshes in the opaque pass and keeps per-mesh origins.
+    pub fn set_depth_offset(&mut self, object: ObjectId, offset: f32) {
+        let o = &mut self.objects[object.0];
+        self.changed |= o.depth_offset != offset;
+        o.depth_offset = offset;
+    }
+
     /// World-space rotation shown on every tilted object of the world layer. It lives in the scene uniform,
     /// so tilting the stage re-uploads one matrix and no object.
     pub fn set_tilt(&mut self, tilt: Mat4) {
@@ -1233,6 +1401,8 @@ impl Renderer {
         self.quads.discard();
         self.shadow = None;
         self.tilt = Mat4::IDENTITY;
+        self.wave_objects = 0;
+        self.wave_time = 0.0;
         self.opaque_dirty = true;
         self.changed = true;
     }
@@ -1241,9 +1411,21 @@ impl Renderer {
         self.textures.len()
     }
 
+    /// RGBA bytes of the textures that exist now, all mip levels (the 1x1 white one included):
+    /// [`LoadStats::texture_bytes`] counts uploads, this drops what [`Renderer::truncate_textures`] freed.
+    pub fn texture_bytes(&self) -> usize {
+        self.texture_sizes.iter().sum()
+    }
+
+    /// GPU objects created since the renderer was made. Reading it costs a copy of five integers.
+    pub fn counters(&self) -> GpuCounters {
+        self.counters
+    }
+
     /// Free every texture created after the first `keep` (ids handed out later become invalid).
     pub fn truncate_textures(&mut self, keep: usize) {
         self.textures.truncate(keep.max(1));
+        self.texture_sizes.truncate(keep.max(1));
         // Texture ids are reused after this, so they no longer identify a material.
         self.material_index.clear();
         self.changed = true;
@@ -1259,7 +1441,31 @@ impl Renderer {
 
     /// Queue a screen-space quad for the next `render` call (cleared afterwards).
     pub fn draw_sprite(&mut self, sprite: Sprite) {
-        self.sprite_queue.push(sprite);
+        self.sprite_queue.push((sprite, SpriteBlend::Alpha));
+    }
+
+    /// [`Renderer::draw_sprite`] with a blend mode. Sprites draw in the order they are queued;
+    /// consecutive ones with the same texture share a draw call unless one is additive and the other
+    /// not, so a frame without additive sprites costs what it did.
+    pub fn draw_sprite_blended(&mut self, sprite: Sprite, blend: SpriteBlend) {
+        self.sprite_queue.push((sprite, blend));
+    }
+
+    /// Create what sprites with `texture` need (a bind group, shared by every [`SpriteBlend`], and the
+    /// first time the sprite vertex buffer) ahead of the first one, so that drawing a HUD texture for
+    /// the first time during play creates nothing. Call it while loading; false when the texture does
+    /// not exist. [`Renderer::truncate_textures`] drops the bind groups: warm again after it.
+    pub fn warm_sprite_texture(&mut self, texture: TextureId) -> bool {
+        self.sprites.reserve(&self.device, 0, &mut self.counters);
+        self.sprites
+            .warm_texture(&self.device, &self.textures, texture.0, &mut self.counters)
+    }
+
+    /// Room for `sprites` sprites per frame without the vertex buffer growing during play (170 unless
+    /// reserved). Creates the buffer: call it while loading.
+    pub fn reserve_sprites(&mut self, sprites: usize) {
+        self.sprites
+            .reserve(&self.device, sprites, &mut self.counters);
     }
 
     /// Drop queued sprites without drawing them (a frame that was updated but is not rendered). The
@@ -1281,7 +1487,8 @@ impl Renderer {
         style: InstanceStyle,
     ) -> InstanceBatchId {
         let capacity = (self.instances.capacity()).max(crate::instances::DEFAULT_CAPACITY);
-        self.instances.reserve(&self.device, capacity);
+        self.instances
+            .reserve(&self.device, capacity, &mut self.counters);
         let meshes: Vec<(PipelineKey, u32, bool)> = self.models[model.0]
             .meshes
             .iter()
@@ -1323,7 +1530,8 @@ impl Renderer {
     /// Room for `capacity` instances per frame over all batches (512 unless reserved). Creates the buffer:
     /// call it while loading. The buffer never grows by itself; a frame that pushes more loses the rest.
     pub fn reserve_instances(&mut self, capacity: usize) {
-        self.instances.reserve(&self.device, capacity.max(1));
+        self.instances
+            .reserve(&self.device, capacity.max(1), &mut self.counters);
     }
 
     /// Queue one instance of a batch for the next frame: its model-to-world transform (affine) and a
@@ -1349,6 +1557,7 @@ impl Renderer {
             self.target_format,
             DEPTH_FORMAT,
             capacity,
+            &mut self.counters,
         );
     }
 
@@ -1359,7 +1568,7 @@ impl Renderer {
             self.reserve_quads(crate::quads::DEFAULT_CAPACITY);
         }
         self.quads
-            .warm_texture(&self.device, &self.textures, texture.0);
+            .warm_texture(&self.device, &self.textures, texture.0, &mut self.counters);
     }
 
     /// Queue one world-space quad for the next frame: depth tested, not written to depth, both faces,
@@ -1412,6 +1621,7 @@ impl Renderer {
             return;
         }
         self.changed = true;
+        self.counters.textures += 1;
         let tex = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("depth"),
             size: wgpu::Extent3d {
@@ -1495,6 +1705,8 @@ impl Renderer {
             .is_none_or(|b| b.capacity < count)
         {
             let capacity = count.next_power_of_two().max(64);
+            self.counters.buffers += 1;
+            self.counters.bind_groups += 1;
             let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("objects"),
                 size: (capacity * stride) as u64,
@@ -1523,6 +1735,7 @@ impl Renderer {
         self.object_data.resize(count * stride, 0);
         let buffer = &self.object_buffer.as_ref().unwrap().buffer;
         let models = &self.models;
+        let wave_time = self.wave_time;
         let mut uploaded = 0;
         // Current run of slots to upload, as a slot range.
         let mut run: Option<(usize, usize)> = None;
@@ -1532,20 +1745,39 @@ impl Renderer {
             // Hidden objects keep their dirty flag and are written when they appear.
             let refresh = o.dirty && (o.visible || grown);
             if refresh {
-                let u = ObjectUniform {
-                    model: o.transform.to_cols_array_2d(),
-                    normal_mat: normal_matrix(&o.transform).to_cols_array_2d(),
-                    color_mul: o.color_mul,
-                    params: [
-                        o.alpha,
-                        o.tilted as u32 as f32,
-                        o.receiver as u32 as f32,
-                        0.0,
-                    ],
+                let model = &models[o.model.0];
+                let u = ObjectSlot {
+                    base: ObjectUniform {
+                        model: o.transform.to_cols_array_2d(),
+                        normal_mat: normal_matrix(&o.transform).to_cols_array_2d(),
+                        color_mul: o.color_mul,
+                        params: [
+                            o.alpha,
+                            o.tilted as u32 as f32,
+                            o.receiver as u32 as f32,
+                            0.0,
+                        ],
+                    },
+                    extra: ObjectExtra {
+                        tex_mtx: o.tex_matrix,
+                        bound: model.bound,
+                        spec: [
+                            !o.specular_disabled as u32 as f32,
+                            !(o.specular_disabled || o.world_specular_disabled) as u32 as f32,
+                            o.wave.is_some() as u32 as f32,
+                            o.tex_every_layer as u32 as f32,
+                        ],
+                        wave: o.wave.map_or([0.0; 4], |w| w.uniform(wave_time)),
+                    },
                 };
                 self.object_data[i * stride..i * stride + OBJECT_UNIFORM_SIZE]
                     .copy_from_slice(bytemuck::bytes_of(&u));
-                let model = &models[o.model.0];
+                // The wave lifts vertices out of the model's own bounds.
+                let lift = o.wave.map_or(0.0, |w| {
+                    // Farthest a vertex can be from the model's y axis.
+                    let reach = model.center.x.hypot(model.center.z) + model.radius;
+                    w.max_amplitude(reach)
+                });
                 o.center = o.transform.transform_point3(model.center);
                 let scale = o
                     .transform
@@ -1555,7 +1787,7 @@ impl Renderer {
                     .max(o.transform.y_axis.truncate().length_squared())
                     .max(o.transform.z_axis.truncate().length_squared())
                     .sqrt();
-                o.radius = model.radius * scale;
+                o.radius = (model.radius + lift) * scale;
                 o.dirty = false;
             }
             if !(refresh || grown) {
@@ -1677,9 +1909,11 @@ impl Renderer {
                             .length()
                             + bias
                     }
-                    None => view
-                        .transform_point3(o.transform.transform_point3(m.origin))
-                        .length(),
+                    None => {
+                        view.transform_point3(o.transform.transform_point3(m.origin))
+                            .length()
+                            + o.depth_offset
+                    }
                 };
                 self.translucent[layer].push(DrawItem {
                     object: oi as u32,
@@ -1860,12 +2094,12 @@ impl Renderer {
         stats.quads = self.quads.counts().1;
         let sprites = std::mem::take(&mut self.sprite_queue);
         let (sprite_bytes, sprites_changed) = self.sprites.prepare(
-            &self.device,
-            &self.queue,
+            (&self.device, &self.queue),
             &sprites,
             &self.textures,
             size,
             self.target_format.is_srgb(),
+            &mut self.counters,
         );
         stats.upload_bytes += sprite_bytes;
         stats.sprite_draws = self.sprites.batch_count();

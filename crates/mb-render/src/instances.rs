@@ -32,10 +32,16 @@ pub(crate) struct InstanceStore {
 impl InstanceStore {
     /// Make room for `capacity` instances per frame over all batches. Creates the buffer, so this belongs
     /// to loading; a smaller or equal request changes nothing.
-    pub(crate) fn reserve(&mut self, device: &wgpu::Device, capacity: usize) {
+    pub(crate) fn reserve(
+        &mut self,
+        device: &wgpu::Device,
+        capacity: usize,
+        counters: &mut crate::renderer::GpuCounters,
+    ) {
         if self.buffer.is_some() && capacity <= self.capacity {
             return;
         }
+        counters.buffers += 1;
         self.buffer = Some(device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("instances"),
             size: (capacity * INSTANCE_SIZE) as u64,

@@ -65,6 +65,43 @@ pub struct ObjectUniform {
     pub params: [f32; 4],
 }
 
+/// What follows [`ObjectUniform`] in an object's slot of the uniform buffer: the per-object material
+/// parameters of the reference's `RenderParams` and the vertex wave.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable, PartialEq)]
+pub struct ObjectExtra {
+    /// The two rows of GX `TEXMTX1` (`RenderParams.texMtx`): `s' = dot(row0, (s, t, 1, 1))`.
+    pub tex_mtx: [[f32; 4]; 2],
+    /// xyz: the model's bounding-sphere centre in model space, w: its radius (specular tex gens).
+    pub bound: [f32; 4],
+    /// x: view-specular factor, y: world-specular factor (0 or 1), z: 1 = the wave displaces the vertices,
+    /// w: 1 = the texture matrix applies to every diffuse and alpha layer, flagged or not.
+    pub spec: [f32; 4],
+    /// x: amplitude at the centre, y: amplitude per unit of distance, z: angle per unit of distance,
+    /// w: angle at the centre now (S16 angle units, 65536 = one turn).
+    pub wave: [f32; 4],
+}
+
+impl Default for ObjectExtra {
+    /// Identity texture matrix, specular on, no wave: what an object has until told otherwise.
+    fn default() -> Self {
+        Self {
+            tex_mtx: [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]],
+            bound: [0.0; 4],
+            spec: [1.0, 1.0, 0.0, 0.0],
+            wave: [0.0; 4],
+        }
+    }
+}
+
+/// Group 1 as the shader sees it (`Object` in shader.wgsl): one slot of the object uniform buffer.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod, Zeroable)]
+pub struct ObjectSlot {
+    pub base: ObjectUniform,
+    pub extra: ObjectExtra,
+}
+
 /// Group 2: per-material constants (textures/samplers are separate bindings).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Pod, Zeroable, PartialEq)]
@@ -73,8 +110,10 @@ pub struct MaterialUniform {
     pub amb_mul: [f32; 4],
     pub k0: [f32; 4],
     pub flags: [u32; 4],
+    /// xyz: the kind of layers 0..2 ([`crate::material::LayerKind`]), w: bits 0..2 = the layer takes the
+    /// object's texture matrix (`EnableUvScroll`), bit 4 / 5 = some layer is view / world specular.
     pub layer_kinds: [u32; 4],
-    /// x: flip the V texture coordinate (NaomiLib meshes).
+    /// x: the V texture coordinate of NaomiLib meshes: 1 = `1 - v`, 2 = `-v`.
     pub extra: [f32; 4],
 }
 
@@ -163,6 +202,20 @@ mod tests {
         assert_eq!(size_of::<SceneUniform>() % 16, 0);
         assert_eq!(size_of::<ObjectUniform>() % 16, 0);
         assert_eq!(size_of::<MaterialUniform>() % 16, 0);
+    }
+
+    #[test]
+    fn object_slot_is_the_object_uniform_followed_by_five_vec4() {
+        // `Object` in shader.wgsl: two mat4, two vec4, then the members of `ObjectExtra`.
+        assert_eq!(size_of::<ObjectExtra>(), 16 * 5);
+        assert_eq!(size_of::<ObjectSlot>(), 64 * 2 + 16 * 7);
+        assert_eq!(std::mem::offset_of!(ObjectSlot, extra), 160);
+        assert_eq!(std::mem::offset_of!(ObjectExtra, bound), 32);
+        assert_eq!(std::mem::offset_of!(ObjectExtra, spec), 48);
+        assert_eq!(std::mem::offset_of!(ObjectExtra, wave), 64);
+        let d = ObjectExtra::default();
+        assert_eq!(d.tex_mtx, [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]]);
+        assert_eq!(d.spec, [1.0, 1.0, 0.0, 0.0]);
     }
 
     #[test]

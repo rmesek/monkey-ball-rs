@@ -12,7 +12,8 @@ pub struct Lighting {
     /// S16 angle units (65536 = full turn), as stored in the reference `BgInfo`.
     pub light_rot_x: i32,
     pub light_rot_y: i32,
-    /// Scale applied to specular konst colours of world-specular layers (reserved).
+    /// Scale applied to the specular konst colour of world-specular layers (`specularColorScale`: the
+    /// light's colour in the reference).
     pub specular_scale: [f32; 3],
 }
 

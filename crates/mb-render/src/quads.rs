@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use crate::effects::{BlendMode, DrawOrder, Quad};
 use crate::gpu_types::QuadVertex;
-use crate::renderer::GpuTexture;
+use crate::renderer::{GpuCounters, GpuTexture};
 
 /// Quads the buffer holds unless the caller reserves another number.
 pub(crate) const DEFAULT_CAPACITY: usize = 512;
@@ -110,11 +110,13 @@ impl QuadBatcher {
         target_format: wgpu::TextureFormat,
         depth_format: wgpu::TextureFormat,
         capacity: usize,
+        counters: &mut GpuCounters,
     ) {
         let capacity = capacity.clamp(1, MAX_CAPACITY);
         if matches!(&self.gpu, Some(g) if capacity <= g.capacity) {
             return;
         }
+        counters.buffers += 2;
         let vertex = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("quad vertices"),
             size: (capacity * 4 * std::mem::size_of::<QuadVertex>()) as u64,
@@ -143,6 +145,8 @@ impl QuadBatcher {
             gpu.capacity = capacity;
             return;
         }
+        counters.pipelines += 2;
+        counters.samplers += 1;
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("quad shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("quad.wgsl").into()),
@@ -205,11 +209,13 @@ impl QuadBatcher {
         device: &wgpu::Device,
         textures: &[GpuTexture],
         texture: usize,
+        counters: &mut GpuCounters,
     ) -> bool {
         let (Some(gpu), Some(tex)) = (&self.gpu, textures.get(texture)) else {
             return false;
         };
         self.texture_groups.entry(texture).or_insert_with(|| {
+            counters.bind_groups += 1;
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("quad texture"),
                 layout: &gpu.texture_layout,
