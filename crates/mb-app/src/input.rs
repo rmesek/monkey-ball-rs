@@ -33,6 +33,9 @@ pub enum Action {
     Pause,
     /// Take the pose the device is held in now as level (on-screen button while steering by tilt).
     Recenter,
+    /// The game's action button where it is not also "confirm": Space, Z, and a touch on the play area
+    /// outside the stick and the buttons. See [`InputState::primary_held`].
+    Primary,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -129,6 +132,13 @@ impl InputState {
     /// True only on the frame the action went down.
     pub fn pressed(&self, action: Action) -> bool {
         self.pressed.contains(&action)
+    }
+
+    /// The reference's `isPrimaryActionDown`: Space, Enter, Z, gamepad button 0 (A) or a touch on the play
+    /// area is held. Enter and the gamepad button arrive as [`Action::Confirm`], the others as
+    /// [`Action::Primary`]. Gameplay holds it to fast-forward the fly-in.
+    pub fn primary_held(&self) -> bool {
+        self.held(Action::Primary) || self.held(Action::Confirm)
     }
 
     /// Normalized steering vector for gameplay: `x` right, `y` forward, length <= 1 for analog sources.
@@ -314,6 +324,7 @@ pub fn action_for_key(key: winit::keyboard::KeyCode) -> Option<Action> {
         K::ArrowUp => Action::LookUp,
         K::ArrowDown => Action::LookDown,
         K::Enter => Action::Confirm,
+        K::Space | K::KeyZ => Action::Primary,
         K::Escape => Action::Cancel,
         K::KeyP => Action::Pause,
         _ => return None,
@@ -418,5 +429,19 @@ mod tests {
             Some(Action::MoveForward)
         );
         assert_eq!(action_for_key(winit::keyboard::KeyCode::F12), None);
+        // The primary action of the reference: Space, Enter and Z.
+        let mut i = InputState::new();
+        assert!(!i.primary_held());
+        for key in [
+            winit::keyboard::KeyCode::Space,
+            winit::keyboard::KeyCode::Enter,
+            winit::keyboard::KeyCode::KeyZ,
+        ] {
+            let action = action_for_key(key).unwrap();
+            i.set_action(action, true);
+            assert!(i.primary_held(), "{key:?}");
+            i.set_action(action, false);
+            assert!(!i.primary_held());
+        }
     }
 }

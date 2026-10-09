@@ -379,3 +379,243 @@ fn every_course_stage_loads_and_renders() {
         h.shutdown();
     }
 }
+
+/// What the rendered frames of a stage showed of the particles and the shadow.
+#[derive(Default)]
+struct Seen {
+    streaks: bool,
+    stars: bool,
+    flash: bool,
+    sparkles: bool,
+    confetti: bool,
+    shadow_on: bool,
+    shadow_off: bool,
+    /// Most draw calls the particles took in one frame.
+    peak_draws: usize,
+}
+
+/// Render the frame and compare what the renderer drew with what the simulation holds.
+fn look(h: &mut Headless, seen: &mut Seen) {
+    use mb_engine::BallEffectKind as Kind;
+    h.render().unwrap();
+    let stats = h.renderer().stats;
+    let view = h.top().unwrap().play_view().expect("a stage is running");
+    let rt = &view.sim.runtime;
+    let has = |kind: Kind| rt.effects.iter().any(|e| e.kind == kind);
+    // The shadow follows the ball: none while it is not there (the fly-in).
+    let visible = view.sim.ball.flags & mb_engine::constants::ball_flags::INVISIBLE == 0;
+    assert_eq!(view.shadow, visible, "tick {}", view.sim.tick);
+    seen.shadow_on |= view.shadow;
+    seen.shadow_off |= !view.shadow;
+    if rt.effects.is_empty() && rt.confetti.is_empty() {
+        assert_eq!((stats.instances, stats.quads), (0, 0));
+        assert_eq!((stats.instance_draws, stats.quad_draws), (0, 0));
+    }
+    // Every piece of confetti is an instance, in one draw per colour.
+    if !rt.confetti.is_empty() {
+        assert!(stats.instances >= rt.confetti.len(), "{stats:?}");
+        assert!(stats.instance_draws >= 5, "{stats:?}");
+        seen.confetti = true;
+    }
+    // A star is two instanced draws (its model has two meshes), a flash one.
+    if has(Kind::ColiStar) && stats.instance_draws >= 2 {
+        seen.stars = true;
+    }
+    if has(Kind::ColiFlash) && stats.instances > rt.confetti.len() {
+        seen.flash = true;
+    }
+    let sparkles = rt.effects.iter().filter(|e| e.kind == Kind::Levitate);
+    let sparkles = sparkles.count();
+    if sparkles > 0 {
+        // Four quads each, on top of whatever streaks there are.
+        assert!(stats.quads >= 4 * sparkles, "{stats:?}");
+        seen.sparkles = true;
+    } else if has(Kind::Coli) && stats.quads > 0 {
+        assert_eq!(stats.quad_draws, 1, "all streaks are one draw");
+        seen.streaks = true;
+    }
+    let draws = stats.instance_draws + stats.quad_draws;
+    assert!(draws <= 12, "particles took {draws} draws: {stats:?}");
+    seen.peak_draws = seen.peak_draws.max(draws);
+}
+
+/// Sparks while rolling, stars and a flash where the ball lands, confetti and sparkles at the goal, and
+/// the shadow under the ball: the simulation has them and the renderer draws them, in a handful of draws.
+/// A pause shows them standing still.
+#[test]
+fn particles_and_the_shadow_are_drawn_after_a_collision_and_a_goal() {
+    let _gpu = GPU.lock().unwrap_or_else(|e| e.into_inner());
+    let storage = SharedStorage::default();
+    let Some(mut h) = start(&storage) else {
+        return;
+    };
+    start_beginner_course(&mut h);
+    let mut pilot = None;
+    let mut seen = Seen::default();
+    let mut paused_once = false;
+    for frame in 0..4000 {
+        assert!(
+            h.pilot(&mut pilot, false),
+            "left the stage at frame {frame}"
+        );
+        assert!(h.step(FRAME).unwrap());
+        let view = h.top().unwrap().play_view().expect("a stage is running");
+        if view.request.floor == 2 {
+            break;
+        }
+        let busy = view.sim.runtime.effects.len() >= 20 && view.sim.phase == Phase::Playing;
+        look(&mut h, &mut seen);
+        if busy && !paused_once {
+            paused_once = true;
+            // Pause: the same particles are queued for every frame, so the picture stands still and
+            // nothing is uploaded for them.
+            h.tap(Action::Pause).unwrap();
+            h.render().unwrap();
+            let before = h.renderer().stats;
+            assert!(before.quads >= 10 && before.instances > 0, "{before:?}");
+            for _ in 0..5 {
+                h.step(FRAME).unwrap();
+                assert!(h.top().unwrap().play_view().unwrap().paused);
+                h.render().unwrap();
+                let now = h.renderer().stats;
+                assert_eq!(
+                    (now.quads, now.instances, now.quad_draws, now.instance_draws),
+                    (
+                        before.quads,
+                        before.instances,
+                        before.quad_draws,
+                        before.instance_draws
+                    )
+                );
+                assert_eq!(now.upload_bytes, 0, "a paused frame changes nothing");
+            }
+            h.tap(Action::Pause).unwrap();
+            assert!(!h.top().unwrap().play_view().unwrap().paused);
+        }
+    }
+    assert!(paused_once, "never saw twenty effects at once");
+    assert!(seen.streaks, "no streak was drawn while rolling");
+    assert!(
+        seen.flash && seen.stars,
+        "no flash or star where the ball landed"
+    );
+    assert!(
+        seen.confetti && seen.sparkles,
+        "no confetti or sparkle at the goal"
+    );
+    assert!(seen.shadow_on && seen.shadow_off);
+    // Five confetti colours, the two meshes of the star, glow, flash, streaks and sparkles.
+    assert!(
+        (6..=11).contains(&seen.peak_draws),
+        "peak {}",
+        seen.peak_draws
+    );
+    h.shutdown();
+}
+
+/// Ticks from the start of the stage being played until its intro is over.
+fn intro_ticks(h: &mut Headless) -> u32 {
+    run_until(h, 500, "the end of the intro", |h| {
+        h.top().unwrap().play_view().unwrap().sim.phase != Phase::Intro
+    });
+    h.top().unwrap().play_view().unwrap().sim.tick
+}
+
+/// Holding the action button runs the fly-in of a first attempt at twice the speed, as in the reference:
+/// Enter or the A button of a gamepad (the confirm action), Space or Z, or a finger on the play area. A key
+/// still held from the menu does not count until it has been let go, and the short intro of a retry is
+/// never shortened.
+#[test]
+fn the_action_button_fast_forwards_the_first_fly_in_only() {
+    let _gpu = GPU.lock().unwrap_or_else(|e| e.into_inner());
+    let storage = SharedStorage::unlocked();
+    let Some(mut h) = start(&storage) else {
+        return;
+    };
+    let start_stage = |h: &mut Headless| {
+        h.shutdown();
+        let menu = Menu::new(Box::new(storage.clone()))
+            .with_autostart(Some(mb_app::menu::Autostart::Stage(1)));
+        h.push(Box::new(menu)).unwrap();
+        h.step(FRAME).unwrap();
+        let view = h.top().unwrap().play_view().expect("stage 1 is running");
+        assert!(!view.request.retry && view.sim.tick <= 1);
+    };
+
+    // Nothing held: the full fly-in.
+    start_stage(&mut h);
+    assert_eq!(intro_ticks(&mut h), 360);
+
+    // Each way of holding the action: everything above the last 120 frames takes half the ticks.
+    for action in [Action::Primary, Action::Confirm] {
+        start_stage(&mut h);
+        h.input.set_action(action, true);
+        let ticks = intro_ticks(&mut h);
+        h.input.set_action(action, false);
+        assert!((240..=242).contains(&ticks), "{action:?}: {ticks} ticks");
+    }
+
+    // A finger on the play area, away from the stick and the pause button, is the action too.
+    start_stage(&mut h);
+    let layout = h.layout();
+    let mut touches = mb_app::ui::TouchControls::new();
+    let spot = (320.0, 100.0);
+    let (began, ended) = (
+        mb_app::ui::TouchPhase::Started,
+        mb_app::ui::TouchPhase::Ended,
+    );
+    touches.touch(1, began, spot, &layout, &mut h.input);
+    assert!(h.input.primary_held());
+    let ticks = intro_ticks(&mut h);
+    touches.touch(1, ended, spot, &layout, &mut h.input);
+    assert!(!h.input.primary_held());
+    assert!((240..=242).contains(&ticks), "touch: {ticks} ticks");
+
+    // Enter still down from choosing the stage is not the player holding the action ...
+    h.shutdown();
+    h.push(Box::new(Menu::new(Box::new(storage.clone()))))
+        .unwrap();
+    h.step(FRAME).unwrap();
+    h.tap(Action::LookDown).unwrap();
+    h.tap(Action::Confirm).unwrap();
+    h.tap(Action::Confirm).unwrap();
+    assert_eq!(h.status(), "menu: stage select");
+    h.input.set_action(Action::Confirm, true);
+    h.step(FRAME).unwrap();
+    assert_eq!(playing(&h).map(|p| p.0), Some(1));
+    for _ in 0..100 {
+        h.step(FRAME).unwrap();
+    }
+    let view = h.top().unwrap().play_view().unwrap();
+    assert_eq!(view.sim.intro_timer, 360 - view.sim.tick as i32);
+    // ... until it is let go and pressed again.
+    h.input.set_action(Action::Confirm, false);
+    h.step(FRAME).unwrap();
+    h.input.set_action(Action::Confirm, true);
+    let before = h.top().unwrap().play_view().unwrap().sim.intro_timer;
+    for _ in 0..10 {
+        h.step(FRAME).unwrap();
+    }
+    let view = h.top().unwrap().play_view().unwrap();
+    assert_eq!(view.sim.intro_timer, before - 20);
+    h.input.set_action(Action::Confirm, false);
+
+    // A retry (pause, Retry) has the short intro, and holding the action changes nothing about it.
+    let retry_ticks = |h: &mut Headless, hold: bool| {
+        h.tap(Action::Pause).unwrap();
+        h.tap(Action::LookDown).unwrap();
+        h.tap(Action::Confirm).unwrap();
+        let view = h.top().unwrap().play_view().unwrap();
+        assert!(!view.paused && view.sim.tick < 5);
+        if hold {
+            h.input.set_action(Action::Primary, true);
+        }
+        let ticks = intro_ticks(h);
+        h.input.set_action(Action::Primary, false);
+        ticks
+    };
+    let plain = retry_ticks(&mut h, false);
+    assert_eq!(plain, 120);
+    assert_eq!(retry_ticks(&mut h, true), plain);
+    h.shutdown();
+}

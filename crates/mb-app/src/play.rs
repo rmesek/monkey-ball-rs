@@ -14,7 +14,7 @@ use std::rc::Rc;
 
 use glam::{Mat4, Vec3};
 use mb_engine::determinism::quantize_input;
-use mb_engine::{Outcome, Phase, Sim, SimConfig};
+use mb_engine::{Outcome, Phase, Sim, SimConfig, BUTTON_PRIMARY_ACTION};
 use mb_game::progress::ControlMode;
 use mb_game::{GoalType, PlayMode, PlayRequest, PlayResult, StageOutcome};
 use mb_render::Camera;
@@ -219,6 +219,13 @@ pub struct PlayState {
     park: Option<Rc<RefCell<Option<PlayScene>>>>,
     /// The pause screen's Back button (resumes).
     back: Tap,
+    /// The primary action has been seen released since the stage started or the pause closed. Until then
+    /// a key that is still down from the menu (Enter on the stage, on Continue) is not the player holding
+    /// the action button, and does not fast-forward the fly-in.
+    primary_armed: bool,
+    /// Frames left in which the HUD's textures are drawn without size ([`UiAssets::warm`]). More than
+    /// one, because a driver may drop a frame it cannot present (and the windowless one drops the first).
+    warm_frames: u8,
 }
 
 impl PlayState {
@@ -237,6 +244,8 @@ impl PlayState {
             ui,
             park,
             back: Tap::default(),
+            primary_armed: false,
+            warm_frames: 3,
             scene: Some(scene),
             sim: None,
             hud,
@@ -299,6 +308,7 @@ impl PlayState {
         self.accumulator = REST_PHASE * TICK;
         self.pause = None;
         self.quit_confirm = None;
+        self.primary_armed = false;
     }
 
     fn retry_available(&self) -> bool {
@@ -492,6 +502,14 @@ impl Game for PlayState {
             crate::host::post(crate::host::Command::CalibrateTilt);
         }
         let retry_available = self.retry_available();
+        // `getButtonsBitmask`: the action button, once it is really the player's (see `primary_armed`).
+        let primary = ctx.input.primary_held();
+        self.primary_armed = self.pause.is_none() && (self.primary_armed || !primary);
+        let buttons = if self.primary_armed && primary {
+            BUTTON_PRIMARY_ACTION
+        } else {
+            0
+        };
 
         if let (Some(confirm), true) = (&mut self.quit_confirm, self.pause.is_some()) {
             if let Some(sounds) = self.sounds.as_mut() {
@@ -564,7 +582,9 @@ impl Game for PlayState {
                     break;
                 };
                 let was_intro = sim.phase == Phase::Intro;
-                sim.step(stick);
+                // Held on a first attempt, the action runs the fly-in at twice the speed (`fastForwardIntro`);
+                // the engine decides when that applies.
+                sim.step_with_buttons(stick, buttons);
                 if was_intro && sim.phase != Phase::Intro {
                     // GO: control starts now, so the pose held at this moment is level.
                     crate::host::post(crate::host::Command::CalibrateTilt);
@@ -605,9 +625,15 @@ impl Game for PlayState {
         let alpha = (self.accumulator / TICK).clamp(0.0, 1.0) as f32;
         scene.apply(ctx.renderer, alpha);
         self.camera = self.cameras[1].blend(&self.cameras[0], alpha, aspect(ctx.size));
+        // Particles are queued per frame like sprites: a paused frame queues the same ones again.
+        scene.draw_particles(ctx.renderer, sim, &self.camera, alpha);
 
         let frame = self.hud_frame(sim);
         let ui = self.ui.clone();
+        if self.warm_frames > 0 {
+            self.warm_frames -= 1;
+            ui.warm(ctx.renderer);
+        }
         let mut p = Painter {
             r: ctx.renderer,
             ui: &ui,
@@ -721,10 +747,12 @@ impl Game for PlayState {
     }
 
     fn play_view(&self) -> Option<PlayView<'_>> {
+        let scene = self.scene.as_ref()?;
         Some(PlayView {
             request: &self.request,
             sim: self.sim.as_ref()?,
-            stage: &self.scene.as_ref()?.assets.stagedef,
+            stage: &scene.assets.stagedef,
+            shadow: scene.shadow_visible(),
             paused: self.pause.is_some(),
             banner: self.hud.banner(),
         })

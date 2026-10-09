@@ -130,6 +130,12 @@ impl Headless {
         self.renderer.stats.draws
     }
 
+    /// The renderer, for what tests measure: `stats` of the frame last rendered with
+    /// [`Headless::render`], `load_stats` of the stage last built, texture and object counts.
+    pub fn renderer(&self) -> &Renderer {
+        &self.renderer
+    }
+
     /// Steer with `pilot` for one frame if a stage is being played (the stick goes through `InputState`
     /// like a gamepad would). Returns false when no stage is running.
     pub fn pilot(&mut self, pilot: &mut Option<Autopilot>, goal_only: bool) -> bool {

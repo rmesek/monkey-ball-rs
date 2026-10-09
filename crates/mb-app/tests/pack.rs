@@ -51,6 +51,10 @@ fn pack_bytes() -> Option<&'static [u8]> {
     .as_deref()
 }
 
+/// Files and bytes the import copies from the USA disc (144.1 MB of its 475 MB), as of version 0.1.0.
+const PACK_FILES_0_1_0: usize = 382;
+const PACK_BYTES_0_1_0: u64 = 144_084_942;
+
 /// Deferred content over `provider`; fetches take `delay` frames.
 fn deferred(provider: impl PackProvider + 'static, delay: u32) -> (Content, Rc<DeferredPack>) {
     let source = Rc::new(DeferredPack::new(Rc::new(provider), delay));
@@ -96,6 +100,13 @@ fn the_import_copies_exactly_what_the_game_reads() {
         importer.total_bytes() as f64 / 1e6,
         bytes.len()
     );
+    // The storage budget (`docs/PARITY_PLAN.md`): what version 0.1.0 copied from the USA disc. A loader
+    // that reads a new file changes these numbers; that is then a deliberate edit here, in `docs/WEB.md`
+    // and of `mb_assets::gamepack::VERSION`.
+    if importer.game_id() == "GMBE8P" {
+        assert_eq!(pack.index().len(), PACK_FILES_0_1_0);
+        assert_eq!(importer.total_bytes(), PACK_BYTES_0_1_0);
+    }
     // By kind, for the documentation: everything in the pack is something a loader reads.
     let mut kinds = [
         ("stages", 0u64),
@@ -479,4 +490,68 @@ fn an_import_cut_off_after_any_write_is_never_taken_for_a_pack() {
     }
     let pack = PackBytes::open(file).expect("complete after the last write");
     assert!(pack.index().len() > 300);
+}
+
+/// The particles and the shadow over the pack, the way the browser reads: everything they are drawn with
+/// (confetti, star and disc models, the shadow's mask, the sparkle's texture) comes from the shared files
+/// that are prepared for every stage, so nothing is read unprepared and nothing new is in the pack.
+#[test]
+fn particles_and_the_shadow_are_drawn_from_the_pack() {
+    use mb_engine::BallEffectKind as Kind;
+    let _gpu = GPU.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(bytes) = pack_bytes() else {
+        return;
+    };
+    let (content, _) = deferred(PackBytes::open(bytes.to_vec()).unwrap(), 2);
+    let Some(mut h) = start(&content) else {
+        return;
+    };
+    // Title -> Course Play -> Beginner, then forward through the goal of floor 1.
+    h.tap(Action::Confirm).unwrap();
+    h.tap(Action::Confirm).unwrap();
+    run_until(&mut h, 60, "floor 1", |h| playing(h).is_some());
+    h.input.set_action(Action::MoveForward, true);
+    let (mut streaks, mut burst, mut confetti, mut sparkles) = (false, false, false, false);
+    let (mut shadow_on, mut shadow_off) = (false, false);
+    let mut peak = 0;
+    for _ in 0..3000 {
+        assert!(h.step(FRAME).unwrap());
+        let Some(view) = h.top().unwrap().play_view() else {
+            break;
+        };
+        if view.request.floor != 1 {
+            break;
+        }
+        h.render().unwrap();
+        let stats = h.renderer().stats;
+        let view = h.top().unwrap().play_view().unwrap();
+        let rt = &view.sim.runtime;
+        let count = |kind: Kind| rt.effects.iter().filter(|e| e.kind == kind).count();
+        let visible = view.sim.ball.flags & mb_engine::constants::ball_flags::INVISIBLE == 0;
+        assert_eq!(view.shadow, visible, "tick {}", view.sim.tick);
+        shadow_on |= view.shadow;
+        shadow_off |= !view.shadow;
+        if !rt.confetti.is_empty() {
+            assert!(stats.instances >= rt.confetti.len(), "{stats:?}");
+            confetti = true;
+        }
+        if count(Kind::Levitate) > 0 {
+            assert!(stats.quads >= 4 * count(Kind::Levitate), "{stats:?}");
+            sparkles = true;
+        }
+        streaks |= count(Kind::Coli) > 0 && stats.quads > 0;
+        burst |= count(Kind::ColiStar) + count(Kind::ColiFlash) > 0 && stats.instance_draws >= 2;
+        peak = peak.max(stats.instance_draws + stats.quad_draws);
+        assert!(peak <= 12, "{stats:?}");
+    }
+    h.input.set_action(Action::MoveForward, false);
+    assert!(streaks && burst, "streaks {streaks}, landing burst {burst}");
+    assert!(
+        confetti && sparkles,
+        "confetti {confetti}, sparkles {sparkles}"
+    );
+    assert!(shadow_on && shadow_off);
+    assert!(peak >= 6, "peak {peak}");
+    assert_eq!(content.misses(), Vec::<String>::new());
+    h.shutdown();
 }
