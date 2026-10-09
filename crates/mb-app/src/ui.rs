@@ -236,7 +236,13 @@ impl TouchControls {
                 input.set_axis(Axis::MoveY, 0.0);
                 input.set_touch_stick(None);
             }
-            Some(Role::Button(a)) => input.set_action(a, false),
+            // Two fingers can hold the play area; the action lasts until the last one lifts.
+            Some(Role::Button(a)) => {
+                let still = (self.active.values()).any(|r| matches!(r, Role::Button(b) if *b == a));
+                if !still {
+                    input.set_action(a, false);
+                }
+            }
             Some(Role::Pointer) | None => {}
         }
     }
@@ -286,7 +292,9 @@ impl TouchControls {
                     input.set_touch_stick(Some(TouchStick { origin: pos, pos }));
                     Role::Stick { origin: pos }
                 } else {
-                    Role::Pointer
+                    // Anywhere else on the play area is the action button (`touchAction`).
+                    input.set_action(Action::Primary, true);
+                    Role::Button(Action::Primary)
                 };
                 self.active.insert(id, role);
             }

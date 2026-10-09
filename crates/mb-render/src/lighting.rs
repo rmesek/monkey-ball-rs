@@ -12,7 +12,8 @@ pub struct Lighting {
     /// S16 angle units (65536 = full turn), as stored in the reference `BgInfo`.
     pub light_rot_x: i32,
     pub light_rot_y: i32,
-    /// Scale applied to specular konst colours of world-specular layers (reserved).
+    /// Scale applied to the specular konst colour of world-specular layers (`specularColorScale`: the
+    /// light's colour in the reference).
     pub specular_scale: [f32; 3],
 }
 
@@ -35,6 +36,13 @@ impl Lighting {
         let rx = Mat3::from_rotation_x(self.light_rot_x as f32 * S16_TO_RADIANS);
         let ry = Mat3::from_rotation_y(self.light_rot_y as f32 * S16_TO_RADIANS);
         (ry * (rx * v)).normalize()
+    }
+
+    /// The light's up vector: `(0, 1, 0)` under the same two rotations (the reference's `shadowLightUp`).
+    pub fn light_up(&self) -> Vec3 {
+        let rx = Mat3::from_rotation_x(self.light_rot_x as f32 * S16_TO_RADIANS);
+        let ry = Mat3::from_rotation_y(self.light_rot_y as f32 * S16_TO_RADIANS);
+        ry * (rx * Vec3::Y)
     }
 }
 

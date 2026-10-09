@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use crate::gpu_types::SpriteVertex;
-use crate::renderer::{GpuTexture, TextureId};
+use crate::renderer::{GpuCounters, GpuTexture, TextureId};
 
 #[derive(Clone, Copy, Debug)]
 pub struct Sprite {
@@ -27,6 +27,41 @@ impl Sprite {
     }
 }
 
+/// How a sprite goes onto the frame ([`crate::Renderer::draw_sprite_blended`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum SpriteBlend {
+    /// Texel times colour, blended over the frame by its alpha: what [`crate::Renderer::draw_sprite`]
+    /// does.
+    #[default]
+    Alpha,
+    /// Texel times colour, scaled by its alpha and added to the frame (`SrcAlpha, One`): a flash that
+    /// brightens what is under it.
+    Additive,
+    /// The sprite's colour as it is, in the shape of the texel's alpha, blended over the frame: the
+    /// silhouette the reference's HUD lays over the `GOAL` banner (`drawSpriteSolidTint`).
+    Solid,
+}
+
+impl SpriteBlend {
+    /// Solid sprites use the alpha pipeline; the shader tells them by the sign of the vertex alpha.
+    fn additive(self) -> bool {
+        self == SpriteBlend::Additive
+    }
+}
+
+/// Vertices of a sprite drawn with `blend` (see [`quad_vertices`]).
+pub fn blended_vertices(s: &Sprite, blend: SpriteBlend) -> [SpriteVertex; 6] {
+    let mut v = quad_vertices(s);
+    if blend == SpriteBlend::Solid {
+        // The shader reads a negative alpha as "silhouette". Zero stays zero: nothing to draw.
+        let a = -s.color[3].max(0.0);
+        for vertex in &mut v {
+            vertex.color[3] = a;
+        }
+    }
+    v
+}
+
 /// Expand sprites into two triangles each (6 vertices).
 pub fn quad_vertices(s: &Sprite) -> [SpriteVertex; 6] {
     let [x, y, w, h] = s.dst;
@@ -46,12 +81,14 @@ pub fn quad_vertices(s: &Sprite) -> [SpriteVertex; 6] {
 #[derive(PartialEq)]
 struct Batch {
     texture: usize,
+    additive: bool,
     first: u32,
     count: u32,
 }
 
 pub(crate) struct SpriteRenderer {
-    pipeline: wgpu::RenderPipeline,
+    /// Alpha blending and additive.
+    pipelines: [wgpu::RenderPipeline; 2],
     texture_layout: wgpu::BindGroupLayout,
     screen_buffer: wgpu::Buffer,
     screen_group: wgpu::BindGroup,
@@ -68,6 +105,15 @@ pub(crate) struct SpriteRenderer {
 }
 
 impl SpriteRenderer {
+    /// What [`Self::new`] creates.
+    pub(crate) const CREATED: GpuCounters = GpuCounters {
+        buffers: 1,
+        textures: 0,
+        pipelines: 2,
+        bind_groups: 1,
+        samplers: 1,
+    };
+
     pub(crate) fn new(
         device: &wgpu::Device,
         target_format: wgpu::TextureFormat,
@@ -116,42 +162,61 @@ impl SpriteRenderer {
             bind_group_layouts: &[Some(&screen_layout), Some(&texture_layout)],
             immediate_size: 0,
         });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("sprite pipeline"),
-            layout: Some(&layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                compilation_options: Default::default(),
-                buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<SpriteVertex>() as u64,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &SpriteVertex::ATTRIBUTES,
-                })],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: target_format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            // Drawn inside the world pass, so the pipeline must match its depth attachment; it never tests.
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: depth_format,
-                depth_write_enabled: Some(false),
-                depth_compare: Some(wgpu::CompareFunction::Always),
-                stencil: Default::default(),
-                bias: Default::default(),
-            }),
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
-        });
+        let make = |blend: wgpu::BlendState, write_mask: wgpu::ColorWrites| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("sprite pipeline"),
+                layout: Some(&layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_main"),
+                    compilation_options: Default::default(),
+                    buffers: &[Some(wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<SpriteVertex>() as u64,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &SpriteVertex::ATTRIBUTES,
+                    })],
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fs_main"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: target_format,
+                        blend: Some(blend),
+                        write_mask,
+                    })],
+                }),
+                primitive: wgpu::PrimitiveState::default(),
+                // Drawn inside the world pass, so the pipeline must match its depth attachment; it never
+                // tests.
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: depth_format,
+                    depth_write_enabled: Some(false),
+                    depth_compare: Some(wgpu::CompareFunction::Always),
+                    stencil: Default::default(),
+                    bias: Default::default(),
+                }),
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let add = wgpu::BlendComponent {
+            src_factor: wgpu::BlendFactor::SrcAlpha,
+            dst_factor: wgpu::BlendFactor::One,
+            operation: wgpu::BlendOperation::Add,
+        };
+        let pipelines = [
+            make(wgpu::BlendState::ALPHA_BLENDING, wgpu::ColorWrites::ALL),
+            // Light is added to the colour; the frame's alpha stays what it was.
+            make(
+                wgpu::BlendState {
+                    color: add,
+                    alpha: add,
+                },
+                wgpu::ColorWrites::COLOR,
+            ),
+        ];
         let screen_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("sprite screen"),
             size: 16,
@@ -175,7 +240,7 @@ impl SpriteRenderer {
             ..Default::default()
         });
         Self {
-            pipeline,
+            pipelines,
             texture_layout,
             screen_buffer,
             screen_group,
@@ -190,6 +255,64 @@ impl SpriteRenderer {
         }
     }
 
+    /// Create the bind group of a texture ahead of its first sprite (one serves every blend mode).
+    /// False for a texture that does not exist.
+    pub(crate) fn warm_texture(
+        &mut self,
+        device: &wgpu::Device,
+        textures: &[GpuTexture],
+        texture: usize,
+        counters: &mut GpuCounters,
+    ) -> bool {
+        let Some(tex) = textures.get(texture) else {
+            return false;
+        };
+        let (layout, sampler) = (&self.texture_layout, &self.sampler);
+        self.texture_groups.entry(texture).or_insert_with(|| {
+            counters.bind_groups += 1;
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("sprite texture"),
+                layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&tex.view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(sampler),
+                    },
+                ],
+            })
+        });
+        true
+    }
+
+    /// Make the vertex buffer hold at least `sprites` sprites (never fewer than the 170 a first frame
+    /// gets by itself). A smaller or equal request changes nothing.
+    pub(crate) fn reserve(
+        &mut self,
+        device: &wgpu::Device,
+        sprites: usize,
+        counters: &mut GpuCounters,
+    ) {
+        let wanted = sprites.saturating_mul(6);
+        if matches!(&self.vertex, Some((_, capacity)) if *capacity >= wanted) {
+            return;
+        }
+        let capacity = wanted.next_power_of_two().max(1024);
+        counters.buffers += 1;
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("sprite vertices"),
+            size: (capacity * std::mem::size_of::<SpriteVertex>()) as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.vertex = Some((buffer, capacity));
+        // The new buffer holds nothing yet.
+        self.verts.clear();
+    }
+
     pub(crate) fn forget_textures(&mut self) {
         self.texture_groups.clear();
     }
@@ -202,12 +325,12 @@ impl SpriteRenderer {
     /// whether the sprites differ from the last frame's in any way.
     pub(crate) fn prepare(
         &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        sprites: &[Sprite],
+        (device, queue): (&wgpu::Device, &wgpu::Queue),
+        sprites: &[(Sprite, SpriteBlend)],
         textures: &[GpuTexture],
         size: (u32, u32),
         srgb_target: bool,
+        counters: &mut GpuCounters,
     ) -> (usize, bool) {
         std::mem::swap(&mut self.batches, &mut self.last_batches);
         self.batches.clear();
@@ -223,49 +346,33 @@ impl SpriteRenderer {
         }
         let mut verts = std::mem::take(&mut self.scratch);
         verts.clear();
-        for s in sprites {
+        for (s, blend) in sprites {
             let Some(_) = textures.get(s.texture.0) else {
                 continue;
             };
             let first = verts.len() as u32;
-            verts.extend_from_slice(&quad_vertices(s));
+            verts.extend_from_slice(&blended_vertices(s, *blend));
+            let additive = blend.additive();
             match self.batches.last_mut() {
-                Some(b) if b.texture == s.texture.0 && b.first + b.count == first => b.count += 6,
+                Some(b)
+                    if b.texture == s.texture.0
+                        && b.additive == additive
+                        && b.first + b.count == first =>
+                {
+                    b.count += 6
+                }
                 _ => self.batches.push(Batch {
                     texture: s.texture.0,
+                    additive,
                     first,
                     count: 6,
                 }),
             }
-            self.texture_groups.entry(s.texture.0).or_insert_with(|| {
-                device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("sprite texture"),
-                    layout: &self.texture_layout,
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: wgpu::BindingResource::TextureView(
-                                &textures[s.texture.0].view,
-                            ),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: wgpu::BindingResource::Sampler(&self.sampler),
-                        },
-                    ],
-                })
-            });
+            self.warm_texture(device, textures, s.texture.0, counters);
         }
         let fits = matches!(&self.vertex, Some((_, capacity)) if *capacity >= verts.len());
         if !fits {
-            let capacity = verts.len().next_power_of_two().max(1024);
-            let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("sprite vertices"),
-                size: (capacity * std::mem::size_of::<SpriteVertex>()) as u64,
-                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-            self.vertex = Some((buffer, capacity));
+            self.reserve(device, verts.len().div_ceil(6), counters);
         }
         if !fits || verts != self.verts {
             if let Some((buffer, _)) = &self.vertex {
@@ -282,10 +389,14 @@ impl SpriteRenderer {
         let (Some((vb, _)), false) = (&self.vertex, self.batches.is_empty()) else {
             return;
         };
-        pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &self.screen_group, &[]);
         pass.set_vertex_buffer(0, vb.slice(..));
+        let mut bound = None;
         for b in &self.batches {
+            if bound != Some(b.additive) {
+                pass.set_pipeline(&self.pipelines[b.additive as usize]);
+                bound = Some(b.additive);
+            }
             pass.set_bind_group(1, &self.texture_groups[&b.texture], &[]);
             pass.draw(b.first..b.first + b.count, 0..1);
         }
@@ -306,5 +417,23 @@ mod tests {
         assert_eq!(q[2].uv, [1.0, 1.0]);
         assert_eq!(q[3], q[0]);
         assert_eq!(q[4], q[2]);
+    }
+
+    #[test]
+    fn only_solid_sprites_change_their_vertices() {
+        let mut s = Sprite::new(TextureId(0), 0.0, 0.0, 4.0, 4.0);
+        s.color = [1.0, 0.5, 0.25, 0.75];
+        assert_eq!(blended_vertices(&s, SpriteBlend::Alpha), quad_vertices(&s));
+        assert_eq!(
+            blended_vertices(&s, SpriteBlend::Additive),
+            quad_vertices(&s)
+        );
+        let solid = blended_vertices(&s, SpriteBlend::Solid);
+        for (a, b) in solid.iter().zip(quad_vertices(&s)) {
+            assert_eq!((a.pos, a.uv), (b.pos, b.uv));
+            assert_eq!(a.color, [1.0, 0.5, 0.25, -0.75]);
+        }
+        assert_eq!(SpriteBlend::default(), SpriteBlend::Alpha);
+        assert!(SpriteBlend::Additive.additive() && !SpriteBlend::Solid.additive());
     }
 }

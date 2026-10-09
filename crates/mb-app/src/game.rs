@@ -28,6 +28,8 @@ pub struct PlayView<'a> {
     pub request: &'a mb_game::PlayRequest,
     pub sim: &'a mb_engine::Sim,
     pub stage: &'a mb_stage::Stage,
+    /// The ball's projected shadow is drawn in the current frame.
+    pub shadow: bool,
     pub paused: bool,
     /// HUD banner on screen (`"READY"`, `"GO"`, `"GOAL"`, ...).
     pub banner: Option<&'static str>,

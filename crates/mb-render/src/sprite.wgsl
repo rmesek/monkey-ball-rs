@@ -38,7 +38,13 @@ fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
 
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
-    var c = textureSample(tex, samp, in.uv) * in.color;
+    let t = textureSample(tex, samp, in.uv);
+    var c = t * in.color;
+    // A negative alpha marks a silhouette (`SpriteBlend::Solid`): the colour as it is, shaped by the
+    // texel's alpha only (the reference's `drawSpriteSolidTint`).
+    if (in.color.a < 0.0) {
+        c = vec4<f32>(in.color.rgb, -in.color.a * t.a);
+    }
     if (screen.size.z > 0.5) {
         c = vec4<f32>(srgb_to_linear(c.rgb), c.a);
     }

@@ -677,7 +677,7 @@ impl MatrixStack {
     }
 
     pub fn to_quat(&self) -> Quat {
-        let m: Vec<f64> = self.a.iter().map(|&v| v as f64).collect();
+        let m = self.a.map(|v| v as f64);
         let trace = m[0] + m[5] + m[10];
         if trace > 0.0 {
             let s = sqrt(trace + 1.0) * 2.0;

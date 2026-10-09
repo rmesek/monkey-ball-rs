@@ -1,12 +1,15 @@
 //! Runtime half of WebMonkeyBall `src/stage.ts` (`StageRuntime`, SMB1 paths): anim-group playback from the
 //! stagedef keyframes, bumpers, jamabars, goal tape/bag, bananas and the stage timer.
 //!
-//! Visual-only parts of the reference (confetti, spark effects, switch models) are not simulated; they never
-//! feed back into ball physics or the sim hash.
+//! The reference's display-only state lives here too, as it does there: ball effects and goal confetti
+//! ([`crate::effects`]) with their own random stream. They never feed back into ball physics or
+//! [`crate::hash::hash_sim_state`].
 
 use crate::animation::interpolate_keyframes;
+use crate::ball::Ball;
 use crate::collision::{Collider, PhysBall};
 use crate::constants::*;
+use crate::effects::{self, BallEffect, ConfettiParticle, Ground, Spawner};
 use crate::geom::StageGeom;
 use crate::math::*;
 use crate::objects::*;
@@ -42,6 +45,8 @@ const BANANA_HUD_TARGET_Z: f64 = -2.0;
 const FLY_IN_MIN_RADIUS: f64 = 31.25;
 /// `Math.tan(Math.PI / 3 * 0.5)`
 const BANANA_FOV_TAN: f64 = 0.5773502691896257;
+/// `visualRng` is seeded with the stage id xor this.
+const VISUAL_RNG_SEED_XOR: u32 = 0x9e37_79b9;
 
 fn deg_to_s16(degrees: f64) -> i32 {
     to_s16((degrees * DEG_TO_S16).trunc())
@@ -78,7 +83,22 @@ pub struct StageRuntime {
     pub bound_sphere: BoundSphere,
     pub goal_hold_open: bool,
     pub sim_rng: DeterministicRng,
+    /// Live ball effects in spawn order (`stageRuntime.effects`): sparks, collision stars and flashes,
+    /// post-goal sparkles. Display only; at most [`effects::MAX_BALL_EFFECTS`], allocated once.
+    pub effects: Vec<BallEffect>,
+    /// Live goal confetti in spawn order (`stageRuntime.confetti`). Display only.
+    pub confetti: Vec<ConfettiParticle>,
+    /// The random stream of everything display-only (`visualRng`); the simulation never draws from it.
+    pub visual_rng: DeterministicRng,
+    /// Off: no ball effect is spawned and no particle is updated (the reference's `suppressVisualEffects`).
+    pub visuals_enabled: bool,
+    /// `confettiSpawnedGoals`: a bag throws confetti the first time it opens only.
+    confetti_spawned_goals: Vec<bool>,
+    next_effect_id: u32,
     stack: MatrixStack,
+    /// Scratch of the display-only code, so that it cannot leave anything behind in the simulation's.
+    visual_stack: MatrixStack,
+    visual_collider: Collider,
 }
 
 impl StageRuntime {
@@ -100,10 +120,23 @@ impl StageRuntime {
             },
             goal_hold_open: false,
             sim_rng: DeterministicRng::new(geom.stage_id),
+            effects: Vec::with_capacity(effects::MAX_BALL_EFFECTS),
+            confetti: Vec::new(),
+            visual_rng: DeterministicRng::new(geom.stage_id ^ VISUAL_RNG_SEED_XOR),
+            visuals_enabled: true,
+            confetti_spawned_goals: Vec::new(),
+            next_effect_id: 1,
             stack: MatrixStack::new(),
+            visual_stack: MatrixStack::new(),
+            visual_collider: Collider::new(),
         };
         rt.init_anim_groups(geom);
         rt.init_objects(geom, goal_tape_anchor_y);
+        rt.confetti_spawned_goals = vec![false; rt.goal_bags.len()];
+        // One bag opens per attempt (the goal the ball enters), so play never grows this.
+        if !rt.goal_bags.is_empty() {
+            rt.confetti.reserve_exact(effects::CONFETTI_PER_GOAL);
+        }
         rt
     }
 
@@ -590,6 +623,25 @@ impl StageRuntime {
                 &mut self.sim_rng,
             );
         }
+        if self.visuals_enabled {
+            let mut ground = Ground {
+                geom,
+                groups: &self.anim_groups,
+                collider: &mut self.visual_collider,
+            };
+            effects::update_confetti(
+                &mut self.confetti,
+                &gravity,
+                &mut ground,
+                &mut self.visual_stack,
+            );
+            effects::update_ball_effects(
+                &mut self.effects,
+                &gravity,
+                &mut ground,
+                &mut self.visual_rng,
+            );
+        }
 
         for i in 0..self.anim_groups.len() {
             for bumper in self.bumpers[i].iter_mut() {
@@ -688,7 +740,19 @@ impl StageRuntime {
         }
 
         self.sync_object_transforms();
-        let _ = geom;
+    }
+
+    /// The effect block of `stepBall`: sparks, collision stars and the post-goal sparkle for this ball step.
+    pub(crate) fn spawn_ball_effects(&mut self, ball: &Ball) {
+        if !self.visuals_enabled {
+            return;
+        }
+        let mut out = Spawner {
+            effects: &mut self.effects,
+            rng: &mut self.visual_rng,
+            next_id: &mut self.next_effect_id,
+        };
+        effects::spawn_for_ball_step(&mut out, ball);
     }
 
     /// `syncObjectTransforms`
@@ -735,7 +799,7 @@ impl StageRuntime {
         }
     }
 
-    /// `openGoalBag` (confetti omitted).
+    /// `openGoalBag`
     pub fn open_goal_bag(&mut self, goal_id: usize, ball: &PhysBall) {
         let timer_frames = self.timer_frames;
         let Some(bag) = self.goal_bags.get_mut(goal_id) else {
@@ -757,6 +821,20 @@ impl StageRuntime {
             bag.open_frame = timer_frames;
         }
         update_goal_bag_transform(bag, &mut self.stack);
+        // The reference spawns the confetti whether or not visuals are suppressed.
+        if let Some(spawned) = self.confetti_spawned_goals.get_mut(goal_id) {
+            if !*spawned {
+                *spawned = true;
+                effects::spawn_goal_bag_confetti(
+                    &mut self.confetti,
+                    bag,
+                    &self.anim_groups[bag.anim_group_id],
+                    &ball.vel,
+                    &mut self.visual_stack,
+                    &mut self.visual_rng,
+                );
+            }
+        }
     }
 
     /// `breakGoalTape`: `ball` is expressed in the goal's anim-group space.

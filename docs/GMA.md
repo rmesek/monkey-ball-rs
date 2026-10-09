@@ -57,6 +57,51 @@ type A: pos/color/uv, else type B: pos/normal/uv), bound sphere, mesh list (unti
 8-byte relative reference to an earlier/later real vertex. Cull comes from the first list; all lists of a mesh are merged
 into one vertex/index buffer.
 
+## How `mb-render` draws the materials
+`crates/mb-render/src/material.rs` (CPU mapping, unit-tested) and `shader.wgsl` follow
+`noclip/SuperMonkeyBall/Material.ts`. One shader; a pipeline differs only by blend factors, cull mode, depth
+state and how many layer textures it fetches.
+
+- **Lighting channel**, per vertex as on GX: lit materials get `mat * clamp(amb + light * max(n.l, 0))`,
+  unlit ones the material register or the vertex colour (`VERT_COLORS`). The material colour applies only
+  with `CUSTOM_MAT_AMB_COLORS` or `SIMPLE_MATERIAL`, else white; alpha is `material.alpha` times the
+  object's. The object colour (`colorMul`) multiplies the material register and, for GMA materials, the
+  ambient register too.
+- **Layers** (at most three; layer `i` uses UV set `i` and texture slot `i`): diffuse `prev * tex`, alpha
+  blend `prev.a * tex.r`, view specular `clamp(prev + K0 * tex)`, world specular `clamp(prev + K1 * tex)`.
+  `K0` is the specular colour (white when it is black), `K1 = K0 *` the light's specular scale
+  (`Lighting::specular_scale`, the light colour in the reference). The reference's second world-specular
+  stage reads a 16x4 ramp at `t = 0`, where it is white, so the ramp is the constant one.
+- **Specular coordinates** are generated per vertex from the normal: `TEXMTX0` (model-view without
+  translation), normalised, then the x and y rows of a look-at: around the direction from the eye to the
+  far side of the model's bounding sphere (view), or around the half vector of that and the light (world).
+  `material::{view_specular_rows, world_specular_rows, specular_uv}` are the same maths on the CPU.
+- **Texture matrix**: layers flagged `ENABLE_UV_SCROLL` (bit 17) go through the object's matrix
+  (`Renderer::set_tex_matrix`, GX `TEXMTX1`), the others through the identity. **No layer on the SMB1 disc
+  has the flag** (all 12 088 shapes of its GMA files were scanned), so the reference's sunset cloud scroll does nothing on
+  this data; `Renderer::set_tex_matrix_every_layer` applies the matrix to every diffuse and alpha layer
+  of an object instead.
+- **Per object**, as in the reference's `RenderParams`: alpha, colour, texture matrix, specular off
+  (`set_specular_disabled`, its hack for the inner ball shells), world specular off
+  (`set_world_specular_disabled`, its background light groups), sort offset (`set_depth_offset`).
+- **State**: alpha test `> 0`, depth LEQUAL with writes, blend factors from the material. A mesh whose
+  alpha is provably one is drawn without blending only when its factors are the default ones (or
+  `One / Zero`): the several hundred `One / One`, `SrcAlpha / One`, `SrcClr / One` and `Zero / InvSrcClr`
+  materials on the disc blend whatever their alpha.
+- **Counts on the USA disc** (shapes): layers `D` 8322, `DV` 1230, `simple` 1082, `DW` 691, `W` 251 (the
+  ball's hemispheres among them), `A` 160, `DA` 126, `DD` 109, `V` 83, others 34.
+
+Where this still differs from the reference:
+
+| | Reference | Here | Why |
+|---|---|---|---|
+| Vertex-colour materials and the object's alpha / colour | the vertex colour is the material source, so `RenderParams.alpha` and `colorMul` do not reach it (Material.ts 318-352) | multiplied in as for every other material | a fade or tint set on an object would silently do nothing on 695 shapes |
+| NaomiLib V coordinate | `t' = -t` (NaomiLib.ts 73, 543) | `1 - t`, and `-t` under a mirrored wrap | identical under Repeat; `-t` would smear the 213 clamped meshes authored in 0..1 |
+| NaomiLib lit meshes, alpha | the alpha channel is lit too (NaomiLib.ts 458) | material alpha | these meshes do not blend; it only matters at alpha zero |
+| Instanced draws, specular | per model bounding sphere | the instance's origin, radius zero | the sphere is per object; no instanced model on the disc has a specular layer that matters |
+| Opaque order | submission order | meshes without blending sorted by pipeline and material | invisible with the depth test; saves state changes |
+| `lod_bias`, `max_aniso`, `MAGFILT_NEAR`, `NO_FOG` | ignored (no fog at all) | ignored | same |
+
 ## Corrupt input
 Nothing here panics on bad bytes; every failure is an `Error`.
 - Decoded size is capped per input byte (GMA 8, NaomiLib 16, plus 64 KiB; retail maxima 1.3 and 3.5), because

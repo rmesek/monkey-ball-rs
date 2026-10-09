@@ -7,7 +7,8 @@
 //! * [`game`]: `Game` state trait and the state stack.
 //! * [`input`]: logical actions, axes, the steering vector and the pointer; shells only feed it.
 //! * [`menu`]: title menu, course / stage select, options and the course flow (root state).
-//! * [`play`] + [`play_scene`] + [`hud`]: one stage being played: fixed-step simulation, 3D scene, HUD.
+//! * [`play`] + [`play_scene`] + [`particles`] + [`hud`]: one stage being played: fixed-step simulation,
+//!   3D scene, the particles and shadow on top of it, HUD.
 //! * [`audio`]: sounds, music and the backend trait (`audio_cpal`: native device output). See `docs/AUDIO.md`.
 //! * [`text`] / [`widgets`]: sprite fonts from the disc and the menu list widget.
 //! * [`stage_scene`] / [`stage_info`] / [`anim`]: assembling an SMB1 stage into renderer objects.
@@ -45,6 +46,7 @@ pub mod import;
 pub mod input;
 pub mod loading;
 pub mod menu;
+pub mod particles;
 pub mod perf;
 pub mod play;
 pub mod play_scene;

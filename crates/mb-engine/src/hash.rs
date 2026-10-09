@@ -39,6 +39,33 @@ impl Default for SimHasher {
 
 /// `hashSimState(balls, worlds, stageRuntime)` (without the `includeVisual` extras).
 pub fn hash_sim_state(balls: &[&Ball], worlds: &[&World], rt: &StageRuntime) -> u32 {
+    hash_deterministic_state(balls, worlds, rt).0
+}
+
+/// `hashSimState(balls, worlds, stageRuntime, { includeVisual: true })`: the simulation state followed by
+/// the confetti and the ball effects (count, then position, velocity and rotation of each).
+pub fn hash_sim_state_visual(balls: &[&Ball], worlds: &[&World], rt: &StageRuntime) -> u32 {
+    let mut h = hash_deterministic_state(balls, worlds, rt);
+    h.u32(rt.confetti.len() as u32);
+    for frag in &rt.confetti {
+        h.vec3(&frag.pos);
+        h.vec3(&frag.vel);
+        h.s16(frag.rot_x);
+        h.s16(frag.rot_y);
+        h.s16(frag.rot_z);
+    }
+    h.u32(rt.effects.len() as u32);
+    for fx in &rt.effects {
+        h.vec3(&fx.pos);
+        h.vec3(&fx.vel);
+        h.s16(fx.rot_x);
+        h.s16(fx.rot_y);
+        h.s16(fx.rot_z);
+    }
+    h.0
+}
+
+fn hash_deterministic_state(balls: &[&Ball], worlds: &[&World], rt: &StageRuntime) -> SimHasher {
     let mut h = SimHasher::new();
     h.u32(balls.len() as u32);
     for ball in balls {
@@ -99,5 +126,5 @@ pub fn hash_sim_state(balls: &[&Ball], worlds: &[&World], rt: &StageRuntime) -> 
         h.s16(banana.rot_z);
         h.f32(banana.scale);
     }
-    h.0
+    h
 }

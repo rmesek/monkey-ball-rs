@@ -8,20 +8,24 @@
 //!   `world.xrot/zrot * 0.6` (`getTiltedViewMatrix`); the backdrop is not. The reference folds that rotation
 //!   into the view matrix; here it goes into the scene uniform (`Renderer::set_tilt`) and objects only say
 //!   whether it applies to them, so tilting the stage re-uploads no object.
-//! * Models, textures and objects are created once in [`PlayScene::load`]. [`PlayScene::sync`] records the
+//! * Models, textures and objects are created once in [`PlayScene::build`]. [`PlayScene::sync`] records the
 //!   pose of one simulation tick; [`PlayScene::apply`] blends the last two poses for the frame being drawn
 //!   (the reference's `get*RenderState(alpha)` getters) and only then touches the renderer. Rendering never
 //!   feeds back into the simulation.
+//! * The ball's shadow is projected onto the stage models from the blended ball (`drawProjectedShadow`), and
+//!   the particles ([`crate::particles`]) are queued for every frame by [`PlayScene::draw_particles`]. They
+//!   carry their own previous position, so they blend straight from the simulation.
 
 use glam::{Mat4, Quat, Vec3};
 use mb_engine::constants::ball_flags;
 use mb_engine::math::Mtx;
 use mb_engine::stage_runtime::BoundSphere;
 use mb_engine::Sim;
-use mb_render::{Layer, ModelId, ObjectId, Renderer};
+use mb_render::{Camera, Layer, ModelId, ObjectId, Renderer, Shadow};
 use web_time::Instant;
 
 use crate::anim::{interpolate, loop_wrap};
+use crate::particles::{self, ParticleFrame, Particles, TICK_MS};
 use crate::stage_scene::{
     ItemKind, LazyTextures, LoadTimings, StageAssets, StageScene, S16_TO_RADIANS,
 };
@@ -215,6 +219,19 @@ pub struct PlayScene {
     bags: Vec<Bag>,
     tapes: Vec<Tape>,
     clocks: Vec<Clock>,
+    particles: Particles,
+    /// The stage tilt of the frame last posed by [`PlayScene::apply`].
+    tilt: Mat4,
+    /// The mask of the projected shadow was found; without it no shadow is drawn.
+    shadow_mask: bool,
+    /// The projected shadow is being drawn: its mask exists and the ball is visible.
+    shadow: bool,
+    /// Ticks in which the simulation advanced its particles since the last reset. It does not while the
+    /// clock has run out, and then they are shown where they are instead of blended.
+    particle_ticks: u32,
+    particles_frozen: bool,
+    /// The time-over sequence was running at the last recorded tick.
+    time_over: bool,
     /// Goal tape anchor height from the tape model (`loadGoalTapeAnchorY`).
     pub goal_tape_anchor_y: Option<f64>,
     /// Bounds of the stage models for the fly-in camera (`loadStageModelBounds`).
@@ -325,6 +342,24 @@ impl PlayScene {
                 open_b: add(bag_models[2]),
             });
         }
+        // The sparkle's texture is in the common NaomiLib archive, like the tape and the digits below.
+        let mut nl_set = LazyTextures::default();
+        let sparkle = (assets.common.nl.as_ref())
+            .and_then(|(obj, tpl)| particles::sparkle_texture(r, obj, tpl, &mut nl_set));
+        let particles = Particles::build(r, &mut common, sparkle);
+        // The shadow falls on the models of the anim groups, not on goals, bumpers or bananas
+        // (`AnimGroup.prepareToRenderShadow`). Without its mask there is no shadow.
+        let mask = particles::shadow_mask(
+            r,
+            &assets.common.gma,
+            &assets.common.tpl,
+            &mut scene.common_set,
+        );
+        let shadow_mask = mask.is_some();
+        r.set_shadow_mask(mask);
+        for it in scene.items.iter().filter(|it| it.kind == ItemKind::Model) {
+            r.set_shadow_receiver(it.object, true);
+        }
 
         // Goal tape and clock digits live in the common NaomiLib archive. Missing files only cost the
         // decoration, never the stage.
@@ -332,7 +367,7 @@ impl PlayScene {
         let mut clocks = Vec::new();
         let mut goal_tape_anchor_y = None;
         if let Some((obj, tpl)) = &assets.common.nl {
-            let mut set = LazyTextures::default();
+            let set = &mut nl_set;
             if let Some(template) = obj.model(NL_GOAL_TAPE) {
                 goal_tape_anchor_y = Some(template.bound_sphere_center[1] as f64);
                 let segments = 7;
@@ -438,6 +473,13 @@ impl PlayScene {
             bags,
             tapes,
             clocks,
+            particles,
+            tilt: Mat4::IDENTITY,
+            shadow_mask,
+            shadow: false,
+            particle_ticks: 0,
+            particles_frozen: false,
+            time_over: false,
             goal_tape_anchor_y,
             bound_sphere,
         }
@@ -452,6 +494,15 @@ impl PlayScene {
     /// nothing is blended across the jump.
     pub fn reset_pose(&mut self) {
         self.blend = false;
+        self.particles.reset();
+        self.particle_ticks = 0;
+        self.particles_frozen = false;
+        self.time_over = false;
+    }
+
+    /// Whether the ball's shadow is drawn in the frame last posed (tests).
+    pub fn shadow_visible(&self) -> bool {
+        self.shadow
     }
 
     /// Free the scene's models, objects and textures.
@@ -474,8 +525,18 @@ impl PlayScene {
             bags,
             tapes,
             clocks,
+            particle_ticks,
+            particles_frozen,
+            time_over,
             ..
         } = self;
+        // The simulation leaves its particles alone in a tick that starts with the clock run out. The
+        // first record of an attempt is its initial state, not a tick.
+        *particles_frozen = *time_over;
+        if *blend && !*particles_frozen {
+            *particle_ticks += 1;
+        }
+        *time_over = sim.timeover_timer > 0;
         poses.swap(0, 1);
         let (prev, pose) = poses.split_at_mut(1);
         let (prev, pose) = (&mut prev[0], &mut pose[0]);
@@ -726,14 +787,21 @@ impl PlayScene {
         }
 
         let pivot = prev.pivot.lerp(curr.pivot, t);
-        r.set_tilt(tilt_matrix_units(
+        self.tilt = tilt_matrix_units(
             pivot,
             lerp_s16(prev.xrot, curr.xrot, t),
             lerp_s16(prev.zrot, curr.zrot, t),
             1.0,
-        ));
+        );
+        r.set_tilt(self.tilt);
         // The ball spins too fast per tick for a matrix blend: blend position, rotation and size apart.
         let scale = prev.ball_scale + (curr.ball_scale - prev.ball_scale) * t;
+        // `drawProjectedShadow`: cast from the ball as it is drawn, in stage space.
+        let shadow = (self.shadow_mask && curr.ball_visible)
+            .then(|| Shadow::projected(pivot, scale * BALL_BASE_RADIUS, &r.lighting))
+            .flatten();
+        self.shadow = shadow.is_some();
+        r.set_shadow(shadow);
         let m = Mat4::from_scale_rotation_translation(
             Vec3::splat(scale),
             prev.ball_rot.lerp(curr.ball_rot, t),
@@ -772,6 +840,24 @@ impl PlayScene {
                 r.write_vertices(tape.model, 0, shown);
             }
         }
+    }
+}
+
+impl PlayScene {
+    /// Queue this frame's particles (sparks, stars, flash, sparkle, glow, confetti) from the simulation
+    /// whose ticks were recorded with [`PlayScene::sync`]. Call it after [`PlayScene::apply`], with the
+    /// same `alpha` and the camera the frame is drawn with, for every frame: the queue is per frame.
+    pub fn draw_particles(&mut self, r: &mut Renderer, sim: &Sim, camera: &Camera, alpha: f32) {
+        let t = if self.particles_frozen { 1.0 } else { alpha };
+        // What is shown lies between the previous tick and the current one.
+        let now_ms = (f64::from(self.particle_ticks) - 1.0 + f64::from(t)) * TICK_MS;
+        let frame = ParticleFrame {
+            camera,
+            tilt: self.tilt,
+            t,
+            now_ms,
+        };
+        self.particles.draw(r, sim, &frame);
     }
 }
 

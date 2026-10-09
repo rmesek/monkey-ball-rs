@@ -588,7 +588,7 @@ impl Ball {
         }
     }
 
-    /// `stepBall`: advance the ball one tick against the stage (everything except visual effects).
+    /// `stepBall`: advance the ball one tick against the stage.
     pub fn step(
         &mut self,
         geom: &StageGeom,
@@ -657,6 +657,8 @@ impl Ball {
                 self.unk114 = Vec3::new(-t.x, -t.y, -t.z);
             }
         }
+
+        rt.spawn_ball_effects(self);
 
         let goal_mode = self.state == ball_states::GOAL_MAIN;
         self.rotational_kinematics(rt, &mut ctx.stack, goal_mode);

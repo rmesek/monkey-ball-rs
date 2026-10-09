@@ -366,6 +366,34 @@ impl UiAssets {
     pub fn font(&self, id: FontId) -> &Font {
         &self.fonts[FontId::ALL.iter().position(|f| *f == id).unwrap_or(0)]
     }
+
+    /// Queue one sprite without size from every UI texture. The renderer creates what the sprites of a
+    /// texture need (a bind group) when the first one is drawn; a stage does this in its first frame, so
+    /// that the `GOAL` banner or the time-over bomb create nothing when they first appear in play.
+    pub fn warm(&self, r: &mut Renderer) {
+        let images = (self.fonts.iter().map(|f| f.image))
+            .chain([
+                self.banana,
+                self.banana_bunch,
+                self.mph,
+                self.goal,
+                self.bomb,
+                self.bomb_crack,
+                self.lv_icon,
+                self.face,
+                self.white,
+                self.disc,
+            ])
+            .chain(self.bomb_parts.iter().copied());
+        for image in images {
+            r.draw_sprite(Sprite {
+                texture: image.tex,
+                dst: [0.0; 4],
+                uv: [0.0; 4],
+                color: [0.0; 4],
+            });
+        }
+    }
 }
 
 /// Immediate-mode 2D drawing in target pixels (origin top-left). Draw order is submission order.
