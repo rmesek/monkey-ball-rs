@@ -522,3 +522,241 @@ fn a_fly_in_much_shorter_than_the_intro_can_overshoot_by_one() {
     assert_eq!(fly_in(&sim), overshot, "and there it stays until GO");
     assert!(overshot.0.x.is_finite() && overshot.0.y.is_finite() && overshot.0.z.is_finite());
 }
+
+// The primary action after the intro (`updateRingout`, `canSkipGoal`): it ends a fall-out sequence from its
+// 60th tick and does nothing anywhere else.
+
+/// A retry of the stage with the ball started beside the floor, stepped (with `buttons` held) to the tick on
+/// which it fell out.
+fn fallen(cfg: SimConfig, buttons: u32) -> Sim {
+    let mut s = stage();
+    s.start_positions[0].pos = v(30.0, 0.5, 0.0);
+    let mut sim = Sim::new(&s, cfg);
+    while sim.phase != Phase::FallOut {
+        assert!(sim.tick < 600, "the ball never fell out");
+        sim.step_with_buttons(IDLE, buttons);
+    }
+    assert!(sim.events.contains(&mb_engine::SimEvent::FallOut));
+    sim
+}
+
+/// Ticks from the fall to the end of the sequence, with the action down on the ticks `press` names (1 is the
+/// first tick after the one on which the ball fell out).
+fn fall_out_ticks(mut sim: Sim, press: &dyn Fn(u32) -> bool) -> u32 {
+    let mut plain = sim.clone();
+    let mut ticks = 0;
+    while !sim.is_finished() {
+        ticks += 1;
+        sim.step_with_buttons(IDLE, press(ticks) as u32);
+        plain.step(IDLE);
+        if !sim.is_finished() {
+            // Until it ends the sequence the action changes nothing.
+            assert_eq!(sim.hash_visual(), plain.hash_visual(), "tick {ticks}");
+            assert_eq!(fly_in(&sim), fly_in(&plain), "tick {ticks}");
+            assert_eq!(sim.ringout_timer, plain.ringout_timer);
+            assert_eq!(sim.ringout_skip_timer, plain.ringout_skip_timer);
+            assert_eq!(sim.ringout_timer, 270 - ticks as i32);
+            assert_eq!(sim.ringout_skip_timer, (60 - ticks as i32).max(0));
+        }
+        assert!(ticks <= 270);
+    }
+    assert_eq!(sim.phase, Phase::Finished(Outcome::FellOut));
+    assert_eq!((sim.ringout_timer, sim.ringout_skip_timer), (0, 0));
+    assert!(sim.events.is_empty());
+    ticks
+}
+
+#[test]
+fn the_action_ends_a_fall_out_from_its_60th_tick() {
+    let sim = fallen(SimConfig::retry(1), 0);
+    assert_eq!((sim.ringout_timer, sim.ringout_skip_timer), (270, 60));
+    assert_eq!(
+        fall_out_ticks(sim.clone(), &|_| false),
+        270,
+        "without the action"
+    );
+    assert_eq!(
+        fall_out_ticks(sim.clone(), &|_| true),
+        60,
+        "held throughout"
+    );
+    // Down for the first 59 ticks only: too early, the sequence runs to its end.
+    assert_eq!(fall_out_ticks(sim.clone(), &|tick| tick < 60), 270);
+    // One tick, anywhere from the 60th on, is the sequence's last.
+    for at in [60, 61, 100, 240, 269] {
+        assert_eq!(fall_out_ticks(sim.clone(), &|tick| tick == at), at);
+    }
+    assert_eq!(fall_out_ticks(sim.clone(), &|tick| tick == 270), 270);
+    // Pressed too early, let go, pressed again: the delay is not started again.
+    assert_eq!(
+        fall_out_ticks(sim.clone(), &|tick| tick == 10 || tick == 59 || tick >= 90),
+        90
+    );
+    // Only bit 0 is the action.
+    let mut other = sim.clone();
+    for _ in 0..269 {
+        other.step_with_buttons(IDLE, !ACTION);
+        assert_eq!(other.phase, Phase::FallOut);
+    }
+}
+
+/// The action is a level, not a press: one that is already down when the ball falls out, even since the
+/// intro, ends the sequence on its 60th tick like one pressed then.
+#[test]
+fn an_action_held_since_before_the_fall_counts() {
+    for cfg in [SimConfig::retry(1), SimConfig::first_attempt(1)] {
+        let plain = fallen(cfg.clone(), 0);
+        let held = fallen(cfg.clone(), ACTION);
+        // During play the action did nothing; on a first attempt it shortened the fly-in by 120 ticks.
+        let skipped = if cfg.intro_fast_forward { 120 } else { 0 };
+        assert_eq!(held.tick + skipped, plain.tick);
+        // (The banana has spun 120 ticks less after a shortened fly-in, so only a retry hashes the same.)
+        if skipped == 0 {
+            assert_eq!(held.hash_visual(), plain.hash_visual());
+        }
+        assert_eq!(
+            (held.ball.pos, held.ball.vel),
+            (plain.ball.pos, plain.ball.vel)
+        );
+        assert_eq!(fly_in(&held), fly_in(&plain));
+        assert_eq!(held.stage_timer_frames, plain.stage_timer_frames);
+        assert_eq!((held.ringout_timer, held.ringout_skip_timer), (270, 60));
+        assert_eq!(fall_out_ticks(held, &|_| true), 60);
+    }
+}
+
+#[test]
+fn the_action_does_not_end_a_fall_out_on_a_bonus_stage() {
+    let mut cfg = SimConfig::retry(1);
+    cfg.bonus_stage = true;
+    let sim = fallen(cfg, ACTION);
+    // No delay is set, and none is needed: the rule itself excludes bonus stages.
+    assert_eq!((sim.ringout_timer, sim.ringout_skip_timer), (120, 0));
+    let (mut held, mut plain) = (sim.clone(), sim);
+    for tick in 1..=120 {
+        assert_eq!(held.phase, Phase::FallOut, "tick {tick}");
+        held.step_with_buttons(IDLE, ACTION);
+        plain.step(IDLE);
+        assert_eq!(held.hash_visual(), plain.hash_visual());
+        assert_eq!(held.phase, plain.phase);
+        assert_eq!(held.ringout_skip_timer, 0);
+    }
+    assert_eq!(held.phase, Phase::Finished(Outcome::FellOut));
+}
+
+/// Two simulations of the same run, one with the action down on every tick `press` names, stepped until both
+/// are finished: the same on every tick. Returns the tick each sequence began and the one the run ended on.
+fn with_and_without_action(
+    stage: &Stage,
+    cfg: SimConfig,
+    steer: &dyn Fn(&Sim) -> QuantizedInput,
+    press: &dyn Fn(&Sim) -> bool,
+) -> (Sim, u32) {
+    let mut held = Sim::new(stage, cfg);
+    let mut plain = held.clone();
+    let mut sequence_began = 0;
+    while !plain.is_finished() {
+        assert!(plain.tick < 2000, "the run never ended");
+        let input = steer(&plain);
+        let was_playing = plain.phase == Phase::Playing;
+        held.step_with_buttons(input, press(&plain) as u32);
+        plain.step(input);
+        if was_playing && plain.phase != Phase::Playing {
+            sequence_began = plain.tick;
+        }
+        assert_eq!(held.phase, plain.phase, "tick {}", plain.tick);
+        assert_eq!(held.hash_visual(), plain.hash_visual());
+        assert_eq!(fly_in(&held), fly_in(&plain));
+        assert_eq!(held.events, plain.events);
+        assert_eq!(
+            (
+                held.goal_timer,
+                held.timeover_timer,
+                held.stage_timer_frames
+            ),
+            (
+                plain.goal_timer,
+                plain.timeover_timer,
+                plain.stage_timer_frames
+            )
+        );
+        assert_eq!(held.score, plain.score);
+    }
+    (held, plain.tick - sequence_began)
+}
+
+/// The stick direction that rolls the ball towards the banana and the goal (-z), found by trying each.
+fn towards_the_goal(stage: &Stage) -> QuantizedInput {
+    [(0, 127), (0, -127), (127, 0), (-127, 0)]
+        .map(|(x, y)| {
+            let mut sim = Sim::new(stage, SimConfig::retry(1));
+            intro(&mut sim);
+            run(&mut sim, 30, QuantizedInput { x, y });
+            (QuantizedInput { x, y }, sim.ball.pos.z)
+        })
+        .into_iter()
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .unwrap()
+        .0
+}
+
+/// The reference would let the action leave a goal sequence once the ball has launched and its
+/// `goalSkipTimerFrames` (210) has run down, but the sequence is over after 151 ticks (a bonus clear after
+/// 180), so without a result replay that never happens: the action does nothing there, whenever it is down.
+#[test]
+fn the_action_does_nothing_in_a_goal_sequence_or_a_bonus_clear() {
+    let stage = stage();
+    let push = towards_the_goal(&stage);
+    let steer = |sim: &Sim| {
+        if sim.phase == Phase::Playing && sim.ball.vel.z > -0.12 {
+            push
+        } else {
+            IDLE
+        }
+    };
+    let mut bonus = SimConfig::retry(1);
+    bonus.bonus_stage = true;
+    let goal = Outcome::Goal(GoalType::Blue);
+    for (cfg, outcome, length) in [
+        (SimConfig::retry(1), goal, 151),
+        (SimConfig::first_attempt(1), goal, 151),
+        (bonus, Outcome::BonusClear, 180),
+    ] {
+        let always = |_: &Sim| true;
+        let in_sequence = |sim: &Sim| sim.phase == Phase::GoalSequence;
+        let before_launch = |sim: &Sim| sim.ball.goal_timer < 90;
+        let after_launch = |sim: &Sim| sim.ball.goal_timer >= 90;
+        let taps = |sim: &Sim| sim.tick.is_multiple_of(3);
+        let presses: [&dyn Fn(&Sim) -> bool; 5] =
+            [&always, &in_sequence, &before_launch, &after_launch, &taps];
+        for (case, press) in presses.into_iter().enumerate() {
+            // The fly-in of a first attempt is the one thing an action held throughout would change.
+            if cfg.intro_fast_forward && case != 1 {
+                continue;
+            }
+            let (sim, took) = with_and_without_action(&stage, cfg.clone(), &steer, press);
+            assert_eq!(sim.phase, Phase::Finished(outcome), "case {case}");
+            assert_eq!(took, length, "case {case}");
+        }
+    }
+}
+
+#[test]
+fn the_action_does_nothing_in_play_or_during_time_over() {
+    let mut cfg = SimConfig::retry(1);
+    cfg.time_limit_frames = 200;
+    let steer = |sim: &Sim| QuantizedInput {
+        x: (sim.tick % 40) as i32 - 20,
+        y: 15,
+    };
+    let always = |_: &Sim| true;
+    let in_sequence = |sim: &Sim| sim.phase == Phase::TimeOver;
+    let taps = |sim: &Sim| sim.tick % 7 < 2;
+    let presses: [&dyn Fn(&Sim) -> bool; 3] = [&always, &in_sequence, &taps];
+    for press in presses {
+        let (sim, took) = with_and_without_action(&stage(), cfg.clone(), &steer, press);
+        assert_eq!(sim.phase, Phase::Finished(Outcome::TimeOver));
+        assert_eq!(took, 120);
+        assert_eq!(sim.stage_timer_frames, 200);
+    }
+}
