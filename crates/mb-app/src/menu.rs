@@ -572,24 +572,22 @@ impl Menu {
         let Some(ui) = self.ui.clone() else {
             return Transition::None;
         };
+        // In course play the goal banner announces how far a green or red goal jumps: the gameplay
+        // state gets the course as it stands at this floor (`PlayRequest` has no room for it).
+        let course = match &self.active {
+            Some(Active::Run(run)) if run.mode() == PlayMode::Course => Some(run.course().clone()),
+            _ => None,
+        };
         let same_stage = |s: &PlayScene| s.stage_id() == request.stage_id;
         if request.retry && self.parked.as_ref().is_some_and(same_stage) {
             if let Some(scene) = self.parked.take() {
-                return Transition::Push(Box::new(PlayState::new(
-                    request,
-                    ui,
-                    self.audio.clone(),
-                    scene,
-                    Some(self.shared.park.clone()),
-                )));
+                let park = Some(self.shared.park.clone());
+                let play = PlayState::new(request, ui, self.audio.clone(), scene, park);
+                return Transition::Push(Box::new(play.with_course(course)));
             }
         }
-        Transition::Push(Box::new(StageLoad::new(
-            request,
-            ui,
-            self.audio.clone(),
-            self.shared.clone(),
-        )))
+        let load = StageLoad::new(request, ui, self.audio.clone(), self.shared.clone());
+        Transition::Push(Box::new(load.with_course(course)))
     }
 
     /// A stage load ended without a stage: back to where it was started from, with the reason if it failed.

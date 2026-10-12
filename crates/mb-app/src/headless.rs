@@ -120,6 +120,11 @@ impl Headless {
         Ok(self.renderer.render_to_rgba(&self.target, &camera))
     }
 
+    /// [`Headless::render`] through another camera (tests that look at the scene from elsewhere).
+    pub fn render_with(&mut self, camera: &mb_render::Camera) -> Vec<u8> {
+        self.renderer.render_to_rgba(&self.target, camera)
+    }
+
     pub fn save_png(&mut self, path: &Path) -> Result<(), String> {
         let rgba = self.render()?;
         crate::image::write_image(path, self.size.0, self.size.1, &rgba)
@@ -134,6 +139,16 @@ impl Headless {
     /// [`Headless::render`], `load_stats` of the stage last built, texture and object counts.
     pub fn renderer(&self) -> &Renderer {
         &self.renderer
+    }
+
+    /// The renderer, for tests that change what is drawn between two renders of one frame (the shadow
+    /// on and off).
+    pub fn renderer_mut(&mut self) -> &mut Renderer {
+        &mut self.renderer
+    }
+
+    pub fn size(&self) -> (u32, u32) {
+        self.size
     }
 
     /// Steer with `pilot` for one frame if a stage is being played (the stick goes through `InputState`
@@ -306,6 +321,7 @@ pub fn autoplay(content: &Content, opts: &AutoplayOptions) -> Result<AutoplayRep
         }
         let goal_shot = match seen_goal_frames {
             2 => Some("goal_tape"),
+            38 => Some("goal_flash"),
             45 => Some("goal"),
             200 => Some("goal_score"),
             _ => None,

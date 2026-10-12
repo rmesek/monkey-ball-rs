@@ -555,3 +555,93 @@ fn particles_and_the_shadow_are_drawn_from_the_pack() {
     assert_eq!(content.misses(), Vec::<String>::new());
     h.shutdown();
 }
+
+/// The window and fire flipbooks, the drifting clouds and the rippling floor of stage 92 over the pack,
+/// the way the browser reads: every frame model and texture comes from the background and stage files
+/// that are prepared for the stage anyway, so nothing is read unprepared, nothing stays in memory and
+/// the pack is what it was (`the_import_copies_exactly_what_the_game_reads` holds its size).
+#[test]
+fn backdrop_flipbooks_clouds_and_the_wave_load_from_the_pack() {
+    use mb_app::backdrop::FlipbookKind;
+    use mb_app::menu::Autostart;
+    let _gpu = GPU.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(bytes) = pack_bytes() else {
+        return;
+    };
+    let (content, _) = deferred(PackBytes::open(bytes.to_vec()).unwrap(), 2);
+    let Some(mut h) = start(&content) else {
+        return;
+    };
+    // (stage, window flipbooks, fire flipbooks, cloud layers, waved objects)
+    for (stage, windows, fires, clouds, waves) in [
+        (21u32, 23usize, 0usize, 0usize, 0usize),
+        (81, 0, 8, 0, 0),
+        (5, 0, 0, 2, 0),
+        (92, 0, 0, 0, 1),
+    ] {
+        h.shutdown();
+        // A new menu reads the start-up files again, as a restarted page would.
+        prepare(&content, &boot_files()).expect("boot files");
+        let menu = Menu::new(unlocked()).with_autostart(Some(Autostart::Stage(stage)));
+        h.push(Box::new(menu)).expect("menu");
+        run_until(&mut h, 60, "the stage", |h| playing(h).is_some());
+        assert_eq!(playing(&h).map(|p| p.0), Some(stage));
+        assert_eq!(content.prepared_bytes(), 0, "stage {stage}");
+        h.render().unwrap();
+        let created = h.renderer().counters();
+        let first: Vec<Option<usize>> = {
+            let view = h.top().unwrap().play_view().unwrap();
+            let scene = &view.scene.scene;
+            let count = |window: bool| {
+                let is_window = |b: &&mb_app::backdrop::Flipbook| {
+                    (b.kind == FlipbookKind::NightWindow) == window
+                };
+                scene.flipbooks.iter().filter(is_window).count()
+            };
+            assert_eq!(
+                (count(true), count(false)),
+                (windows, fires),
+                "stage {stage}"
+            );
+            // Every frame of every flipbook was found in the prepared background archive.
+            for book in &scene.flipbooks {
+                assert!(book.frames.iter().all(Option::is_some), "stage {stage}");
+            }
+            assert_eq!(scene.clouds.len(), clouds, "stage {stage}");
+            assert_eq!(scene.wave_objects.len(), waves, "stage {stage}");
+            scene.flipbooks.iter().map(|b| b.shown()).collect()
+        };
+        let offset = |h: &Headless| {
+            let view = h.top().unwrap().play_view().unwrap();
+            view.scene.clouds().offset(0)
+        };
+        let cloud_start = offset(&h);
+        assert_eq!(cloud_start.is_some(), clouds > 0);
+        // Through the fly-in and into play, drawing now and then.
+        for frame in 0..420 {
+            assert!(h.step(FRAME).unwrap());
+            if frame % 60 == 0 {
+                h.render().unwrap();
+            }
+        }
+        h.render().unwrap();
+        assert_eq!(
+            h.renderer().counters(),
+            created,
+            "stage {stage} created something"
+        );
+        let view = h.top().unwrap().play_view().unwrap();
+        assert!(view.sim.runtime.timer_frames > 100);
+        let now: Vec<Option<usize>> = (view.scene.scene.flipbooks.iter())
+            .map(|b| b.shown())
+            .collect();
+        if windows + fires > 0 {
+            assert_ne!(now, first, "stage {stage}: the flipbooks moved on");
+        }
+        if clouds > 0 {
+            assert_ne!(offset(&h), cloud_start, "the clouds drifted");
+        }
+        assert_eq!(content.misses(), Vec::<String>::new(), "stage {stage}");
+    }
+    h.shutdown();
+}

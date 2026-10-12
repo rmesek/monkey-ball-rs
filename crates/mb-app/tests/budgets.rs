@@ -1,7 +1,8 @@
 //! Regression budgets (`docs/PARITY_PLAN.md`, "Regression budgets as tests"): what a frame and a stage may
 //! cost, counted rather than timed so the tests do not depend on the load of the machine.
 //!
-//! * draw calls per stage outside the particles equal the recorded 0.1.0 table; the particles add at most 12;
+//! * draw calls per stage outside the particles equal the recorded 0.1.0 table plus what was added on
+//!   purpose since (`DRAWS_ADDED`); the particles add at most 12;
 //! * no GPU object is created while a stage is played;
 //! * the textures of the heaviest stage stay within 1 MB of what 0.1.0 uploaded.
 //!
@@ -120,6 +121,28 @@ const DRAWS_0_1_0: &[(u32, usize, usize)] = &[
     (130, 348, 356),
 ];
 
+/// `(stage, draws added at INTRO_TICK, at PLAY_TICK)`: what a stage draws on purpose beyond the 0.1.0 table,
+/// recorded when it was added. Every other stage draws exactly its 0.1.0 count.
+///
+/// * Stage 92: the rippling floor (`SHAPE_STAGE134`, one mesh), which 0.1.0 did not draw at all.
+/// * Night stages (21 to 27, 29, 45 to 47): one draw for the current frame of every window flipbook in
+///   view, of the 23 to 33 a stage has. Stages 28 and 48 keep their diners among the foreground objects,
+///   whose flipbooks the reference does not play, and are unchanged.
+/// * Storm stages (81 to 90): one draw for the current frame of every fire in view, of 8.
+#[rustfmt::skip]
+const DRAWS_ADDED: &[(u32, usize, usize)] = &[
+    (92, 1, 1), (21, 23, 16), (22, 4, 5), (23, 16, 10), (24, 7, 11), (25, 7, 10), (26, 14, 11), (27, 15, 9),
+    (29, 13, 10), (45, 14, 9), (46, 28, 16), (47, 29, 18), (81, 0, 2), (82, 0, 2), (83, 0, 2), (84, 3, 4),
+    (85, 3, 4), (86, 4, 4), (87, 0, 2), (88, 0, 2), (89, 0, 2), (90, 0, 2),
+];
+
+/// The count a stage is held to: its 0.1.0 row plus what [`DRAWS_ADDED`] records for it.
+fn expected_draws(row: &(u32, usize, usize)) -> (u32, usize, usize) {
+    let added = DRAWS_ADDED.iter().find(|a| a.0 == row.0);
+    let (intro, play) = added.map_or((0, 0), |a| (a.1, a.2));
+    (row.0, row.1 + intro, row.2 + play)
+}
+
 /// Most draw calls the particles may add to a frame (sparks, stars, flash, sparkle, glow, confetti).
 const PARTICLE_DRAW_BUDGET: usize = 12;
 
@@ -168,8 +191,12 @@ fn every_stage_draws_what_it_did_in_0_1_0_outside_the_particles() {
     );
     let mut over = Vec::new();
     for (now, then) in measured.iter().zip(DRAWS_0_1_0) {
-        if now != then {
-            over.push(format!("stage {}: {:?}, 0.1.0 had {:?}", now.0, now, then));
+        let expected = expected_draws(then);
+        if *now != expected {
+            over.push(format!(
+                "stage {}: {now:?}, expected {expected:?} (0.1.0 had {then:?})",
+                now.0
+            ));
         }
     }
     assert!(over.is_empty(), "draw calls changed:\n{}", over.join("\n"));
@@ -177,13 +204,24 @@ fn every_stage_draws_what_it_did_in_0_1_0_outside_the_particles() {
 
 /// Play floor 1 of a course with the autopilot, from the fly-in to the end of the goal sequence, rendering
 /// every frame; `each` sees every frame's statistics.
-fn play_floor_one(h: &mut Headless, d: Difficulty, mut each: impl FnMut(&Headless, &FrameStats)) {
+fn play_floor_one(h: &mut Headless, d: Difficulty, each: impl FnMut(&Headless, &FrameStats)) {
+    play_floor_one_from(h, d, |_| {}, each)
+}
+
+/// [`play_floor_one`]; `loaded` sees the game when the stage is loaded and nothing of it is drawn yet.
+fn play_floor_one_from(
+    h: &mut Headless,
+    d: Difficulty,
+    loaded: impl FnOnce(&Headless),
+    mut each: impl FnMut(&Headless, &FrameStats),
+) {
     h.shutdown();
     let menu =
         Menu::new(mb_app::headless::unlocked_storage()).with_autostart(Some(Autostart::Course(d)));
     h.push(Box::new(menu)).unwrap();
     assert!(h.step(FRAME).unwrap());
     let stage = h.top().unwrap().play_view().unwrap().request.stage_id;
+    loaded(h);
     let mut pilot = None;
     let mut goal = false;
     for frame in 0..6000 {
@@ -235,7 +273,15 @@ fn particles_add_at_most_twelve_draws_at_their_peak() {
 }
 
 /// Nothing is created on the GPU while a stage is played: not by the stage, the HUD or the particles, from
-/// the first frames of the fly-in through the landing burst, the sparks and the goal with its confetti.
+/// the first frame of the fly-in through the landing burst, the sparks and the goal with its confetti.
+///
+/// Everything the HUD draws with is made when the stage is entered (`UiAssets::warm`), so the count is
+/// taken when the load ends and holds from the first frame drawn.
+///
+/// One thing the renderer makes in a frame cannot be asked for at load: the buffer of the objects, with
+/// its bind group, when a stage has more objects than any stage before it (so always for the first stage
+/// of a session), and the depth texture of a target that was never drawn to. Another stage is therefore
+/// drawn first here; `mb-render` has no call to reserve them.
 #[test]
 fn no_gpu_object_is_created_while_a_stage_is_played() {
     let _gpu = GPU.lock().unwrap_or_else(|e| e.into_inner());
@@ -245,21 +291,35 @@ fn no_gpu_object_is_created_while_a_stage_is_played() {
     let mut frames = 0;
     let mut start = None;
     let (mut effects, mut confetti) = (0, 0);
-    play_floor_one(&mut h, Difficulty::Beginner, |h, _| {
-        frames += 1;
-        let r = h.renderer();
-        let now = (r.counters(), r.texture_count(), r.object_count());
-        // The first frames may still create what only a first frame needs.
-        if frames == 3 {
-            start = Some(now);
-        }
-        if let Some(start) = start {
-            assert_eq!(now, start, "frame {frames} created something");
-        }
-        let rt = &h.top().unwrap().play_view().unwrap().sim.runtime;
-        effects = effects.max(rt.effects.len());
-        confetti = confetti.max(rt.confetti.len());
-    });
+    // A stage before this one, so that what the first stage of a session sizes exists already.
+    start_stage(&mut h, 2);
+    render(&mut h);
+    let mut loaded = None;
+    play_floor_one_from(
+        &mut h,
+        Difficulty::Beginner,
+        |h| loaded = Some(h.renderer().counters()),
+        |h, _| {
+            frames += 1;
+            let r = h.renderer();
+            let now = (r.counters(), r.texture_count(), r.object_count());
+            if frames == 1 {
+                start = Some(now);
+            }
+            if let Some(start) = start {
+                assert_eq!(now, start, "frame {frames} created something");
+            }
+            let rt = &h.top().unwrap().play_view().unwrap().sim.runtime;
+            effects = effects.max(rt.effects.len());
+            confetti = confetti.max(rt.confetti.len());
+        },
+    );
+    // The first frame made nothing either: the count is the one the load ended with.
+    assert_eq!(
+        start.unwrap().0,
+        loaded.unwrap(),
+        "the first frame created something"
+    );
     assert!(frames > 400, "{frames} frames");
     assert!(
         effects >= 20 && confetti >= 160,
@@ -304,4 +364,38 @@ fn the_heaviest_stage_uploads_no_more_texture_bytes_than_its_budget() {
         growth <= TEXTURE_GROWTH_BUDGET,
         "stage 109 uploads {growth} texture bytes more than 0.1.0"
     );
+}
+
+/// The window and fire flipbooks bring textures 0.1.0 never uploaded (a frame each: about 2.2 MB for the
+/// night background, 2.1 MB for the storm). They must not make a night or storm stage the heaviest: no
+/// such stage may upload more than the budget of stage 109 allows.
+#[test]
+fn flipbook_stages_upload_less_than_the_heaviest_stage_may() {
+    let _gpu = GPU.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(mut h) = headless() else {
+        return;
+    };
+    let limit = STAGE_109_TEXTURE_BYTES_0_1_0 + TEXTURE_GROWTH_BUDGET;
+    let mut most = (0, 0);
+    for stage in DRAWS_ADDED.iter().map(|row| row.0) {
+        start_stage(&mut h, stage);
+        let bytes = h.renderer().load_stats.texture_bytes;
+        if printing() {
+            println!("stage {stage}: {bytes} texture bytes");
+        }
+        assert!(
+            bytes <= limit,
+            "stage {stage} uploads {bytes} texture bytes"
+        );
+        if bytes > most.1 {
+            most = (stage, bytes);
+        }
+    }
+    eprintln!(
+        "heaviest stage with a flipbook or the wave: {} with {} bytes ({:.2} MB)",
+        most.0,
+        most.1,
+        most.1 as f64 / 1e6
+    );
+    h.shutdown();
 }

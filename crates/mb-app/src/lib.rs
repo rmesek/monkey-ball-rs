@@ -11,7 +11,8 @@
 //!   3D scene, the particles and shadow on top of it, HUD.
 //! * [`audio`]: sounds, music and the backend trait (`audio_cpal`: native device output). See `docs/AUDIO.md`.
 //! * [`text`] / [`widgets`]: sprite fonts from the disc and the menu list widget.
-//! * [`stage_scene`] / [`stage_info`] / [`anim`]: assembling an SMB1 stage into renderer objects.
+//! * [`stage_scene`] / [`stage_info`] / [`anim`]: assembling an SMB1 stage into renderer objects;
+//!   [`backdrop`]: what the night, storm and sunset backgrounds animate.
 //! * The drivers, one per target: [`app`] is the desktop window (blocking GPU setup, vsync pacing, native
 //!   gamepads, a mouse pointer) and `shell` is the browser canvas (asynchronous GPU setup, frames from
 //!   `requestAnimationFrame`, platform hooks for `mb-web`). They share everything above them: the state
@@ -30,6 +31,7 @@ pub mod audio_cpal;
 // A closed-loop player for scripted runs and tests.
 #[cfg(feature = "dev")]
 pub mod autopilot;
+pub mod backdrop;
 pub mod content;
 pub mod game;
 pub mod gpu;

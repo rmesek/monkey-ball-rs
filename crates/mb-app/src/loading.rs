@@ -12,7 +12,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use glam::Vec3;
-use mb_game::PlayRequest;
+use mb_game::{Course, PlayRequest};
 use mb_render::Camera;
 
 use crate::audio::Audio;
@@ -63,6 +63,8 @@ pub struct StageLoad {
     phase: Phase,
     progress: f32,
     back: Tap,
+    /// Handed on to the [`PlayState`] (see `PlayState::with_course`).
+    course: Option<Course>,
 }
 
 const BACKGROUND: [f32; 4] = [0.02, 0.05, 0.16, 1.0];
@@ -81,7 +83,14 @@ impl StageLoad {
             phase: Phase::Fetch,
             progress: 0.0,
             back: Tap::default(),
+            course: None,
         }
+    }
+
+    /// The course the floor is part of, standing at it (course play only).
+    pub fn with_course(mut self, course: Option<Course>) -> Self {
+        self.course = course;
+        self
     }
 
     fn end(&mut self, ctx: &mut GameCtx, outcome: LoadOutcome) -> Transition {
@@ -206,13 +215,14 @@ impl Game for StageLoad {
                     let scene = PlayScene::build(ctx.renderer, assets, timings);
                     // Everything is parsed and on the GPU: the raw files are not needed any more.
                     ctx.content.release(&self.wanted);
-                    return Transition::Replace(Box::new(PlayState::new(
+                    let play = PlayState::new(
                         self.request.clone(),
                         self.ui.clone(),
                         self.audio.clone(),
                         scene,
                         Some(self.shared.park.clone()),
-                    )));
+                    );
+                    return Transition::Replace(Box::new(play.with_course(self.course.take())));
                 }
             }
             if stepwise {

@@ -33,6 +33,11 @@ pub struct PlayView<'a> {
     pub paused: bool,
     /// HUD banner on screen (`"READY"`, `"GO"`, `"GOAL"`, ...).
     pub banner: Option<&'static str>,
+    /// The goal banner's `JUMP TO FLOOR n` line and the factor of its `WARP BONUS` line, while shown.
+    pub jump_text: Option<&'a str>,
+    pub warp_bonus: Option<u32>,
+    /// The scene being drawn (flipbooks, clouds, the bonus wave).
+    pub scene: &'a crate::play_scene::PlayScene,
 }
 
 pub enum Transition {

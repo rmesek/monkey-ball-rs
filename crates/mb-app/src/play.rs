@@ -15,8 +15,9 @@ use std::rc::Rc;
 use glam::{Mat4, Vec3};
 use mb_engine::determinism::quantize_input;
 use mb_engine::{Outcome, Phase, Sim, SimConfig, BUTTON_PRIMARY_ACTION};
+use mb_game::course::{AdvanceInfo, INFO_GOAL};
 use mb_game::progress::ControlMode;
-use mb_game::{GoalType, PlayMode, PlayRequest, PlayResult, StageOutcome};
+use mb_game::{Course, GoalType, PlayMode, PlayRequest, PlayResult, StageOutcome};
 use mb_render::Camera;
 
 use crate::audio::{Audio, Sfx, StageSounds};
@@ -223,9 +224,9 @@ pub struct PlayState {
     /// a key that is still down from the menu (Enter on the stage, on Continue) is not the player holding
     /// the action button, and does not fast-forward the fly-in.
     primary_armed: bool,
-    /// Frames left in which the HUD's textures are drawn without size ([`UiAssets::warm`]). More than
-    /// one, because a driver may drop a frame it cannot present (and the windowless one drops the first).
-    warm_frames: u8,
+    /// The course at this floor, in course play: it says how far a green or red goal jumps, which the
+    /// goal banner announces ([`PlayState::with_course`]).
+    course: Option<Course>,
 }
 
 impl PlayState {
@@ -245,7 +246,7 @@ impl PlayState {
             park,
             back: Tap::default(),
             primary_armed: false,
-            warm_frames: 3,
+            course: None,
             scene: Some(scene),
             sim: None,
             hud,
@@ -261,6 +262,25 @@ impl PlayState {
             audio,
             sounds: None,
         }
+    }
+
+    /// Play the floor as part of `course`, which stands at it (the reference's `game.course`). Without
+    /// one (practice) a goal leads nowhere, and the banner says nothing about a jump.
+    pub fn with_course(mut self, course: Option<Course>) -> Self {
+        self.course = course;
+        self
+    }
+
+    /// `course.peekJumpCount` for the goal the ball went through: how many floors the course moves on.
+    fn jump_preview(&self, sim: &Sim) -> Option<u32> {
+        let course = self.course.as_ref()?;
+        let hit = sim.goal_hit?;
+        course.peek_jump_count(&AdvanceInfo {
+            flags: INFO_GOAL,
+            goal_type: Some(goal_type(hit.goal_type).letter()),
+            timer_curr: sim.stage_timer_frames.max(0) as u32,
+            curr_stage_id: self.request.stage_id,
+        })
     }
 
     fn start_score(request: &PlayRequest) -> u64 {
@@ -447,6 +467,10 @@ impl Game for PlayState {
         scene.apply(ctx.renderer, 1.0);
         self.cameras = [CameraPose::of(&sim.camera); 2];
         self.camera = camera_from(&sim.camera, aspect(ctx.size));
+        scene.face_camera(ctx.renderer, &self.camera);
+        // Everything the HUD will ever draw with exists before the first frame of play (unloading the
+        // previous stage's textures dropped the sprites' bind groups).
+        self.ui.warm(ctx.renderer);
         // The loader read and started this stage's music; on a retry it is still playing. (Reading it
         // here again is a no-op in both cases and keeps a state built without the loader correct.)
         self.audio
@@ -605,8 +629,9 @@ impl Game for PlayState {
                 };
                 self.cameras = [from, pose];
                 let finished = sim.is_finished();
-                let frame = self.sim.as_ref().map(|s| self.hud_frame(s));
-                if let Some(frame) = frame {
+                let state = (self.sim.as_ref()).map(|s| (self.hud_frame(s), self.jump_preview(s)));
+                if let Some((frame, jump)) = state {
+                    self.hud.set_jump(jump);
                     self.hud.tick(&frame);
                 }
                 if finished {
@@ -625,15 +650,12 @@ impl Game for PlayState {
         let alpha = (self.accumulator / TICK).clamp(0.0, 1.0) as f32;
         scene.apply(ctx.renderer, alpha);
         self.camera = self.cameras[1].blend(&self.cameras[0], alpha, aspect(ctx.size));
+        scene.face_camera(ctx.renderer, &self.camera);
         // Particles are queued per frame like sprites: a paused frame queues the same ones again.
         scene.draw_particles(ctx.renderer, sim, &self.camera, alpha);
 
         let frame = self.hud_frame(sim);
         let ui = self.ui.clone();
-        if self.warm_frames > 0 {
-            self.warm_frames -= 1;
-            ui.warm(ctx.renderer);
-        }
         let mut p = Painter {
             r: ctx.renderer,
             ui: &ui,
@@ -755,6 +777,9 @@ impl Game for PlayState {
             shadow: scene.shadow_visible(),
             paused: self.pause.is_some(),
             banner: self.hud.banner(),
+            jump_text: self.hud.jump_text(),
+            warp_bonus: self.hud.warp_bonus(),
+            scene,
         })
     }
 }

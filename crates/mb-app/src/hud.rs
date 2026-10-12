@@ -8,6 +8,8 @@
 //! [`Hud::tick`] runs once per simulation tick (the reference advances its banners in 60 Hz frames);
 //! [`Hud::draw`] may run at any display rate.
 
+use std::fmt::Write as _;
+
 use mb_game::{Difficulty, GoalType};
 
 use crate::text::{rgb, with_alpha, Align, Color, FontId, Painter, WHITE};
@@ -158,8 +160,40 @@ impl Banner {
 struct GoalScore {
     clear_score: u64,
     floor_score: u64,
+    /// `warpMultiplier`: the floors a green or red goal jumps, 1 when it jumps none.
+    warp: u32,
     time_bonus: bool,
     goal: GoalType,
+    /// A warp goal's banner says where it leads.
+    jump_text: bool,
+}
+
+/// A fading copy of the `JUMP TO FLOOR` line, left behind as it sways (`WarpTrail`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct WarpTrail {
+    x: f32,
+    y: f32,
+    scale: f32,
+    opacity: f32,
+    add_g: f32,
+    add_b: f32,
+    life: i32,
+}
+
+/// Most trails alive at once: one is born every other frame and lives sixteen.
+const MAX_WARP_TRAILS: usize = 16;
+
+/// `isWarpGoal`: the green and red goals skip floors.
+fn is_warp_goal(goal: GoalType) -> bool {
+    goal != GoalType::Blue
+}
+
+/// Where the `JUMP TO FLOOR` line is `t` frames into the banner (it sways about the centre).
+fn warp_text_pos(t: i32) -> (f32, f32) {
+    (
+        320.0 + 20.0 * sin_fixed((t << 9) as f32),
+        240.0 + 10.0 * sin_fixed(((t << 8) + 0x4000) as f32),
+    )
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -208,6 +242,16 @@ fn bomb_pulse(timer_frames: i32) -> f32 {
     (1.0 - (t - 15.0) / 45.0) * 0.2
 }
 
+/// White laid over the assembled `GOAL` banner `t` frames in, 0..=1: a half sine over frames 30 to 45
+/// (`flash = sinFixed((t - 30) * 0x888) * 255`).
+fn goal_flash(t: f32) -> f32 {
+    if (30.0..45.0).contains(&t) {
+        sin_fixed((t - 30.0) * 0x888 as f32).clamp(0.0, 1.0)
+    } else {
+        0.0
+    }
+}
+
 pub struct Hud {
     frame_counter: u32,
     go: Banner,
@@ -237,6 +281,12 @@ pub struct Hud {
     bonus_floor_frames: f32,
     final_floor_frames: f32,
     bonus_banana_counter: f32,
+    /// Floors the course jumps for the goal the ball went through ([`Hud::set_jump`]).
+    jump: Option<u32>,
+    warp_trails: Vec<WarpTrail>,
+    /// `JUMP TO FLOOR n` and the value of the warp bonus line, written when the banner starts.
+    warp_text: String,
+    warp_value: String,
 }
 
 impl Hud {
@@ -272,7 +322,31 @@ impl Hud {
             bonus_floor_frames: settled,
             final_floor_frames: settled,
             bonus_banana_counter: 0.0,
+            jump: None,
+            warp_trails: Vec::with_capacity(MAX_WARP_TRAILS),
+            warp_text: String::with_capacity(24),
+            warp_value: String::with_capacity(8),
         }
+    }
+
+    /// How many floors the course moves on for the goal the ball went through
+    /// (`Course::peek_jump_count`, the reference's `course.peekJumpCount`), before the tick in which the
+    /// banner starts. `None` where no course decides what follows (practice): the banner then announces
+    /// no jump and no warp bonus.
+    pub fn set_jump(&mut self, jump: Option<u32>) {
+        self.jump = jump;
+    }
+
+    /// The `JUMP TO FLOOR n` line on screen (tests).
+    pub fn jump_text(&self) -> Option<&str> {
+        let shown = self.goal.active() && self.goal_score.is_some_and(|g| g.jump_text);
+        shown.then_some(self.warp_text.as_str())
+    }
+
+    /// The factor of the `WARP BONUS` line on screen, when there is one (tests).
+    pub fn warp_bonus(&self) -> Option<u32> {
+        let score = self.goal_score.filter(|_| self.goal.active())?;
+        (score.warp > 1).then_some(score.warp)
     }
 
     /// Name of the banner currently on screen (tests and the window title).
@@ -321,11 +395,25 @@ impl Hud {
                     GoalType::Red => 20_000,
                 };
             let time_bonus = f.time_limit > 0 && f.time_left() > (f.time_limit >> 1);
+            // The jump the course will make, when one decides: its length is the warp bonus.
+            let jump = self.jump.filter(|n| *n > 0 && is_warp_goal(goal));
+            let warp = jump.unwrap_or(1);
+            let jump_text = jump.is_some() && !f.is_bonus;
+            self.warp_text.clear();
+            self.warp_value.clear();
+            self.warp_trails.clear();
+            if jump_text {
+                let _ = write!(self.warp_text, "JUMP TO FLOOR {}", f.floor + warp);
+            }
+            let pad = if warp < 10 { "   X " } else { "  X " };
+            let _ = write!(self.warp_value, "{pad}{warp}");
             self.goal_score = Some(GoalScore {
                 clear_score,
-                floor_score: clear_score * if time_bonus { 2 } else { 1 },
+                floor_score: clear_score * u64::from(warp) * if time_bonus { 2 } else { 1 },
+                warp,
                 time_bonus,
                 goal,
+                jump_text,
             });
         }
         if !self.last_bonus_clear && f.bonus_clear {
@@ -443,6 +531,34 @@ impl Hud {
         }
         if f.is_final {
             self.final_floor_frames += 1.0;
+        }
+
+        // The `JUMP TO FLOOR` line leaves a trail on every other frame of the banner.
+        if self.goal.active() && self.goal_score.is_some_and(|g| g.jump_text) {
+            let t = self.goal.duration - self.goal.timer;
+            if t % 2 == 1 && self.warp_trails.len() < MAX_WARP_TRAILS {
+                let (x, y) = warp_text_pos(t);
+                self.warp_trails.push(WarpTrail {
+                    x,
+                    y,
+                    scale: 1.0,
+                    opacity: 0.5,
+                    add_g: 96.0,
+                    add_b: 127.0,
+                    life: 16,
+                });
+            }
+        }
+        self.warp_trails.retain_mut(|trail| {
+            trail.add_g += 6.0;
+            trail.add_b += 7.0;
+            trail.scale += 0.008;
+            trail.opacity -= 0.03125;
+            trail.life -= 1;
+            trail.life > 0 && trail.opacity > 0.0
+        });
+        if !self.goal.active() {
+            self.warp_trails.clear();
         }
     }
 
@@ -772,6 +888,51 @@ impl Hud {
                 }
             } else {
                 p.image(img, cx(x), cy(y), scale * s, scale * s, color);
+                // Once assembled the banner flashes white for a quarter of a second: its own shape in
+                // plain white over it (`drawSpriteSolidTint`).
+                let flash = goal_flash(t);
+                if flash > 0.0 {
+                    p.image_solid(img, cx(x), cy(y), scale * s, scale * s, opacity * flash);
+                }
+            }
+
+            if self.goal_score.is_some_and(|g| g.jump_text) && !f.is_bonus {
+                for trail in &self.warp_trails {
+                    let color = [
+                        0.0,
+                        trail.add_g.round().min(255.0) / 255.0,
+                        trail.add_b.round().min(255.0) / 255.0,
+                        trail.opacity.clamp(0.0, 1.0),
+                    ];
+                    p.text(
+                        FontId::Asc32,
+                        &self.warp_text,
+                        cx(trail.x),
+                        cy(trail.y),
+                        trail.scale * s,
+                        trail.scale * s,
+                        color,
+                        Align::Center,
+                    );
+                }
+                let opacity = if t < 30.0 {
+                    t / 30.0
+                } else if self.goal.timer < 15 {
+                    self.goal.timer as f32 / 15.0
+                } else {
+                    1.0
+                };
+                let (x, y) = warp_text_pos(t as i32);
+                p.text(
+                    FontId::Asc32,
+                    &self.warp_text,
+                    cx(x),
+                    cy(y),
+                    s,
+                    s,
+                    with_alpha(rgb(0x00c0ff), opacity),
+                    Align::Center,
+                );
             }
         }
 
@@ -985,6 +1146,17 @@ impl Hud {
             &format!(" {:5}", info.clear_score),
             clear_color,
         );
+        if info.warp > 1 {
+            line_y += 20.0;
+            line(
+                p,
+                base_t - 10.0,
+                line_y,
+                " WARP BONUS   ",
+                &self.warp_value,
+                rgb(0x00c0ff),
+            );
+        }
         if info.time_bonus {
             line_y += 20.0;
             line(
@@ -1215,6 +1387,108 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A goal frame: `elapsed` frames of a 60 second clock gone, through a goal of `goal`.
+    fn goal_frame(goal: GoalType, elapsed: i32) -> HudFrame {
+        let mut f = frame();
+        f.floor = 2;
+        f.stage_timer = elapsed;
+        f.goal_timer = 360;
+        f.goal = Some(goal);
+        f
+    }
+
+    #[test]
+    fn a_warp_goal_announces_its_floor_and_multiplies_the_floor_score() {
+        // Beginner floor 2, green goal: the course jumps three floors, to floor 5.
+        let mut hud = Hud::new(false, 0);
+        hud.set_jump(Some(3));
+        let f = goal_frame(GoalType::Green, 600);
+        hud.tick(&f);
+        assert_eq!(hud.banner(), Some("GOAL"));
+        assert_eq!(hud.jump_text(), Some("JUMP TO FLOOR 5"));
+        assert_eq!(hud.warp_bonus(), Some(3));
+        let info = hud.goal_score.unwrap();
+        // `floorScore = clearScore * warpMultiplier * timeBonus`.
+        assert_eq!(info.clear_score, 3000 * 100 / 60 + 10_000);
+        assert_eq!(info.floor_score, info.clear_score * 3 * 2);
+        assert_eq!(hud.warp_value, "   X 3");
+
+        // A plain goal, or a jump of one floor through a warp goal: no bonus line.
+        for (goal, jump) in [
+            (GoalType::Blue, Some(1)),
+            (GoalType::Blue, Some(3)),
+            (GoalType::Red, Some(1)),
+        ] {
+            let mut hud = Hud::new(false, 0);
+            hud.set_jump(jump);
+            hud.tick(&goal_frame(goal, 600));
+            assert_eq!(hud.warp_bonus(), None, "{goal:?} {jump:?}");
+            // The line is for the goals that warp, however far.
+            let expect = (goal == GoalType::Red).then_some("JUMP TO FLOOR 3");
+            assert_eq!(hud.jump_text(), expect, "{goal:?} {jump:?}");
+        }
+        // No course (practice): nothing jumps, so nothing is announced or multiplied.
+        let mut hud = Hud::new(false, 0);
+        hud.tick(&goal_frame(GoalType::Red, 600));
+        assert_eq!((hud.jump_text(), hud.warp_bonus()), (None, None));
+        // A bonus stage never shows the line; ten floors and more lose a space of padding.
+        let mut hud = Hud::new(false, 0);
+        hud.set_jump(Some(12));
+        let mut f = goal_frame(GoalType::Red, 600);
+        f.is_bonus = true;
+        hud.tick(&f);
+        assert_eq!(hud.jump_text(), None);
+        assert_eq!(hud.warp_value, "  X 12");
+    }
+
+    #[test]
+    fn the_jump_line_sways_and_leaves_trails_like_the_reference() {
+        let mut hud = Hud::new(false, 0);
+        hud.set_jump(Some(4));
+        let f = goal_frame(GoalType::Green, 600);
+        // The tick that starts the banner is already its first frame (t = 1): a trail is born and aged.
+        hud.tick(&f);
+        assert_eq!(hud.goal.duration - hud.goal.timer, 1);
+        assert_eq!(hud.warp_trails.len(), 1);
+        let first = hud.warp_trails[0];
+        let (x, y) = warp_text_pos(1);
+        assert_eq!((first.x, first.y), (x, y));
+        assert!((x - (320.0 + 20.0 * sin_fixed(512.0))).abs() < 1e-5);
+        assert!((y - (240.0 + 10.0 * sin_fixed(256.0 + 16384.0))).abs() < 1e-5);
+        assert_eq!((first.add_g, first.add_b, first.life), (102.0, 134.0, 15));
+        assert!((first.scale - 1.008).abs() < 1e-6 && (first.opacity - 0.46875).abs() < 1e-6);
+        // One every other frame, each gone after sixteen: eight at most.
+        let mut most = 0;
+        for _ in 0..60 {
+            hud.tick(&f);
+            most = most.max(hud.warp_trails.len());
+            assert!(hud
+                .warp_trails
+                .iter()
+                .all(|t| t.life > 0 && t.opacity > 0.0));
+        }
+        assert_eq!(most, 8);
+        // They end with the banner.
+        for _ in 0..GOAL_BANNER_FRAMES {
+            hud.tick(&frame());
+        }
+        assert!(hud.banner().is_none() && hud.warp_trails.is_empty());
+        assert_eq!(hud.jump_text(), None);
+    }
+
+    #[test]
+    fn the_goal_banner_flashes_white_once_it_is_assembled() {
+        // Nothing while the four copies fly in, a half sine over the next fifteen frames, nothing after.
+        assert_eq!(goal_flash(0.0), 0.0);
+        assert_eq!(goal_flash(29.0), 0.0);
+        assert_eq!(goal_flash(30.0), 0.0);
+        assert!((goal_flash(37.0) - sin_fixed(7.0 * 2184.0)).abs() < 1e-6);
+        assert!(goal_flash(37.0) > 0.99 && goal_flash(38.0) > 0.99);
+        assert!(goal_flash(44.0) > 0.0 && goal_flash(44.0) < 0.25);
+        assert_eq!(goal_flash(45.0), 0.0);
+        assert_eq!(goal_flash(200.0), 0.0);
     }
 
     #[test]
