@@ -8,6 +8,7 @@
 //   F tick hash px py pz vx vy vz state flags rotX rotY rotZ apeYaw camRotY intro stageTimer goalTimer ringout xrot zrot
 //     visualHash effects confetti effectsState confettiState visualRng
 //     camEyeX camEyeY camEyeZ camLookX camLookY camLookZ camRotX camRotZ camTimer
+//     ringoutSkip goalSkip timeover
 // f64 values are the raw IEEE bits as 16 hex digits. `visualHash` is `hashSimState(.., { includeVisual: true })`;
 // `effectsState` / `confettiState` are FNV hashes over every field of every live particle (see `effectsState`).
 //
@@ -21,7 +22,9 @@
 //
 // A line of the inputs file is `x y` or `x y buttons`. With the third column the feed frame carries `buttons`,
 // and its bit 0 is what the game's input device reports as the primary action during that tick: the reference
-// asks the device (`input.isPrimaryActionDown()`), not the feed, whether to fast-forward the intro.
+// asks the device (`input.isPrimaryActionDown()`), not the feed, whether to fast-forward the intro, to end a
+// fall-out sequence or to leave a goal sequence. `ringoutSkip` and `goalSkip` are the two timers that gate the
+// last two (`ringoutSkipTimerFrames`, `goalSkipTimerFrames`), `timeover` is `timeoverTimerFrames`.
 import "./shim.ts";
 
 const [srcDir, stageIdArg, stageFile, inputsFile, framesArg, outFile, modeArg, tailArg] = Deno.args;
@@ -150,6 +153,7 @@ for (let i = 0; i < frames; i++) {
     player.world.xrot, player.world.zrot,
     ...visual(),
     ...camera(),
+    player.ringoutSkipTimerFrames, player.goalSkipTimerFrames, game.timeoverTimerFrames,
   ].join(" "));
 }
 Deno.writeTextFileSync(outFile, lines.join("\n") + "\n");

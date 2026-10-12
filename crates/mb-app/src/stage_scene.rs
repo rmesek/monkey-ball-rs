@@ -14,6 +14,7 @@ use mb_stage::{S16Vec, Stage};
 use web_time::Instant;
 
 use crate::anim::world_from_group;
+use crate::backdrop::{self, Flipbook, FlipbookKind, BONUS_WAVE_MODEL_NAME, BONUS_WAVE_STAGE_ID};
 use crate::content::{
     common_files, stage_bg, Content, StageFiles, Wanted, COMMON_GMA, COMMON_NL_OBJ, COMMON_NL_TPL,
     COMMON_TPL,
@@ -338,6 +339,13 @@ pub struct StageScene {
     /// For each entry of `bg_objects` / `fg_objects`: its index in the stagedef list.
     pub bg_sources: Vec<usize>,
     pub fg_sources: Vec<usize>,
+    /// The window and fire flipbooks of the background (`BgNight`, `BgStorm`): an object per frame.
+    pub flipbooks: Vec<Flipbook>,
+    /// The background objects whose textures drift (`BgSunset`), in stagedef order.
+    pub clouds: Vec<ObjectId>,
+    /// The objects the bonus wave ripples (stage 92): the floor model of the stage's NaomiLib archive,
+    /// which no anim group names, and any anim-group model of that name.
+    pub wave_objects: Vec<ObjectId>,
     /// The `common.tpl` textures uploaded so far, for states that add more `common.gma` models (ball,
     /// goal bag).
     pub common_set: LazyTextures,
@@ -450,7 +458,7 @@ struct ModelLoader<'a> {
     nl_cache: HashMap<String, Option<ModelId>>,
 }
 
-impl ModelLoader<'_> {
+impl<'a> ModelLoader<'a> {
     fn get(&mut self, r: &mut Renderer, src: Src, name: &str) -> Option<ModelId> {
         if let Some(hit) = self.cache.get(&(src, name.to_string())) {
             return *hit;
@@ -479,25 +487,42 @@ impl ModelLoader<'_> {
         if let Some(hit) = self.nl_cache.get(name) {
             return *hit;
         }
-        let id = self.assets.naomi.as_ref().and_then(|n| {
-            let names = &n.obj.names;
-            let idx = names
-                .get(name)
-                .or_else(|| names.get(&format!("{name}_MAP")))
-                .or_else(|| {
-                    names
-                        .iter()
-                        .filter(|(k, _)| k.starts_with(name))
-                        .max_by_key(|(k, _)| k.len())
-                        .map(|(_, v)| v)
-                })
-                .copied()?;
-            let model = n.obj.model(idx)?;
+        let id = self.naomi_model(name).map(|(n, model)| {
             let textures = self.nl_set.for_nl_model(r, &n.tpl, model).to_vec();
-            Some(r.upload_nl_model(model, &textures))
+            r.upload_nl_model(model, &textures)
         });
         self.nl_cache.insert(name.to_string(), id);
         id
+    }
+
+    /// The model of the stage's NaomiLib archive that `name` resolves to (`resolveStageModel`).
+    fn naomi_model(&self, name: &str) -> Option<(&'a NaomiStage, &'a mb_gma::NlModel)> {
+        let n = self.assets.naomi.as_ref()?;
+        let names = &n.obj.names;
+        let idx = names
+            .get(name)
+            .or_else(|| names.get(&format!("{name}_MAP")))
+            .or_else(|| {
+                names
+                    .iter()
+                    .filter(|(k, _)| k.starts_with(name))
+                    .max_by_key(|(k, _)| k.len())
+                    .map(|(_, v)| v)
+            })
+            .copied()?;
+        Some((n, n.obj.model(idx)?))
+    }
+
+    /// The bonus wave's floor as the reference draws it (`World.bonusWaveModel`): the NaomiLib model
+    /// with both faces (`setForceCullMode(GfxCullMode.None)`).
+    fn bonus_wave(&mut self, r: &mut Renderer) -> Option<ModelId> {
+        let (n, model) = self.naomi_model(BONUS_WAVE_MODEL_NAME)?;
+        let mut model = model.clone();
+        for mesh in &mut model.meshes {
+            mesh.cull = mb_gma::CullMode::None;
+        }
+        let textures = self.nl_set.for_nl_model(r, &n.tpl, &model).to_vec();
+        Some(r.upload_nl_model(&model, &textures))
     }
 
     /// Background-specific model (`JUN_GOAL`, `SUN_BUMPER_L1`, ...): first model whose name minus its 4 character
@@ -548,6 +573,76 @@ impl ModelLoader<'_> {
     }
 }
 
+/// `renderParams.depthOffset` of a background or foreground object.
+pub const BG_DEPTH_OFFSET: f32 = 400.0;
+/// What a night window is sorted by. The reference draws it with `RenderSort.None`, which puts even its
+/// blended mesh with the opaque geometry; the renderer sorts every mesh the file marks translucent, so
+/// the window is sent to the very front of that order instead: drawn right after the opaque meshes.
+const UNSORTED_DEPTH_OFFSET: f32 = 1.0e6;
+
+/// The light group of a background object (`LightingGroups.getForBgFlags`: `flags >>> 28`). Group 0 is
+/// the stage's own light.
+pub fn bg_light_group(flags: u32) -> u32 {
+    flags >> 28
+}
+
+/// The flipbooks of the created background objects (`bg_sources` indexes `list`): windows for the night
+/// background, fires for the storm. As in the reference, objects that were not created (no visible flag,
+/// no model) and foreground objects animate nothing.
+fn place_flipbooks(
+    r: &mut Renderer,
+    loader: &mut ModelLoader,
+    list: &[mb_stage::BgObject],
+    bg_sources: &[usize],
+    bg_file: &str,
+) -> Vec<Flipbook> {
+    let mut out = Vec::new();
+    let frame = |r: &mut Renderer, loader: &mut ModelLoader, name: &str, m: Mat4, offset: f32| {
+        loader.get(r, Src::Bg, name).map(|model| {
+            let object = r.add_object(model, Layer::Background, m);
+            r.set_visible(object, false);
+            r.set_depth_offset(object, offset);
+            object
+        })
+    };
+    for o in bg_sources.iter().filter_map(|i| list.get(*i)) {
+        let Some(books) = &o.flipbooks else {
+            continue;
+        };
+        match bg_file {
+            "bg_nig" => {
+                for w in &books.night_window_anims {
+                    let (letter, count) = backdrop::night_window_list(w.id);
+                    let m = trs_s16(v3(w.pos), w.rot, Vec3::ONE);
+                    let frames = (0..count)
+                        .map(|i| {
+                            let name = backdrop::night_window_model(letter, i);
+                            frame(r, loader, &name, m, UNSORTED_DEPTH_OFFSET)
+                        })
+                        .collect();
+                    out.push(Flipbook::new(FlipbookKind::NightWindow, frames));
+                }
+            }
+            "bg_stm" => {
+                for f in &books.storm_fire_anims {
+                    let pos = v3(f.pos);
+                    let m = Mat4::from_translation(pos);
+                    let frames = (0..backdrop::STORM_FIRE_FRAMES)
+                        .map(|i| frame(r, loader, &backdrop::storm_fire_model(i), m, 0.0))
+                        .collect();
+                    let kind = FlipbookKind::StormFire {
+                        pos,
+                        frame_offset: f.frame_offset,
+                    };
+                    out.push(Flipbook::new(kind, frames));
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
 fn place_bg_objects(
     r: &mut Renderer,
     loader: &mut ModelLoader,
@@ -565,6 +660,10 @@ fn place_bg_objects(
             Some(id) => {
                 let obj = r.add_object(id, layer, trs_s16(v3(o.pos), o.rot, v3(o.scale)));
                 r.set_alpha(obj, 1.0 - o.translucency);
+                // `BgObjectInst.prepareToRender`: sorted 400 units behind where it is, and lit by its
+                // light group, which for every group but the first has no specular scale.
+                r.set_depth_offset(obj, BG_DEPTH_OFFSET);
+                r.set_world_specular_disabled(obj, bg_light_group(o.flags) != 0);
                 out.push(obj);
                 sources.push(index);
             }
@@ -601,7 +700,7 @@ impl StageScene {
         let banana_single = loader.get(r, Src::Common, "OBJ_BANANA_01_LOD150");
         let banana_bunch = loader.get(r, Src::Common, "OBJ_BANANA_02_LOD100");
         let mut add = |r: &mut Renderer, model: Option<ModelId>, group, local, motion, kind| {
-            if let Some(m) = model {
+            model.map(|m| {
                 let object = r.add_object(m, Layer::World, Mat4::IDENTITY);
                 items.push(Item {
                     object,
@@ -610,20 +709,22 @@ impl StageScene {
                     motion,
                     kind,
                 });
-            }
+                object
+            })
         };
         let (mut goal_index, mut banana_index) = (0, 0);
+        let mut wave_objects = Vec::new();
         for (gi, g) in a.stagedef.anim_groups.iter().enumerate() {
             for m in &g.models {
                 match loader.resolve(r, &m.name) {
-                    Some(id) => add(
-                        r,
-                        Some(id),
-                        gi,
-                        Mat4::IDENTITY,
-                        Motion::Static,
-                        ItemKind::Model,
-                    ),
+                    Some(id) => {
+                        let (model, kind) = (Some(id), ItemKind::Model);
+                        let object = add(r, model, gi, Mat4::IDENTITY, Motion::Static, kind);
+                        // `AnimGroup`: a group that names the wave's model gets the wave too.
+                        if a.id == BONUS_WAVE_STAGE_ID && m.name == BONUS_WAVE_MODEL_NAME {
+                            wave_objects.extend(object);
+                        }
+                    }
                     None if m.name.starts_with("null") => {}
                     None => missing.push(m.name.clone()),
                 }
@@ -676,6 +777,32 @@ impl StageScene {
             &mut missing,
         );
 
+        let flipbooks = place_flipbooks(
+            r,
+            &mut loader,
+            &a.stagedef.bg_objects,
+            &bg_sources,
+            a.bg.file_name,
+        );
+        let mut clouds = Vec::new();
+        if a.bg.file_name == "bg_sun" {
+            for (object, source) in bg_objects.iter().zip(&bg_sources) {
+                let name = a.stagedef.bg_objects.get(*source).map(|o| o.name.as_str());
+                if name.is_some_and(backdrop::is_sunset_cloud) {
+                    // No layer on the disc carries the UV-scroll flag (`docs/GMA.md`): without this the
+                    // texture matrix would move nothing.
+                    r.set_tex_matrix_every_layer(*object, true);
+                    clouds.push(*object);
+                }
+            }
+        }
+        // `World.bonusWaveModel`: resolved by name and drawn in stage space, tilting with the stage.
+        if a.id == BONUS_WAVE_STAGE_ID {
+            if let Some(model) = loader.bonus_wave(r) {
+                wave_objects.push(r.add_object(model, Layer::World, Mat4::IDENTITY));
+            }
+        }
+
         let start = a
             .stagedef
             .start_positions
@@ -688,6 +815,9 @@ impl StageScene {
             fg_objects,
             bg_sources,
             fg_sources,
+            flipbooks,
+            clouds,
+            wave_objects,
             common_set: loader.common_set,
             start,
             missing_models: missing,

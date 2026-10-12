@@ -82,9 +82,11 @@ Cost: one draw per mesh of a batch that has instances and one per kind of quad, 
 many particles there are (5 confetti, 2 star, glow, flash, streaks, sparkles); the budget is 12. Seen on the
 first floors of Beginner and Advanced: 6 at the goal. Buffers are created at load for 928 instances and 704
 quads (512 streaks, 48 sparkles); a larger burst loses the rest. The 0.1.0 texture bytes of a stage grow by
-65,532 (the star, disc, mask and sparkle textures). Nothing is allocated or created on the GPU per frame; the
-HUD's textures are drawn once without size in the first three frames of a stage so that the `GOAL` banner
-creates nothing when it first shows.
+65,532 (the star, disc, mask and sparkle textures). Nothing is allocated or created on the GPU per frame.
+What the HUD's sprites need (a bind group per texture, room for 1024 sprites) is made when the textures are
+loaded and again when a stage is entered (`UiAssets::warm`, through `Renderer::warm_sprite_texture`:
+unloading a stage's textures drops the sprites' bind groups), so the `GOAL` banner creates nothing when it
+first shows and the count of GPU objects holds from the first frame of a stage.
 
 Different from the reference, on purpose or by necessity:
 
@@ -102,6 +104,76 @@ Different from the reference, on purpose or by necessity:
 - Ported as it is: the flash is moved 0.2 along the contact direction, which points into the surface, so
   on a floor seen from above it is mostly hidden by the floor it lies on, there as here.
 
+### The shadow, checked
+The shadow is cast along the stage's light, which for most backgrounds comes from above, behind and to the
+left of a camera that looks down -Z: the shadow then lies ahead of the ball and to its right, 0.5 from the
+point the ball stands on, and a low camera behind the ball sees little more than its right-hand rim. That is
+why it is plain at GO on some stages and hard to make out while rolling away from the camera on others; it
+is not a fault. `tests/gameplay.rs` (`the_shadow_darkens_the_floor_beside_the_ball_from_every_side`)
+renders the same frame with and without the shadow on stages 1 and 2 from 16 cameras around the ball: the
+floor where the light throws the shadow is at least 15 % darker in every view that sees the spot (12 of 16;
+in the others the ball is in front of it), a spot away from the ball does not change, and through the game's
+own camera about 3,600 (stage 1) and 4,100 (stage 2) pixels of 640 x 360 are darker.
+
+### Backgrounds and the bonus wave (`backdrop.rs`, `stage_scene.rs`)
+Ports of `BgNight`, `BgStorm` and `BgSunset` (`Background.ts`) and of `World.bonusWaveModel`. All of it is
+display only, runs on the stage timer (`runtime.timer_frames`, the reference's `getAnimTimeFrames`) blended
+between ticks, and uses files a stage loads anyway (the background archive, the stage's NaomiLib archive):
+the file lists and the pack are unchanged.
+
+| What | How | Cost |
+|---|---|---|
+| Night: dancers in the diner windows | a window of a shown background object names one of seven lists of frame models (`NIG_MADO_A_PT00` ...: 14, 11, 18, 18, 18, 16, 15 frames) and shows frame `floor(t / 2) % frames` at its own position and rotation | an object per frame, made at load and hidden; a frame change flips two visibility flags. One draw per window in view (23 to 33 windows a stage); 2.2 MB of textures |
+| Storm: fires in the braziers | 32 frame models (`STM_FIRE00` ...), frame `(floor(t) + 4 * offset) % 32` (the offsets on the disc are the letters `A` to `H`), at `T(pos) * Ry(camera)` so the flame faces the camera | as above: 8 fires, one draw each in view; 2.1 MB of textures |
+| Sunset: drifting ground haze and clouds | `SUN_GROUND` and `SUN_CLOUD_*` get a texture offset (`Renderer::set_tex_offset`) that moves at 0.9 to 1.1 of one repeat per 660 frames in a heading of its own; below 660 frames on the clock each takes a new heading at twice the speed, and the velocity closes 5 % of the gap per frame | two objects re-uploaded per frame |
+| Stage 92: the rippling floor | `SHAPE_STAGE134` of the stage's NaomiLib archive, which no anim group names, drawn in stage space with both faces and `WaveParams::BONUS_WAVE`; `Renderer::set_wave_time` gets the stage timer the collision ripple uses | one object, one draw; no vertex is rewritten |
+
+Stages 28 and 48 keep their diners among the foreground objects, and a few diners and two braziers per
+stage lack the visible flag: the reference plays the flipbooks of created background objects only, so those
+windows and fires stay dark there and here. The clouds stand still while the stage timer does (the fly-in
+of a first attempt until 120 frames are left, the time-over sequence, a pause).
+
+The ball rests on the drawn wave: over 900 ticks of rolling about stage 92 the distance from the ball to
+the surface the vertex shader draws under it is within 0.03 on 320 ticks and never below -0.021
+(`the_bonus_wave_floor_ripples_under_the_ball`). As in the reference the wave floor takes no shadow (the
+shadow falls on anim-group models) and the stage's own `STAGE092` model is drawn with it; that model has a
+flat quad at y = -0.35, which the troughs of the wave dip under within 4.9 of the centre.
+
+Different from the reference, on purpose:
+
+- **Random numbers.** `BgSunset` draws offsets, speeds and headings from `Math.random`. Here they come from
+  a generator of their own (`mb_engine::rng::DeterministicRng`, seeded with the stage id), in the
+  reference's order of draws: a stage looks the same on every load and retry, and the simulation's
+  generators are not touched.
+- **The scroll is visible.** The reference hands the offset to layers flagged for UV scrolling, and no layer
+  on the SMB1 disc has the flag (`docs/GMA.md`), so its clouds stand still on this data. Here
+  `Renderer::set_tex_matrix_every_layer` applies it to every diffuse and alpha layer of the cloud objects.
+- **The hurry-up clock.** `MkbTime` assumes a limit of 60 seconds for every stage (with a note to fix it), so
+  on a 30 second stage the reference's clouds never hurry. Here the stage's own limit is used; on a 60
+  second stage the two agree to the frame (the scene's clock is one frame behind the HUD's in both).
+- **Updates per tick.** The reference advances the clouds by the frame's share of a tick; here they advance
+  once per tick and the offset is blended between ticks, like every other pose.
+- **Window order.** The reference draws a window with `RenderSort.None`, with the opaque geometry. The
+  renderer sorts every mesh the file marks as blended, so the windows are given a sort offset that puts
+  them first in that order, right after the opaque meshes.
+
+### Material switches (`RenderParams`)
+What `World.ts`, `AnimGroup.ts`, `BgObject.ts` and `Background.ts` set per object, and where it is set here:
+
+| Reference | Here |
+|---|---|
+| `BallInst`: `disableSpecular` on `CLEAR_HEMI_INSIDE`, `RED_HEMI_INSIDE` | `Renderer::set_specular_disabled` on those two shells |
+| `BallInst`: `depthOffset` 4, 3, 2, 1, 0 inside out, `RenderSort.Translucent` | unchanged from 0.1.0: `set_sort_bias` of a thousandth of those, which keeps the same inside-out order but sorts the ball against other blended objects by its true distance (with the reference's 4 units a blended object up to 4 units behind the ball is drawn between its shells) |
+| `BgObjectInst` (background and foreground objects): `depthOffset = 400` | `set_depth_offset(400)` |
+| `BgObjectInst`: `alpha = 1 - translucency`, `RenderSort.All` when translucent | `set_alpha` (an alpha below one sorts every mesh), since 0.1.0 |
+| `BgObjectInst`: `lightingGroups.getForBgFlags(flags)`, no specular scale for `flags >>> 28 != 0` | `set_world_specular_disabled` by the same rule. No background or foreground object of the 109 course stages is in such a group, so nothing changes on this disc |
+| `BgObjectInst` / `AnimGroup`: `textureScroll` | SMB2 only; not parsed |
+| `BgSunset`: `texMtx` | `set_tex_offset`, above |
+| `BgNight`: `RenderSort.None` | a sort offset, above |
+| `World.bonusWaveModel`: material hack, `setForceCullMode(None)` | `set_wave`, both faces, above |
+| Stage models, goals, bananas, tape, digits: `RenderSort.None`; goal bag: `RenderSort.All` | the bag has `set_sort_bias(0)` since 0.1.0; a stage model's blended meshes are sorted, which the depth test makes equivalent except where two of them overlap |
+| Effects: `colorMul`, `alpha` | instance colours (`particles.rs`) |
+
 ## Controls
 | | Keyboard | Gamepad (desktop: gilrs, web: Gamepad API) | Touch |
 |---|---|---|---|
@@ -109,7 +181,7 @@ Different from the reference, on purpose or by necessity:
 | Menu select | arrows / WASD, Enter | stick or d-pad, A | tap a row, drag to scroll |
 | Back | Esc | B | Back row |
 | Pause | Esc or P | Start | on-screen pause button |
-| Action (hold: fly-in at double speed) | Space, Z or Enter | A | hold the play area outside the stick and buttons |
+| Action (hold: fly-in at double speed, a fall-out cut short) | Space, Z or Enter | A | hold the play area outside the stick and buttons |
 | Fullscreen | F11 or Alt+Enter | | |
 
 Mouse: hover and click rows, wheel scrolls lists. The on-screen stick and pause button are drawn only while
@@ -124,6 +196,16 @@ Space, Z and the touch, `Action::Confirm` for Enter and the gamepad's A). `PlayS
 than 120 intro frames are left (`docs/ENGINE.md`, "Intro fast-forward"): 240 ticks instead of 360 when held
 throughout, never on a retry. A key that is still down from choosing the stage or from the pause menu does
 not count until it has been let go once.
+
+The same button cuts a fall-out short (the reference's `canSkip`, `docs/ENGINE.md`): the sequence lasts 270
+ticks, and from its 60th tick on a tick with the action down is its last. It only has to be down, not
+pressed anew. Nothing else differs: the state ends with the same `StageOutcome::FallOut`, so the life, the
+retry on the loaded scene (or the game over) and what is saved are those of an unshortened fall
+(`the_action_button_cuts_a_fall_out_short_at_the_same_cost`: 270 ticks against 60, same lives, score and
+save). The `FALL OUT` banner belongs to the state and goes with it; leaving a stage cuts its sounds, as
+always, so the announcer's line is cut where the sequence ends. A bonus stage's fall-out (120 ticks) cannot
+be shortened. The next attempt is a new state, in which the button counts again
+once it has been let go.
 
 ## Options and sound
 | Option | Values | Effect |
@@ -167,6 +249,37 @@ time from the user's disc; nothing is embedded:
 
 Font cell layouts are the reference's `FONT_PARAMS`. The touch stick uses a disc computed in code.
 
+The goal banner, as `hud.ts` draws it:
+
+- `GOAL`: four copies fly in over 30 frames, then for 15 frames the assembled banner flashes white: its own
+  shape in plain white over it at `sin` of a half turn (`drawSpriteSolidTint`; `SpriteBlend::Solid`, in the
+  same draw call as the banner).
+- `GO`: the letters turn from `#00a0ff` to `#c0f2ff` on every other pair of frames between frames 15 and 45.
+  The reference does this with a multiplying tint, not a white flash, and so does the port (since 0.1.0).
+- Through a green or red goal in course play: `JUMP TO FLOOR n` in `#00c0ff` sways about the centre
+  (`320 + 20 sin(t << 9)`, `240 + 10 sin((t << 8) + 0x4000)`) and leaves a trail on every odd frame that
+  lives 16 frames, growing and fading from half opacity while its colour runs from `rgb(0, 96, 127)`
+  towards cyan (at most eight at once). The score lines get ` WARP BONUS    X n` between `CLEAR SCORE` and
+  `TIME BONUS`, ten frames after the first, and `FLOOR SCORE` is clear score x n x time bonus.
+  `n` is `Course::peek_jump_count` for the goal the ball went through: `menu.rs` hands the gameplay state
+  the course as it stands at the floor (`PlayState::with_course`; `PlayRequest` is unchanged), and
+  `play.rs` asks it on the tick the banner starts.
+
+Different from `hud.ts` here:
+
+- **The floor in `JUMP TO FLOOR n`.** The reference prints the course's current floor, which is the floor
+  being left (the course advances when the sequence is over). The port prints the floor the jump leads to,
+  current floor + n.
+- **Opacity of the line and its trails.** `hud.ts` passes their opacities to `drawText` in the place of the
+  vertical alignment, so it draws them (and `HURRY UP!`) fully opaque. The port uses the values as the
+  opacities they are, as it has for `HURRY UP!` since 0.1.0.
+- **No course, no jump.** Without a course the reference falls back to a warp factor of 2 (green) or 3
+  (red) and still shows the line. In practice nothing jumps, so the port shows neither.
+- **`FLOOR SCORE` on a warp goal is more than is awarded.** As in the reference: its banner multiplies by
+  the warp factor and its game does not (`computeGoalScore`; here `mb_game::Rules::goal_score` and the
+  engine's score). Without a warp the two are equal, which `goal_banner_prices_the_floor_like_the_course_flow`
+  holds. The original game awards the warp bonus; doing so is a rules change in `mb-game` and `mb-engine`.
+
 ## Automated verification
 - `cargo test -p mb-app`: `tests/gameplay.rs` drives the real states on an offscreen renderer (goal advances
   the course and saves, fall-out retries until game over and continue, pause / retry / quit in practice,
@@ -177,11 +290,24 @@ Font cell layouts are the reference's `FONT_PARAMS`. The touch stick uses a disc
   quads with what the simulation holds (streaks, landing burst, confetti, sparkles, the shadow on exactly
   while the ball is visible, a pause that changes nothing), and `gameplay.rs` holds the action button through
   the fly-in in every way it can be held.
+- `tests/gameplay.rs` also has: the windows of stage 21 and the fires of stage 81 showing the frame the
+  stage timer names on every tick (and the fires turned to the camera), the clouds of stage 5 (still through
+  the fly-in, drifting at the reference's speed, the same after a reload and a retry, hurried at the
+  hurry-up), the wave floor of stage 92 under the ball, the green goal of Beginner floor 2 in course play
+  (`JUMP TO FLOOR 5`, warp bonus 3, the course at floor 5 afterwards) and in practice (neither line), the
+  shadow on and off, and the shortened fall-out. `tests/pack.rs` loads the same four backgrounds over the
+  pack. `MB_SHOT_DIR=<dir outside the repository>` makes the goal and wave tests save PNGs there.
 - `tests/budgets.rs`: the regression budgets of `docs/PARITY_PLAN.md`. Draw calls outside the particles of
   every course stage at tick 60 (fly-in) and 420 (play) equal a table recorded from 0.1.0 (its model draws
-  were compared with a build of the `v0.1.0` tag, all 109 stages identical); particles add at most 12; the
-  renderer's `GpuCounters`, texture and object counts do not change from the third frame of a stage to the
-  end of its goal sequence; stage 109 uploads at most 1 MB more texture bytes than 0.1.0's 16,617,412.
+  were compared with a build of the `v0.1.0` tag, all 109 stages identical) plus what `DRAWS_ADDED` records
+  for the 22 stages that draw something new (the wave floor of stage 92: 1; the windows of the eleven night
+  stages with shown diners: 4 to 29; the fires of the ten storm stages: 0 to 4); particles add at most 12;
+  the renderer's `GpuCounters`, texture and object counts do not change from the end of a stage's load to
+  the end of its goal sequence (drawn after another stage: the renderer makes its object buffer in the
+  first frame of the first or largest stage of a session, which only `mb-render` could move to the load);
+  stage 109 uploads at most 1 MB more texture bytes than 0.1.0's 16,617,412, and no night or storm stage,
+  with its 2.1 to 2.2 MB of flipbook textures, uploads more than that limit (the largest is stage 90 with
+  14,251,776).
   `tests/pack.rs` holds the pack at 382 files and 144,084,942 bytes. `MB_BUDGET_PRINT=1` prints the tables.
 - `cargo test -p mb-app --test audio`: the autopilot's floor 1 with a recording audio backend and an offline
   render of its sound.
@@ -198,11 +324,9 @@ feature, which `cargo test` switches on by itself. A `dev` build of the program 
   and what the audio device played (stream, callbacks, peak / RMS, late callbacks).
 
 ## Not ported from the reference
-- Mirror floors, the bonus-wave vertex animation, per-background special effects (`Background.ts`), specular
-  suppression on the inner ball shells.
+- Mirror floors (`World.ts` `prepareToRenderMirrors`, `prepareToRenderWavyDistort`): the reflection on the
+  wave floor of stage 92 and on the mirrors of stages 102 and 103.
 - Result replays (the reference replays the fall-out and the goal).
-- `JUMP TO FLOOR n` and the warp bonus line of the goal banner (`PlayRequest` carries no jump preview), the
-  additive white flash of the `GOAL` and `GO` banners (sprites only multiply).
 - Not in the reference either (original game only): the monkey inside the ball, its voice lines and the
   sounds listed under "Known gaps" in `docs/AUDIO.md`.
 - Multiplayer, netplay, lobby, SMB2 content (out of scope by project rule).

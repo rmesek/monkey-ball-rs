@@ -2,9 +2,8 @@
 //! (intro, tilt, stage objects, ball step, fall-out, banana pickup, goal entry, timers, gameplay camera),
 //! one fixed 60 Hz tick per [`Sim::step`].
 //!
-//! Not modelled (render/UI/meta only): result replays, audio triggers, course progression, and the primary
-//! action outside the intro (it cuts the fall-out and goal sequences short in the reference). A finished sequence is reported through [`Phase::Finished`] instead of loading the next
-//! stage.
+//! Not modelled (render/UI/meta only): result replays, audio triggers, course progression. A finished sequence
+//! is reported through [`Phase::Finished`] instead of loading the next stage.
 
 use crate::ball::{check_ball_entered_goal, Ball, GoalHit, PhysicsCtx};
 use crate::camera::GameplayCamera;
@@ -29,6 +28,8 @@ const BONUS_STAGE_MIN_ID: u32 = 91;
 const BONUS_STAGE_MAX_ID: u32 = 95;
 const BONUS_CLEAR_SEQUENCE_FRAMES: i32 = 180;
 const BONUS_FALLOUT_SPECTATE_FRAMES: i32 = 120;
+/// Ticks of a fall-out before the primary action can end it (`RINGOUT_SKIP_DELAY_FRAMES`).
+const RINGOUT_SKIP_DELAY_FRAMES: i32 = 60;
 
 #[derive(Debug, Clone)]
 pub struct SimConfig {
@@ -164,6 +165,9 @@ pub struct Sim {
     pub stage_timer_frames: i32,
     pub goal_timer: i32,
     pub ringout_timer: i32,
+    /// `ringoutSkipTimerFrames`: ticks left before the primary action can end the fall-out sequence. 0
+    /// outside one, and throughout one on a bonus stage (where the action never ends it).
+    pub ringout_skip_timer: i32,
     pub timeover_timer: i32,
     pub finished: bool,
     pub goal_hit: Option<GoalHit>,
@@ -226,6 +230,7 @@ impl Sim {
             stage_timer_frames: 0,
             goal_timer: 0,
             ringout_timer: 0,
+            ringout_skip_timer: 0,
             timeover_timer: 0,
             finished: false,
             goal_hit: None,
@@ -438,6 +443,11 @@ impl Sim {
         } else {
             RINGOUT_TOTAL_FRAMES
         };
+        self.ringout_skip_timer = if self.cfg.bonus_stage {
+            0
+        } else {
+            RINGOUT_SKIP_DELAY_FRAMES
+        };
         self.camera.set_fallout_main(&self.ball);
         self.events.push(SimEvent::FallOut);
         self.phase = Phase::FallOut;
@@ -476,11 +486,18 @@ impl Sim {
     /// [`Sim::step`] with the tick's button bits (the reference's `getButtonsBitmask`; the one bit it has is
     /// [`BUTTON_PRIMARY_ACTION`]).
     ///
-    /// The primary action fast-forwards the intro (`fastForwardIntro` in `game.ts`): on a tick that starts
-    /// with more than 120 intro frames left, with [`SimConfig::intro_fast_forward`] set, the intro timer and
-    /// the fly-in camera's timer go down by two instead of one. Everything else advances once, so the stage
-    /// and the ball are where they would be anyway when the intro reaches the same frame. Buttons do nothing
-    /// else.
+    /// The primary action does two things, both decided from whether it is down during the tick (a level,
+    /// as `isPrimaryActionDown` is; there is no edge and nothing to re-arm):
+    ///
+    /// * It fast-forwards the intro (`fastForwardIntro` in `game.ts`): on a tick that starts with more than
+    ///   120 intro frames left, with [`SimConfig::intro_fast_forward`] set, the intro timer and the fly-in
+    ///   camera's timer go down by two instead of one. Everything else advances once, so the stage and the
+    ///   ball are where they would be anyway when the intro reaches the same frame.
+    /// * It ends the fall-out sequence (`updateRingout`): from the 60th tick after the one on which the ball
+    ///   fell out, a tick with the action down is the sequence's last ([`Outcome::FellOut`], as when its 270
+    ///   ticks have run). Not on a bonus stage.
+    ///
+    /// Buttons do nothing else: not during play, the goal sequence, a bonus clear or time over.
     pub fn step_with_buttons(&mut self, input: QuantizedInput, buttons: u32) {
         self.events.clear();
         if self.is_finished() {
@@ -675,9 +692,17 @@ impl Sim {
         }
 
         if ringout_active {
+            // `updateRingout`
             self.ringout_timer -= 1;
+            if self.ringout_skip_timer > 0 {
+                self.ringout_skip_timer -= 1;
+            }
+            if !is_bonus && self.ringout_skip_timer <= 0 && buttons & BUTTON_PRIMARY_ACTION != 0 {
+                self.ringout_timer = 0;
+            }
             if self.ringout_timer <= 0 {
                 self.ringout_timer = 0;
+                self.ringout_skip_timer = 0;
                 self.finish(Outcome::FellOut);
                 return;
             }

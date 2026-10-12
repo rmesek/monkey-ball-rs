@@ -5,7 +5,7 @@
 //! those TPLs (`assets/hud/smb1/<tpl>/<index>_<name>.png`); here the textures are decoded from the TPLs at
 //! run time, so nothing is shipped.
 
-use mb_render::{Renderer, Sprite, TextureId};
+use mb_render::{Renderer, Sprite, SpriteBlend, TextureId};
 
 use crate::content::Content;
 use crate::ui::Rect;
@@ -264,6 +264,11 @@ pub struct UiAssets {
 /// The texture sheets [`UiAssets::load`] reads (`test/bmp/<name>.tpl`): fonts and HUD pieces.
 pub const UI_SHEETS: [&str; 2] = ["bmp_nml", "bmp_com"];
 
+/// Sprites a frame may queue without the renderer's vertex buffer growing during play (every glyph is
+/// one; the renderer's own default is 170, which a warp goal's banner with its score lines and the
+/// eight trails of `JUMP TO FLOOR`, or a long menu, can pass).
+pub const UI_SPRITES: usize = 1024;
+
 const DISC_SIZE: usize = 64;
 
 /// Anti-aliased white disc with a slightly brighter rim.
@@ -347,7 +352,7 @@ impl UiAssets {
             w: DISC_SIZE as f32,
             h: DISC_SIZE as f32,
         };
-        Ok(Self {
+        let ui = Self {
             fonts,
             banana,
             banana_bunch,
@@ -360,17 +365,22 @@ impl UiAssets {
             face,
             white,
             disc,
-        })
+        };
+        ui.warm(r);
+        Ok(ui)
     }
 
     pub fn font(&self, id: FontId) -> &Font {
         &self.fonts[FontId::ALL.iter().position(|f| *f == id).unwrap_or(0)]
     }
 
-    /// Queue one sprite without size from every UI texture. The renderer creates what the sprites of a
-    /// texture need (a bind group) when the first one is drawn; a stage does this in its first frame, so
-    /// that the `GOAL` banner or the time-over bomb create nothing when they first appear in play.
+    /// Create what sprites of every UI texture need from the GPU (a bind group each, and room for
+    /// [`UI_SPRITES`] sprites), so that the `GOAL` banner or the time-over bomb create nothing when they
+    /// first appear in play. Called when the textures are loaded and again when a stage is entered:
+    /// unloading a stage's textures drops the bind groups of all sprites
+    /// (`Renderer::truncate_textures`). What exists already is left alone.
     pub fn warm(&self, r: &mut Renderer) {
+        r.reserve_sprites(UI_SPRITES);
         let images = (self.fonts.iter().map(|f| f.image))
             .chain([
                 self.banana,
@@ -386,12 +396,7 @@ impl UiAssets {
             ])
             .chain(self.bomb_parts.iter().copied());
         for image in images {
-            r.draw_sprite(Sprite {
-                texture: image.tex,
-                dst: [0.0; 4],
-                uv: [0.0; 4],
-                color: [0.0; 4],
-            });
+            r.warm_sprite_texture(image.tex);
         }
     }
 }
@@ -431,6 +436,22 @@ impl Painter<'_> {
     /// `img` centred on `(cx, cy)`.
     pub fn image(&mut self, img: Image, cx: f32, cy: f32, sx: f32, sy: f32, color: Color) {
         self.image_part(img, [0.0, 0.0, img.w, img.h], cx, cy, sx, sy, color);
+    }
+
+    /// The shape of `img` in plain white at `opacity`, centred on `(cx, cy)`: the texel's alpha alone
+    /// decides where it shows (the reference's `drawSpriteSolidTint`).
+    pub fn image_solid(&mut self, img: Image, cx: f32, cy: f32, sx: f32, sy: f32, opacity: f32) {
+        if opacity <= 0.0 {
+            return;
+        }
+        let (w, h) = (img.w * sx, img.h * sy);
+        let sprite = Sprite {
+            texture: img.tex,
+            dst: [cx - w / 2.0, cy - h / 2.0, w, h],
+            uv: [0.0, 0.0, 1.0, 1.0],
+            color: [1.0, 1.0, 1.0, opacity.min(1.0)],
+        };
+        self.r.draw_sprite_blended(sprite, SpriteBlend::Solid);
     }
 
     /// The source pixel rectangle `[x, y, w, h]` of `img`, centred on `(cx, cy)`.

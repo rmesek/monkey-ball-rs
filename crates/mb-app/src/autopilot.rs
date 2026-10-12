@@ -56,7 +56,20 @@ impl Autopilot {
             cur = (p.x, p.z);
             targets.push(p);
         }
-        let goal = g.goals.first().map(|goal| {
+        let goal = Self::goal_line(start, g.goals.first());
+        Some(Autopilot {
+            targets,
+            next: 0,
+            goal,
+            lined_up: false,
+            speed: 0.12,
+            gain: 20.0,
+        })
+    }
+
+    /// The line through `goal`, approached from the side the start is on.
+    fn goal_line(start: mb_stage::Vec3, goal: Option<&mb_stage::Goal>) -> Option<GoalLine> {
+        goal.map(|goal| {
             let center = (goal.pos.x as f64, goal.pos.z as f64);
             let yaw = goal.rot.y as f64 * std::f64::consts::PI / 32768.0;
             let n = (yaw.sin(), yaw.cos());
@@ -71,15 +84,20 @@ impl Autopilot {
                 center,
                 normal: (n.0 * side, n.1 * side),
             }
-        });
-        Some(Autopilot {
-            targets,
-            next: 0,
-            goal,
-            lined_up: false,
-            speed: 0.12,
-            gain: 20.0,
         })
+    }
+
+    /// Straight for the first goal of colour `kind` in any anim group, skipping the bananas (tests of
+    /// the green and red goals). `None` when the stage has no such goal.
+    pub fn for_goal(stage: &Stage, kind: mb_stage::GoalType) -> Option<Autopilot> {
+        let start = stage.start_positions.first()?.pos;
+        let goal = (stage.anim_groups.iter())
+            .flat_map(|g| g.goals.iter())
+            .find(|goal| goal.kind == kind)?;
+        let mut a = Self::for_stage(stage)?;
+        a.targets.clear();
+        a.goal = Self::goal_line(start, Some(goal));
+        Some(a)
     }
 
     /// Skip the bananas: the fastest way to finish a stage.

@@ -11,8 +11,8 @@ Port of WebMonkeyBall `math.ts`, `collision.ts`, `physics.ts`, the runtime half 
   `sim.hash()` = `hashSimState`, `sim.hash_visual()` = the same with `includeVisual` (below). `Sim` is
   `Clone`.
 - `sim.step_with_buttons(QuantizedInput{x,y}, buttons)` is the same tick with the reference's button bits;
-  the one bit there is, `BUTTON_PRIMARY_ACTION` (1), fast-forwards the intro (below). `step(input)` is
-  `step_with_buttons(input, 0)`.
+  the one bit there is, `BUTTON_PRIMARY_ACTION` (1), fast-forwards the intro and ends a fall-out sequence
+  (both below). `step(input)` is `step_with_buttons(input, 0)`.
 - `Tables::from_dol(main.dol bytes)` + `install_tables()` before the first `Sim`: the S16 sin/atan tables are game
   data (not equal to `fround(sin)`), read at runtime from the user's own disc. Without them a computed
   approximation is used (not bit-exact).
@@ -62,9 +62,45 @@ Behaviour ported as it is in the reference:
   `QuantizedStick`).
 - `SimEvent`s are unchanged; none is added.
 
-Not ported: the other two uses of the primary action in `game.ts`, cutting the fall-out sequence short
-(`ringoutSkipTimerFrames`) and leaving the goal sequence once the ball has launched, and skipping a result
-replay. Buttons do nothing outside the intro.
+## The action button after the intro
+`game.ts` asks `isPrimaryActionDown` in four places. All four read the level (is it down during this tick);
+none looks for a press, and nothing has to be released first.
+
+| Use in `game.ts` | With result replays off (what `Sim` is) | Here |
+|---|---|---|
+| `fastForwardIntro` (`update`) | as above | ported |
+| `canSkip` in `updateRingout` | ends the fall-out sequence | ported |
+| `canSkipGoal` (`update`, goal timer) | can never be true: see below | not ported, nothing to port |
+| `canSkip` in `stepResultReplay` | exists only inside a result replay | not ported (Phase 5) |
+
+**Fall-out.** `beginFalloutSequence` sets `ringoutTimerFrames` to 270 and `ringoutSkipTimerFrames` to 60
+(`Sim::ringout_timer`, `Sim::ringout_skip_timer`); on a bonus stage 120 and 0. `updateRingout` runs on every
+later tick: both timers go down by one (the second stops at 0), then, unless the stage is a bonus stage, a
+skip timer at 0 and the action down set the ring-out timer to 0, and a ring-out timer at 0 ends the attempt.
+So with T the tick on which the ball fell out:
+
+- the first tick on which the action counts is T + 60; a tick T + k with k >= 60 and the action down is the
+  sequence's last, `Phase::Finished(Outcome::FellOut)`, exactly as tick T + 270 is without it;
+- the action on ticks T + 1 .. T + 59 does nothing and does not have to be released: one that is down from
+  before the fall, from play or from the intro it fast-forwarded, ends the sequence on T + 60;
+- the delay is not started again by letting go;
+- on a bonus stage the action does nothing and the sequence takes its 120 ticks;
+- nothing else changes: until its last tick a shortened sequence is tick for tick the unshortened one, and
+  no `SimEvent` marks the end.
+
+With result replays on, the reference cuts to the replay at T + 30 (before the action can count) and the
+action then skips the replay, from its 30th frame, which resolves the fall-out at once; without replays the
+60-tick delay is all there is.
+
+**Goal.** `canSkipGoal` needs `goalSkipTimerFrames <= 0`, the launch flag (`FLAG_09`) and the action. The
+skip timer starts at 210 (`beginGoalSequence`, `beginBonusClearSequence`) and goes down by one a tick with the
+goal timer. The ball launches 90 ticks into the sequence and the goal timer is then cut to 60, so a goal
+sequence ends 151 ticks after the ball entered the goal with the skip timer at 59; a bonus clear lasts 180
+ticks with the skip timer at 30. The rule can therefore only apply after a goal replay, which hands the
+sequence back with `goalSkipTimerFrames = min(itself, the frames left)`. Without replays the action does
+nothing during a goal sequence or a bonus clear, before or after the launch; `Sim` has no goal skip timer.
+
+**Time over, play.** No use of the action; `updateTimeover` counts 120 ticks.
 
 ## Particles (display only)
 `effects.rs` ports `effects.ts` and the confetti of `stage.ts`. The state is public and read by the renderer;
@@ -104,7 +140,8 @@ which the reference counts across stage loads.
 
 ## Not modelled
 SMB2 (wormholes, switches, seesaws), multiplayer, result replays (the reference starts one 30 ticks into a
-fall-out and at goal end; `Sim` just continues/finishes, so in a `Sim` the confetti is never older than the
+fall-out and at goal end; `Sim` just continues/finishes, as the reference does with replays switched off, so
+there is no skipping of a replay and no leaving of the goal sequence after one, and in a `Sim` the confetti is never older than the
 goal sequence, about 150 ticks of its 210 to 269), audio, course progression. The goal
 tape anchor height uses the reference's fallback constant unless `SimConfig::goal_tape_anchor_y` is set; the
 fly-in bounds come from collision triangles unless `SimConfig::bound_sphere` is set (camera fly-in only).
@@ -134,12 +171,12 @@ piece (computed by the harness from the reference's objects) and the visual rand
 its eye and look-at point (raw f64 bits), the other two angles and the fly-in timer.
 Knobs: `MB_PARITY_STAGES`, `MB_PARITY_SCRIPTS`, `MB_PARITY_FRAMES`, `MB_PARITY_AUTOPILOT`,
 `MB_PARITY_FX_STAGES`, `MB_PARITY_FX_SCRIPTS`, `MB_PARITY_FX_FAST`, `MB_PARITY_FX_GOALS`, `MB_PARITY_FX_FRAMES`,
-and `MB_PARITY_FF_STAGES`, `MB_PARITY_FF_RETRY`.
+`MB_PARITY_FF_STAGES`, `MB_PARITY_FF_RETRY`, and `MB_PARITY_ACT_FALL`, `MB_PARITY_ACT_GOALS`,
+`MB_PARITY_ACT_TIMEOVER`. Every run also compares the fall-out skip timer and the time-over timer.
 
 `intro_fast_forward_matches_reference` gives the reference a scripted primary action: an inputs line with a
 third column makes the harness answer `input.isPrimaryActionDown()` from it, tick by tick (the game code is
-unchanged; only the device is scripted). The action is held during intros only, because afterwards the
-reference also uses it to cut sequences short (above). Next to the comparison the test checks that the
+unchanged; only the device is scripted). The action is held during intros only. Next to the comparison the test checks that the
 reference's intro took exactly as many ticks as the rule says for the script, that a retry's took 120, and
 that some run took the timer from 121 to 119.
 
@@ -170,6 +207,29 @@ held forward and the action held for the first 110 ticks of every attempt, 2400 
 takes 250 ticks, the 18 intros after a fall-out take 120. 62 runs, 49,323 ticks. `tests/synthetic.rs` has the
 same rules without a disc (twice the speed above 120, nothing at 120 or below, nothing on a retry or with the
 flag off, the drop at 24 and the end at 0 for even, odd and tapped timers, the camera overshoot).
+
+The action after the intro (`action_in_sequences_matches_reference`): bit-identical in every column, 165
+runs, 324,897 ticks.
+
+- Fall-out, result replays off, stick held forward, stages 2, 10, 36, 50, 77, 126, 1,800 to 2,800 ticks a run
+  (a first attempt and at least two retries). Eight action scripts, each placed once on the fall of the first
+  attempt and once on the fall of the retries: held until one tick before it counts (270 ticks), pressed on
+  the first tick that counts (60), a tap at 59 and one at 150 (150), held from 30 ticks before the fall (60),
+  pressed at 269 (269), pressed at 30 and at 61 (61), held from the first tick of the attempt through the
+  fast-forwarded intro and play (60), random taps. Every one of the 324 fall-outs the reference ran has the
+  length the rule gives as arithmetic for its buttons (100 of 60 ticks, 114 of 270, 110 between), and 110
+  retries were cut short.
+- The same stages with result replays on and the action held (from the first tick; from 10 ticks before the
+  fall): the reference cuts to its replay 30 ticks into the fall-out, where the comparison ends.
+- Goal, autopilot runs on stages 1, 3, 11, 17, replays off (with the confetti followed for 400 ticks) and on:
+  held from the first tick of the attempt, from 20 ticks before the goal, until the launch, from the launch,
+  six presses across the sequence, random taps. All 48 sequences end 151 ticks after the ball entered the
+  goal, and the reference's `goalSkipTimerFrames` never went below 60.
+- Time over, stages 1, 2, 3 left alone for 4,400 ticks, replays off: held from the first tick, held through
+  the sequence, five presses in it. All 9 take 120 ticks and the retry's intro follows.
+
+Not compared with the reference: the bonus-stage branch of the fall-out rule and the bonus clear (the
+headless reference has no course); `tests/synthetic.rs` covers them, and each rule above, without a disc.
 
 One thing the retry comparison showed about the simulation itself: the reference reuses its ball object
 across a reload and `initBallForStage` leaves `ball.speed` as the last step set it, so its hash carries a

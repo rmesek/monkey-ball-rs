@@ -102,6 +102,59 @@ Where this still differs from the reference:
 | Opaque order | submission order | meshes without blending sorted by pipeline and material | invisible with the depth test; saves state changes |
 | `lod_bias`, `max_aniso`, `MAGFILT_NEAR`, `NO_FOG` | ignored (no fog at all) | ignored | same |
 
+### Mirror floors
+`crates/mb-render/src/mirror.rs`, `mirror.wgsl`, the mirror parts of `renderer.rs`; reference `Render.ts`
+("Mirror Capture", "Mirror Overlay") and `World.ts` `prepareToRenderMirrors`. The caller sets one
+`Mirror` per stage (`Renderer::set_mirror`: a plane as a matrix, an alpha, optionally the wavy
+distortion), flags the mirror models (`set_mirror_surface`) and takes objects out of the reflection
+(`set_in_mirror`). Without a mirror none of this exists: no target, no pass, no pipeline, and a frame has
+the draws, uploads and GPU objects it had (`tests/mirror.rs`, `without_a_mirror_a_frame_is_what_it_was`).
+
+A frame in which a mirror surface is in view:
+
+1. **Capture.** The background and world passes once more into the mirror's target, with the view
+   `flipX * view * Reflect(plane as shown)` and the frame's projection. `flipX` undoes the reflection's
+   change of winding, so every pipeline is used as it is. Drawn: opaque, the opaque instance batches
+   (confetti) and the sorted objects, sorted again from the reflected eye; the shadow term stays.
+   Skipped: mirror surfaces, objects with `set_in_mirror(false)`, objects whose bounding sphere is
+   wholly behind the plane (the reference's test in `Model.ts`) or outside the reflected view, world
+   quads, the other instance batches and sprites.
+2. **The picture**, unchanged, mirror surfaces included with their own material.
+3. **Overlay**, after the opaque geometry and before the sorted objects: every mesh of each mirror
+   surface in view again with the overlay program, both faces, depth tested without writing, blended
+   `SrcAlpha / InvSrcAlpha` with `alpha = mirror alpha * vertex alpha`. It shows the capture at
+   `uv = clip.xy / w * 0.5 + 0.5` (clamped) of the fragment's position through the capture's clip
+   matrix.
+
+The wavy mirror (stage 92) adds the reference's indirect offset to that coordinate:
+`(dot(ind0, c), dot(ind1, c)) / 256` with `c = (255 * (1, blue, green) & 0xF8) - 128` of `gb_grad`
+addressed by `xz * 0.5 + 0.5` of the view-space normal, `ind0 = (0, 0.8, 0)`, `ind1 = (0.6, 0, 0)`
+(`Distortion`, the same formula on the CPU). The first component is one because the reference reads the
+alpha of its distortion target, which it always writes as one: the offset is `0.8 * (blue - 128) / 256`
+sideways and a constant `0.28` of the picture upwards.
+
+Cost: the capture's draws (at most those of the frame less mirrors and effects, usually fewer: nothing
+below the plane) plus one per mesh of a mirror surface, reported as `FrameStats::mirror_draws` beside
+`draws`; three small uniform uploads (880 bytes) in a frame whose camera moved. Made by `set_mirror`,
+at load: three uniform buffers, three bind groups, the target's two textures and, once per run, one
+pipeline; a resize of the frame replaces the two textures and one bind group. The target has the frame's
+colour format plus `Depth32Float` at `set_mirror_scale` (default 0.5) of the frame's side: 8 bytes per
+pixel, 1.84 MB under a 1280 x 720 frame and 4.15 MB under 1920 x 1080, reported by
+`Renderer::mirror_bytes` and not part of `texture_bytes`. Nothing is created in a play frame, also
+while the plane moves (`set_mirror_plane`).
+
+Where it differs from the reference:
+
+| | Reference | Here | Why |
+|---|---|---|---|
+| Cut at the plane | only the per-model sphere test, so a model that reaches through the mirror is reflected whole | also an oblique near plane in the capture's projection, 0.005 above the plane; the plain projection when the eye is behind the mirror | nothing from below a floor belongs in it; costs nothing per fragment and needs no clip distance (WebGL2 has none) |
+| Target | fixed sizes per stage (640 x 448 down to 160 x 112), `RGBA8` and `D24` | a fraction of the frame, the frame's colour format, `Depth32Float` | the scene's pipelines are compiled for the frame's format; a second set would double them |
+| Wavy mirror: the distortion | the waved floor drawn with `gb_grad` into a 256 x 256 target, read back at the fragment's place on the screen | one fetch of `gb_grad` in the overlay's fragment shader | the same texel for every fragment of the floor, without a target and a pass |
+| Wavy mirror: the overlay's geometry | the floor at rest, so the crests of the waved floor hide the reflection | the waved floor (the wave function of the stage shader), looked up at the fragment's own place on the screen | what the reference shows in the troughs, on the whole surface; needed for the row above |
+| What does not tilt (backdrop, ball) | drawn in the capture with the stage tilt applied to it | reflected in the mirror as it is shown | the picture does not tilt them either |
+| No mirror model in view | the capture is drawn all the same | no capture | saves the pass |
+| Overlay | writes the frame's alpha | colour only, and a depth bias of one step | the frame stays opaque; the surface was drawn at the same depth by another program |
+
 ## Corrupt input
 Nothing here panics on bad bytes; every failure is an `Error`.
 - Decoded size is capped per input byte (GMA 8, NaomiLib 16, plus 64 KiB; retail maxima 1.3 and 3.5), because

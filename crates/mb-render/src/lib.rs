@@ -38,6 +38,19 @@
 //! let before = r.counters();                             // GPU objects created so far
 //! ```
 //!
+//! Mirror floors (`mirror.rs`; stages 92, 102 and 103): one more scene pass into a reduced target and
+//! one draw per mesh of the mirror models, only while a mirror is set and one of them is in view:
+//!
+//! ```ignore
+//! // Loading, after `clear_scene` and the objects.
+//! r.set_mirror(Some(Mirror::flat(Mat4::IDENTITY)));      // or Mirror::wavy(plane, gb_grad_texture)
+//! r.set_mirror_surface(mirror_model_object, true);
+//! r.set_in_mirror(bg_object_with_flag_bit_7, false);
+//! // Every frame, for a mirror that moves.
+//! r.set_mirror_plane(anim_group_transform);
+//! let extra = r.stats.mirror_draws;                      // and r.mirror_bytes() for the target
+//! ```
+//!
 //! The material model is described in the `material` module and in `docs/GMA.md` ("How `mb-render`
 //! draws the materials"), with the differences from the reference that remain.
 
@@ -47,6 +60,7 @@ pub mod gpu_types;
 mod instances;
 pub mod lighting;
 pub mod material;
+pub mod mirror;
 pub mod offscreen;
 mod quads;
 pub mod renderer;
@@ -58,6 +72,7 @@ pub use effects::{BlendMode, DrawOrder, InstanceBatchId, InstanceStyle, Quad, Sh
 pub use glam;
 pub use lighting::Lighting;
 pub use material::SamplerKey;
+pub use mirror::{Distortion, Mirror};
 pub use offscreen::{rgba_to_ppm, OffscreenTarget};
 pub use renderer::{
     Fog, FrameStats, GpuCounters, GpuTexture, Layer, LoadStats, ModelId, ObjectId, Renderer,

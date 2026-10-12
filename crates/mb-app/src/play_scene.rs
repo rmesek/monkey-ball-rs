@@ -21,10 +21,11 @@ use mb_engine::constants::ball_flags;
 use mb_engine::math::Mtx;
 use mb_engine::stage_runtime::BoundSphere;
 use mb_engine::Sim;
-use mb_render::{Camera, Layer, ModelId, ObjectId, Renderer, Shadow};
+use mb_render::{Camera, Layer, ModelId, ObjectId, Renderer, Shadow, WaveParams};
 use web_time::Instant;
 
 use crate::anim::{interpolate, loop_wrap};
+use crate::backdrop::{self, Clouds};
 use crate::particles::{self, ParticleFrame, Particles, TICK_MS};
 use crate::stage_scene::{
     ItemKind, LazyTextures, LoadTimings, StageAssets, StageScene, S16_TO_RADIANS,
@@ -42,13 +43,14 @@ const NL_GOAL_TAPE: usize = 0x0e;
 const NL_LCD_LARGE_0: usize = 0x13;
 const NL_LCD_SMALL_0: usize = 0x1d;
 
-/// Ball shells, innermost first, with the reference's `depthOffset` (larger draws earlier).
-const BALL_MODELS: [(&str, f32); 5] = [
-    ("CLEAR_HEMI_INSIDE", 4.0),
-    ("RED_HEMI_INSIDE", 3.0),
-    ("SPHERE_EDGE_01_RED", 2.0),
-    ("CLEAR_HEMI_OUTSIDE", 1.0),
-    ("RED_HEMI_OUTSIDE", 0.0),
+/// Ball shells, innermost first, with the reference's `depthOffset` (larger draws earlier) and its
+/// `disableSpecular` (`BallInst`: "the OG ball's inner shells appear to be unlit by specular").
+const BALL_MODELS: [(&str, f32, bool); 5] = [
+    ("CLEAR_HEMI_INSIDE", 4.0, true),
+    ("RED_HEMI_INSIDE", 3.0, true),
+    ("SPHERE_EDGE_01_RED", 2.0, false),
+    ("CLEAR_HEMI_OUTSIDE", 1.0, false),
+    ("RED_HEMI_OUTSIDE", 0.0, false),
 ];
 
 fn s16(v: i32) -> f32 {
@@ -148,6 +150,8 @@ struct Pose {
     ball_rot: Quat,
     ball_scale: f32,
     ball_visible: bool,
+    /// The stage timer (`runtime.timer_frames`): what flipbooks and the bonus wave are timed by.
+    timer: i32,
 }
 
 impl Pose {
@@ -220,6 +224,10 @@ pub struct PlayScene {
     tapes: Vec<Tape>,
     clocks: Vec<Clock>,
     particles: Particles,
+    /// The drifting cloud layers of the sunset background (empty elsewhere).
+    clouds: Clouds,
+    /// The stage timer of the frame last posed, blended between ticks.
+    anim_frames: f32,
     /// The stage tilt of the frame last posed by [`PlayScene::apply`].
     tilt: Mat4,
     /// The mask of the projected shadow was found; without it no shadow is drawn.
@@ -307,11 +315,12 @@ impl PlayScene {
             r.upload_model(model, &textures).ok()
         };
         let mut ball = Vec::new();
-        for (name, depth) in BALL_MODELS {
+        for (name, depth, no_specular) in BALL_MODELS {
             if let Some(model) = common(r, name) {
                 let object = r.add_object(model, Layer::World, Mat4::IDENTITY);
                 // The shells share a centre: keep the reference's inside-out order explicitly.
                 r.set_sort_bias(object, Some(depth * 1e-3));
+                r.set_specular_disabled(object, no_specular);
                 ball.push(object);
             }
         }
@@ -428,6 +437,7 @@ impl PlayScene {
         // Everything that belongs to the stage tilts with it; the backdrop does not.
         let tilting = (scene.items.iter().map(|it| it.object))
             .chain(scene.fg_objects.iter().copied())
+            .chain(scene.wave_objects.iter().copied())
             .chain(ball.iter().copied())
             .chain(
                 bags.iter()
@@ -443,6 +453,12 @@ impl PlayScene {
         for object in tilting {
             r.set_tilted(object, true);
         }
+        // The floor of stage 92 ripples in the vertex shader, on the timer its collision ripples on.
+        for object in &scene.wave_objects {
+            r.set_wave(*object, Some(WaveParams::BONUS_WAVE));
+        }
+        let clouds = Clouds::new(scene.clouds.clone(), assets.id);
+        clouds.apply(r, 1.0);
         let objects = r.object_count();
 
         let stats = r.load_stats;
@@ -474,6 +490,8 @@ impl PlayScene {
             tapes,
             clocks,
             particles,
+            clouds,
+            anim_frames: 0.0,
             tilt: Mat4::IDENTITY,
             shadow_mask,
             shadow: false,
@@ -498,11 +516,22 @@ impl PlayScene {
         self.particle_ticks = 0;
         self.particles_frozen = false;
         self.time_over = false;
+        self.clouds.reset();
     }
 
     /// Whether the ball's shadow is drawn in the frame last posed (tests).
     pub fn shadow_visible(&self) -> bool {
         self.shadow
+    }
+
+    /// The stage timer the frame last posed shows, in frames (flipbooks and the bonus wave follow it).
+    pub fn anim_frames(&self) -> f32 {
+        self.anim_frames
+    }
+
+    /// The cloud layers of the sunset background (tests).
+    pub fn clouds(&self) -> &Clouds {
+        &self.clouds
     }
 
     /// Free the scene's models, objects and textures.
@@ -528,6 +557,7 @@ impl PlayScene {
             particle_ticks,
             particles_frozen,
             time_over,
+            clouds,
             ..
         } = self;
         // The simulation leaves its particles alone in a tick that starts with the clock run out. The
@@ -744,6 +774,18 @@ impl PlayScene {
         pose.pivot = pivot;
         pose.xrot = sim.world.xrot;
         pose.zrot = sim.world.zrot;
+        pose.timer = rt.timer_frames;
+        // `BgSunset.update`: the clouds move with the stage timer (not during the fly-in, which holds it,
+        // nor in the first record of an attempt, which is no tick).
+        if !clouds.is_empty() {
+            let dt = if *blend {
+                (pose.timer - prev.timer).max(0) as f32
+            } else {
+                0.0
+            };
+            let left = backdrop::stage_time_left(sim.cfg.time_limit_frames, pose.timer);
+            clouds.tick(dt, left);
+        }
 
         // Nothing to blend from at the start of a motion, and nothing sensible across a teleport.
         if !*blend || (pose.pivot - prev.pivot).length() > TELEPORT_DISTANCE {
@@ -785,6 +827,15 @@ impl PlayScene {
                 r.set_alpha(o, from + (alpha - from) * t);
             }
         }
+
+        // `getAnimTimeFrames(alpha)`: flipbooks and the wave run on the stage timer of the frame shown.
+        let anim_frames = prev.timer as f32 + (curr.timer - prev.timer) as f32 * t;
+        self.anim_frames = anim_frames;
+        for book in &mut self.scene.flipbooks {
+            book.show(r, anim_frames);
+        }
+        r.set_wave_time(anim_frames);
+        self.clouds.apply(r, t);
 
         let pivot = prev.pivot.lerp(curr.pivot, t);
         self.tilt = tilt_matrix_units(
@@ -844,6 +895,18 @@ impl PlayScene {
 }
 
 impl PlayScene {
+    /// Pose what depends on the camera the frame is drawn with: the fires of the storm background turn
+    /// to it about Y (`BgStorm.prepareToRender`). Call it after [`PlayScene::apply`].
+    pub fn face_camera(&mut self, r: &mut Renderer, camera: &Camera) {
+        if self.scene.flipbooks.is_empty() {
+            return;
+        }
+        let rot_y = backdrop::camera_rot_y(camera);
+        for book in &self.scene.flipbooks {
+            book.face(r, rot_y);
+        }
+    }
+
     /// Queue this frame's particles (sparks, stars, flash, sparkle, glow, confetti) from the simulation
     /// whose ticks were recorded with [`PlayScene::sync`]. Call it after [`PlayScene::apply`], with the
     /// same `alpha` and the camera the frame is drawn with, for every frame: the queue is per frame.

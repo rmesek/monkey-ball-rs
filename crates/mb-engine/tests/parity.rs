@@ -9,13 +9,14 @@
 //! For each scripted stage the reference writes one line per tick (ball position/velocity as raw f64 bits, state,
 //! rotations, camera yaw, timers, tilt, the `hashSimState` value, and for the display-only particles the
 //! `includeVisual` hash, their counts, a hash over every field of every particle and the visual random state,
-//! and the camera's eye, look-at point, angles and fly-in timer);
+//! and the camera's eye, look-at point, angles and fly-in timer, and the fall-out skip and time-over timers);
 //! the Rust `Sim` is stepped with the same quantized stick feed and compared tick by tick. Environment knobs:
 //! `MB_PARITY_STAGES=1,2,50` (stages), `MB_PARITY_FRAMES` (length, default 1500), `MB_PARITY_SCRIPTS=0,1,2,3`
 //! (stick scripts tried per stage), `MB_PARITY_AUTOPILOT` (goal runs), and for the effect runs
 //! `MB_PARITY_FX_STAGES`, `MB_PARITY_FX_SCRIPTS`, `MB_PARITY_FX_FRAMES`, `MB_PARITY_FX_FAST` (stages run with
-//! the stick held forward), `MB_PARITY_FX_GOALS`, and for the intro fast-forward `MB_PARITY_FF_STAGES`,
-//! `MB_PARITY_FF_RETRY`.
+//! the stick held forward), `MB_PARITY_FX_GOALS`, for the intro fast-forward `MB_PARITY_FF_STAGES`,
+//! `MB_PARITY_FF_RETRY`, and for the action button in the sequences `MB_PARITY_ACT_FALL`, `MB_PARITY_ACT_GOALS`,
+//! `MB_PARITY_ACT_TIMEOVER`.
 
 mod common;
 
@@ -312,6 +313,10 @@ struct RefFrame {
     cam_rot_x: i64,
     cam_rot_z: i64,
     cam_timer: i64,
+    ringout_skip: i64,
+    /// `goalSkipTimerFrames`, which the port does not have: see `action_in_sequences_matches_reference`.
+    goal_skip: i64,
+    timeover: i64,
 }
 
 /// One line of the reference's output (see `tests/ref/run.ts`).
@@ -354,6 +359,9 @@ fn parse_ref(text: &str) -> Vec<RefLine> {
                     cam_rot_x: n(f[34]),
                     cam_rot_z: n(f[35]),
                     cam_timer: n(f[36]),
+                    ringout_skip: n(f[37]),
+                    goal_skip: n(f[38]),
+                    timeover: n(f[39]),
                 })));
             }
             "RELOAD" => lines.push(RefLine::Reload),
@@ -679,6 +687,14 @@ fn compare_with_buttons(
                 chk("camTimer", cam.timer_curr as i64 == r.cam_timer, &|| {
                     format!("{} vs {}", cam.timer_curr, r.cam_timer)
                 });
+                chk(
+                    "ringoutSkip",
+                    sim.ringout_skip_timer as i64 == r.ringout_skip,
+                    &|| format!("{} vs {}", sim.ringout_skip_timer, r.ringout_skip),
+                );
+                chk("timeover", sim.timeover_timer as i64 == r.timeover, &|| {
+                    format!("{} vs {}", sim.timeover_timer, r.timeover)
+                });
                 visual_diff(&sim, &r.visual, &mut diffs);
                 if !diffs.is_empty() {
                     report.first_divergence = Some((i, diffs.join("; ")));
@@ -776,19 +792,34 @@ fn env_list(name: &str, default: &[usize]) -> Vec<usize> {
 
 /// Stick script produced by the closed-loop waypoint controller driving the Rust sim (bananas, then the goal).
 fn autopilot_script(stage: &mb_stage::Stage, id: u32, frames: usize) -> Vec<QuantizedInput> {
+    autopilot_script_with_buttons(stage, id, frames, &[]).0
+}
+
+/// [`autopilot_script`] for a run in which `buttons` are held (a fast-forwarded intro moves everything after
+/// it), and the tick on which the ball entered the goal.
+fn autopilot_script_with_buttons(
+    stage: &mb_stage::Stage,
+    id: u32,
+    frames: usize,
+    buttons: &[u32],
+) -> (Vec<QuantizedInput>, Option<usize>) {
     let mut ap = common::Autopilot::for_stage(stage);
     let mut sim = Sim::new(stage, headless_cfg(id, 0));
     let mut out = Vec::with_capacity(frames);
-    for _ in 0..frames {
+    let mut goal = None;
+    for tick in 0..frames {
         let input = if sim.intro_timer <= 0 && !sim.is_finished() {
             ap.input(&sim)
         } else {
             QuantizedInput::default()
         };
         out.push(input);
-        sim.step(input);
+        sim.step_with_buttons(input, buttons.get(tick).copied().unwrap_or(0));
+        if goal.is_none() && sim.phase == Phase::GoalSequence {
+            goal = Some(tick);
+        }
     }
-    out
+    (out, goal)
 }
 
 #[test]
@@ -1044,8 +1075,8 @@ fn intro_length(frames: i32, buttons: &[u32]) -> usize {
 /// `Sim::step_with_buttons`, every column of `matches_reference_game_loop` on every tick, through the fly-in
 /// (camera eye, look-at, angles and timer), the ball drop and the play that follows.
 ///
-/// The action is only ever held during an intro. After it the reference also uses it to cut the fall-out and
-/// goal sequences short, which is not ported.
+/// The action is only ever held during an intro here; `action_in_sequences_matches_reference` holds it
+/// afterwards.
 #[test]
 fn intro_fast_forward_matches_reference() {
     let Some(env) = setup() else { return };
@@ -1156,4 +1187,402 @@ fn intro_fast_forward_matches_reference() {
     }
     assert!(passed_120, "no run took the timer from 121 to 119");
     assert!(retries > 0, "no run reached a retry");
+}
+
+/// How the reference ended an attempt.
+#[derive(Debug, Clone, PartialEq)]
+enum AttemptEnd {
+    /// The stage was reloaded (after a fall-out or a time over).
+    Reload,
+    /// The run left the plain game loop: `goal-finished`, `result-replay` or `reload-or-advance`.
+    End(String),
+    /// The run's ticks ran out first.
+    Cut,
+}
+
+/// What the reference did in one attempt, in ticks of the attempt (the index of the feed frame consumed).
+#[derive(Debug, Clone)]
+struct Attempt {
+    /// The tick on which each sequence began: the first with its timer above 0.
+    fall: Option<usize>,
+    time_over: Option<usize>,
+    goal: Option<usize>,
+    /// The lowest `goalSkipTimerFrames` seen while the goal sequence ran.
+    min_goal_skip: i64,
+    /// The attempt's last tick.
+    last: usize,
+    end: AttemptEnd,
+}
+
+fn reference_attempts(reference: &str) -> Vec<Attempt> {
+    let fresh = || Attempt {
+        fall: None,
+        time_over: None,
+        goal: None,
+        min_goal_skip: i64::MAX,
+        last: 0,
+        end: AttemptEnd::Cut,
+    };
+    let mut attempts = Vec::new();
+    let (mut now, mut tick) = (fresh(), 0);
+    for line in parse_ref(reference) {
+        match line {
+            RefLine::Frame(f) => {
+                if f.ringout > 0 && now.fall.is_none() {
+                    now.fall = Some(tick);
+                }
+                if f.timeover > 0 && now.time_over.is_none() {
+                    now.time_over = Some(tick);
+                }
+                if f.goal_timer > 0 {
+                    now.goal.get_or_insert(tick);
+                    now.min_goal_skip = now.min_goal_skip.min(f.goal_skip);
+                }
+                now.last = tick;
+                tick += 1;
+            }
+            RefLine::Reload => {
+                now.last = tick;
+                now.end = AttemptEnd::Reload;
+                attempts.push(std::mem::replace(&mut now, fresh()));
+                tick = 0;
+            }
+            RefLine::End(reason, _) => {
+                now.last = tick;
+                now.end = AttemptEnd::End(reason);
+                attempts.push(std::mem::replace(&mut now, fresh()));
+                return attempts;
+            }
+            RefLine::Tail(_) => {}
+        }
+    }
+    attempts.push(now);
+    attempts
+}
+
+/// `updateRingout` as plain arithmetic: how many ticks after the one on which the ball fell out the sequence
+/// ends, for a fall-out that began on attempt tick `begin`.
+fn fall_out_length(begin: usize, buttons: &[u32]) -> usize {
+    (60..270)
+        .find(|k| buttons.get(begin + k).copied().unwrap_or(0) & 1 != 0)
+        .unwrap_or(270)
+}
+
+/// The tick of an attempt on which the Rust sim, with no button held, begins its fall-out sequence.
+fn fall_tick(
+    stage: &mb_stage::Stage,
+    id: u32,
+    attempt: usize,
+    inputs: &[QuantizedInput],
+) -> Option<usize> {
+    let mut sim = Sim::new(stage, headless_cfg(id, attempt));
+    (0..inputs.len()).find(|&tick| {
+        sim.step(inputs[tick]);
+        sim.phase == Phase::FallOut
+    })
+}
+
+/// "From the first tick of the attempt to its last", as a range relative to anything.
+const ALWAYS: (i64, i64) = (-1_000_000, 1_000_000);
+
+/// Tick ranges given relative to `base`, as ranges of the attempt.
+fn around(base: usize, ranges: &[(i64, i64)]) -> Vec<(usize, usize)> {
+    let at = |offset: i64| (base as i64 + offset).max(0) as usize;
+    ranges
+        .iter()
+        .map(|&(from, to)| (at(from), at(to)))
+        .collect()
+}
+
+/// Short presses from `from` on, at random distances.
+fn random_taps(seed: u32, from: usize, to: usize) -> Vec<(usize, usize)> {
+    let mut state = seed;
+    let mut taps = Vec::new();
+    let mut at = from;
+    while at < to {
+        state ^= state << 13;
+        state ^= state >> 17;
+        state ^= state << 5;
+        at += 15 + (state & 63) as usize;
+        let len = 1 + ((state >> 8) & 3) as usize;
+        taps.push((at, at + len));
+        at += len;
+    }
+    taps
+}
+
+/// The primary action after the intro: the reference with a scripted action button against
+/// `Sim::step_with_buttons`, every column on every tick, in the three sequences an attempt can end with.
+///
+/// * Fall-out (`updateRingout`): with result replays off, the action ends the sequence on any tick from the
+///   60th after the fall on. Each script is run twice, placed on the fall of the first attempt and on the fall
+///   of the retries, and every attempt of every run is also checked against the rule as arithmetic. With
+///   result replays on the reference cuts to its replay 30 ticks in, action or not.
+/// * Goal: the reference's rule (`canSkipGoal`) needs `goalSkipTimerFrames` to have run down, which takes 210
+///   ticks; the sequence lasts 151. So the action changes nothing, with replays on or off, and the port has
+///   no such rule.
+/// * Time over: no rule; nothing changes.
+#[test]
+fn action_in_sequences_matches_reference() {
+    let Some(env) = setup() else { return };
+    let tmp = std::env::temp_dir().join("mb-engine-parity-act");
+    std::fs::create_dir_all(&tmp).unwrap();
+    let mut failures = Vec::new();
+    let (mut runs, mut ticks) = (0, 0);
+
+    // Fall-out. (name, ranges relative to the fall, how long the sequence then is)
+    type FallScript = (&'static str, &'static [(i64, i64)], Option<usize>);
+    let fall_scripts: [FallScript; 8] = [
+        (
+            "held until one tick before it counts",
+            &[(-40, 60)],
+            Some(270),
+        ),
+        (
+            "pressed on the first tick that counts",
+            &[(60, 61)],
+            Some(60),
+        ),
+        (
+            "a tap too early and one later",
+            &[(59, 60), (150, 151)],
+            Some(150),
+        ),
+        ("held from before the fall", &[(-30, 100)], Some(60)),
+        ("pressed on the last tick but one", &[(269, 270)], Some(269)),
+        (
+            "pressed where a replay would start, then after the delay",
+            &[(30, 31), (61, 62)],
+            Some(61),
+        ),
+        (
+            "held from the first tick of the attempt",
+            &[ALWAYS],
+            Some(60),
+        ),
+        ("random taps", &[], None),
+    ];
+    let mut lengths = std::collections::BTreeMap::<usize, usize>::new();
+    let (mut skipped_retries, mut fall_outs) = (0, 0);
+    for id in env_list("MB_PARITY_ACT_FALL", &[2, 10, 36, 50, 77, 126]) {
+        let id = id as u32;
+        let stage = common::load_stage(&env.disc, id);
+        let forward = vec![QuantizedInput { x: 0, y: -127 }; 4000];
+        let falls = [0, 1].map(|attempt| fall_tick(&stage, id, attempt, &forward));
+        let [Some(first), Some(retry)] = falls else {
+            panic!("stage {id}: the ball does not fall out with the stick held forward: {falls:?}");
+        };
+        // Room for the first attempt and two retries, each with a whole sequence.
+        let frames = first + 2 * retry + 3 * 271 + 20;
+        let inputs = &forward[..frames];
+        for (k, (name, ranges, length)) in fall_scripts.iter().enumerate() {
+            // Placed on the fall of the first attempt (0) and of a retry (1).
+            for (placed, base) in [first, retry].into_iter().enumerate() {
+                let ranges = if ranges.is_empty() {
+                    random_taps(0x9e37_79b9 ^ (id << 8) ^ k as u32, base, frames)
+                } else {
+                    around(base, ranges)
+                };
+                let buttons = held(&ranges, frames);
+                let tag = format!("fall{k}p{placed}");
+                let mode = Mode::NoReplay { tail: 0 };
+                let reference =
+                    run_reference_with_buttons(&env, id, &tag, inputs, &buttons, mode, &tmp);
+                let report = compare_with_buttons(id, &stage, inputs, &buttons, &reference);
+                let what =
+                    format!("stage {id:03} fall-out, action {name}, placed on attempt {placed}");
+                if diverged(&what, &report) {
+                    failures.push((id, k));
+                }
+                runs += 1;
+                ticks += report.identical;
+                let attempts = reference_attempts(&reference);
+                for (n, attempt) in attempts.iter().enumerate() {
+                    let (Some(fall), AttemptEnd::Reload) = (attempt.fall, &attempt.end) else {
+                        continue;
+                    };
+                    let took = attempt.last - fall;
+                    assert_eq!(
+                        took,
+                        fall_out_length(fall, &buttons),
+                        "{what}: attempt {n} fell out on tick {fall}"
+                    );
+                    // The attempts the script was placed on end as the script was written to end them.
+                    if n.min(1) == placed {
+                        let fast_forwarded = buttons[0] != 0 && n == 0;
+                        assert_eq!(
+                            fall,
+                            base - 120 * fast_forwarded as usize,
+                            "{what}: attempt {n}"
+                        );
+                        if let Some(length) = length {
+                            assert_eq!(took, *length, "{what}: attempt {n}");
+                        }
+                        skipped_retries += (n > 0 && took < 270) as usize;
+                    }
+                    *lengths.entry(took).or_default() += 1;
+                    fall_outs += 1;
+                }
+                assert!(attempts.len() > 2, "{what}: no retry was reached");
+            }
+        }
+        // With result replays on, the replay starts 30 ticks into the fall-out whatever is held.
+        for (k, ranges) in [&[ALWAYS][..], &[(-10, 400)]].iter().enumerate() {
+            let buttons = held(&around(first, ranges), frames);
+            let tag = format!("fallreplay{k}");
+            let reference =
+                run_reference_with_buttons(&env, id, &tag, inputs, &buttons, Mode::Replay, &tmp);
+            let report = compare_with_buttons(id, &stage, inputs, &buttons, &reference);
+            let what = format!("stage {id:03} fall-out with replays, action script {k}");
+            if diverged(&what, &report) {
+                failures.push((id, 50 + k));
+            }
+            let attempts = reference_attempts(&reference);
+            let fall = attempts[0].fall.expect("no fall-out");
+            assert_eq!(
+                attempts[0].end,
+                AttemptEnd::End("result-replay".into()),
+                "{what}"
+            );
+            assert_eq!(attempts[0].last - fall, 30, "{what}");
+            runs += 1;
+            ticks += report.identical;
+        }
+    }
+
+    // Goal. (name, ranges relative to the tick the ball enters the goal; the launch is 90 ticks later)
+    let goal_scripts: [(&str, &[(i64, i64)]); 6] = [
+        ("held from the first tick of the attempt", &[ALWAYS]),
+        ("held from before the goal", &[(-20, 400)]),
+        ("held until the launch", &[(0, 90)]),
+        ("held from the launch", &[(90, 400)]),
+        (
+            "pressed again and again",
+            &[
+                (5, 6),
+                (40, 43),
+                (89, 92),
+                (100, 101),
+                (120, 135),
+                (149, 152),
+            ],
+        ),
+        ("random taps", &[]),
+    ];
+    let mut goal_sequences = 0;
+    let mut least_goal_skip = i64::MAX;
+    for id in env_list("MB_PARITY_ACT_GOALS", &[1, 3, 11, 17]) {
+        let id = id as u32;
+        let stage = common::load_stage(&env.disc, id);
+        let frames = 3000;
+        let (_, plain_goal) = autopilot_script_with_buttons(&stage, id, frames, &[]);
+        let plain_goal = plain_goal.unwrap_or_else(|| panic!("stage {id}: the autopilot misses"));
+        for (k, (name, ranges)) in goal_scripts.iter().enumerate() {
+            let ranges = if ranges.is_empty() {
+                random_taps(0x1234_5678 ^ (id << 8), plain_goal, frames)
+            } else {
+                around(plain_goal, ranges)
+            };
+            let buttons = held(&ranges, frames);
+            // The controller is run with the buttons: an action held through the intro shortens it.
+            let (inputs, goal) = autopilot_script_with_buttons(&stage, id, frames, &buttons);
+            let goal = goal.unwrap_or_else(|| panic!("stage {id}: the autopilot misses ({name})"));
+            let fast_forwarded = buttons[0] != 0;
+            assert_eq!(goal, plain_goal - 120 * fast_forwarded as usize);
+            for (m, mode) in [Mode::NoReplay { tail: 400 }, Mode::Replay]
+                .into_iter()
+                .enumerate()
+            {
+                let tag = format!("goal{k}m{m}");
+                let reference =
+                    run_reference_with_buttons(&env, id, &tag, &inputs, &buttons, mode, &tmp);
+                let report = compare_with_buttons(id, &stage, &inputs, &buttons, &reference);
+                let what = format!("stage {id:03} goal, action {name}, {mode:?}");
+                if diverged(&what, &report) {
+                    failures.push((id, 100 + k));
+                }
+                let attempts = reference_attempts(&reference);
+                let end = if m == 0 {
+                    "goal-finished"
+                } else {
+                    "result-replay"
+                };
+                assert_eq!(attempts[0].end, AttemptEnd::End(end.into()), "{what}");
+                assert_eq!(attempts[0].goal, Some(goal), "{what}");
+                // The sequence is as long as without the action: 90 ticks of float, the launch, 60 more.
+                assert_eq!(attempts[0].last - goal, 151, "{what}");
+                least_goal_skip = least_goal_skip.min(attempts[0].min_goal_skip);
+                goal_sequences += 1;
+                runs += 1;
+                ticks += report.identical;
+            }
+        }
+    }
+
+    // Time over: the ball left alone until the clock runs out, then the retry's intro.
+    let time_over_scripts: [(&str, &[(i64, i64)]); 3] = [
+        ("held from the first tick of the attempt", &[ALWAYS]),
+        ("held through the sequence", &[(-20, 200)]),
+        (
+            "pressed again and again",
+            &[(0, 1), (30, 31), (59, 62), (90, 100), (119, 121)],
+        ),
+    ];
+    let mut time_overs = 0;
+    for id in env_list("MB_PARITY_ACT_TIMEOVER", &[1, 2, 3]) {
+        let id = id as u32;
+        let stage = common::load_stage(&env.disc, id);
+        let frames = 4400;
+        let inputs = vec![QuantizedInput::default(); frames];
+        for (k, (name, ranges)) in time_over_scripts.iter().enumerate() {
+            // Play starts after 360 ticks and the clock runs out on its 3600th tick.
+            let begin = 3959;
+            let buttons = held(&around(begin, ranges), frames);
+            let tag = format!("timeover{k}");
+            let mode = Mode::NoReplay { tail: 0 };
+            let reference =
+                run_reference_with_buttons(&env, id, &tag, &inputs, &buttons, mode, &tmp);
+            let report = compare_with_buttons(id, &stage, &inputs, &buttons, &reference);
+            let what = format!("stage {id:03} time over, action {name}");
+            if diverged(&what, &report) {
+                failures.push((id, 200 + k));
+            }
+            let attempts = reference_attempts(&reference);
+            let fast_forwarded = buttons[0] != 0;
+            assert_eq!(
+                attempts[0].time_over,
+                Some(begin - 120 * fast_forwarded as usize),
+                "{what}: the ball should rest until the clock runs out"
+            );
+            assert_eq!(attempts[0].end, AttemptEnd::Reload, "{what}");
+            assert_eq!(
+                attempts[0].last - attempts[0].time_over.unwrap(),
+                120,
+                "{what}"
+            );
+            assert!(attempts.len() > 1 && report.reloads == 1, "{what}");
+            time_overs += 1;
+            runs += 1;
+            ticks += report.identical;
+        }
+    }
+
+    let _ = std::fs::remove_dir_all(&tmp);
+    eprintln!(
+        "action in sequences: {runs} runs, {ticks} ticks identical; {fall_outs} fall-outs by length \
+         {lengths:?}, {skipped_retries} retries cut short; {goal_sequences} goal sequences of 151 ticks, \
+         least goal skip timer {least_goal_skip}; {time_overs} time overs of 120 ticks"
+    );
+    assert!(
+        failures.is_empty(),
+        "diverged on (stage, script): {failures:?}"
+    );
+    if std::env::vars().any(|(k, _)| k.starts_with("MB_PARITY_ACT_")) {
+        return;
+    }
+    assert!(lengths.contains_key(&60) && lengths.contains_key(&270));
+    assert!(lengths.keys().any(|&n| n > 60 && n < 270));
+    assert!(skipped_retries > 0 && goal_sequences > 0 && time_overs > 0);
+    // `canSkipGoal` needs this timer at 0 or below.
+    assert!(least_goal_skip > 0);
 }
