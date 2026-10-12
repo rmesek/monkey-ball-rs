@@ -26,6 +26,7 @@ use crate::material::{
     opaque_at_full_alpha, pipeline_key, sampler_key, LayerInfo, LayerKind, PipelineKey, SamplerKey,
     WrapKey,
 };
+use crate::mirror::{self, Mirror, MirrorGpu, MirrorTarget, MirrorUniform, Plane, CLIP_LIFT};
 // Only the readback path (`render_to_rgba`) names the type, and that path does not exist on wasm32.
 #[cfg(not(target_arch = "wasm32"))]
 use crate::offscreen::OffscreenTarget;
@@ -192,6 +193,12 @@ struct Object {
     radius: f32,
     /// Outside the view frustum this frame.
     culled: bool,
+    /// A mirror model: left out of the capture and drawn again with it ([`Renderer::set_mirror_surface`]).
+    mirror_surface: bool,
+    /// Shows in the capture ([`Renderer::set_in_mirror`]).
+    in_mirror: bool,
+    /// Not drawn into the capture this frame: one of the two flags, below the plane or out of its view.
+    mirror_hidden: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -201,6 +208,17 @@ struct DrawItem {
     /// Opaque: state sort key (pipeline, material). Translucent: unused.
     key: u64,
     dist: f32,
+}
+
+/// What the capture of one frame is culled and sorted with.
+struct MirrorFrame {
+    /// World -> view of the reflected camera.
+    view: Mat4,
+    /// Its clip matrices without the cut at the plane, background and world.
+    clip: [Mat4; 2],
+    /// The mirror's plane as it was given (stage space) and as it is shown (after the tilt).
+    stage: Plane,
+    shown: Plane,
 }
 
 /// Statistics of the last frame (the `?fps=1` overlay, tests).
@@ -225,12 +243,18 @@ pub struct FrameStats {
     pub state_changes: usize,
     /// Bytes written to uniform and vertex buffers.
     pub upload_bytes: usize,
+    /// Draw calls a mirror adds ([`Renderer::set_mirror`]): those of the capture pass plus one per mesh
+    /// of each mirror surface in view. Not part of `draws`; zero without a mirror or with none in view.
+    pub mirror_draws: usize,
+    /// Of `mirror_draws`: the mirror surfaces drawn over the frame.
+    pub mirror_surface_draws: usize,
 }
 
 impl FrameStats {
-    /// Every draw call of the frame: models, instance batches, quad runs and sprite batches.
+    /// Every draw call of the frame: models, instance batches, quad runs, sprite batches and what a
+    /// mirror adds.
     pub fn total_draws(&self) -> usize {
-        self.draws + self.quad_draws + self.sprite_draws
+        self.draws + self.quad_draws + self.sprite_draws + self.mirror_draws
     }
 }
 
@@ -247,6 +271,22 @@ struct ObjectBuffer {
     buffer: wgpu::Buffer,
     group: wgpu::BindGroup,
     capacity: usize,
+}
+
+/// A mirror and everything made for it at load.
+struct MirrorState {
+    mirror: Mirror,
+    /// Created with the mirror when the frame's size is known, else with the first frame; replaced when
+    /// the frame is resized.
+    target: Option<MirrorTarget>,
+    /// The scene uniforms of the capture, background and world, with their bind groups.
+    scene_buffers: [wgpu::Buffer; 2],
+    scene_groups: Vec<wgpu::BindGroup>,
+    scene_data: [Option<SceneUniform>; 2],
+    /// Group 2 of the overlay: `uniform`, the capture and the gradient.
+    uniform: wgpu::Buffer,
+    uniform_data: Option<MirrorUniform>,
+    group: Option<wgpu::BindGroup>,
 }
 
 /// What a render pass has bound, to skip redundant state calls.
@@ -326,6 +366,18 @@ pub struct Renderer {
     tilt: Mat4,
     /// Bytes written outside `render` since the last frame (vertex re-poses).
     pending_upload_bytes: usize,
+    /// The overlay pipeline and its layout, made the first time a mirror is set and kept.
+    mirror_gpu: Option<MirrorGpu>,
+    /// The mirror of the loaded stage with its target; `None` costs nothing.
+    mirror: Option<MirrorState>,
+    /// Side of the capture as a fraction of the frame's.
+    mirror_scale: f32,
+    /// Objects flagged with [`Renderer::set_mirror_surface`].
+    mirror_surfaces: Vec<u32>,
+    /// The blended draws of the capture, sorted from the reflected eye.
+    mirror_translucent: [Vec<DrawItem>; 2],
+    /// This frame draws the capture and the mirror surfaces.
+    mirror_active: bool,
     /// Something that shows changed without an upload (visibility, textures, the target itself).
     changed: bool,
     /// Clear colour and target size of the last drawn frame.
@@ -353,6 +405,15 @@ fn uniform_entry(binding: u32, visibility: wgpu::ShaderStages) -> wgpu::BindGrou
         count: None,
     }
 }
+
+/// Clamped, bilinear, top level only: the sampler of a missing shadow mask and of the mirror's capture
+/// (`mirrorSamplerDesc`).
+const CLAMPED: SamplerKey = SamplerKey {
+    wrap_s: WrapKey::Clamp,
+    wrap_t: WrapKey::Clamp,
+    max_lod: 0,
+    nearest: false,
+};
 
 /// One slot of the object uniform buffer: `Object` in shader.wgsl.
 const OBJECT_UNIFORM_SIZE: usize = std::mem::size_of::<ObjectSlot>();
@@ -590,6 +651,12 @@ impl Renderer {
             translucent: [Vec::new(), Vec::new()],
             tilt: Mat4::IDENTITY,
             pending_upload_bytes: 0,
+            mirror_gpu: None,
+            mirror: None,
+            mirror_scale: 0.5,
+            mirror_surfaces: Vec::new(),
+            mirror_translucent: [Vec::new(), Vec::new()],
+            mirror_active: false,
             changed: true,
             drawn: None,
             lighting: Lighting::default(),
@@ -604,18 +671,25 @@ impl Renderer {
     }
 
     /// Bind group 0 of both layers: the scene uniform and the shadow mask (white while there is none).
+    /// The capture of a mirror is drawn with the same mask.
     fn rebuild_scene_groups(&mut self) {
-        let fallback = SamplerKey {
-            wrap_s: WrapKey::Clamp,
-            wrap_t: WrapKey::Clamp,
-            max_lod: 0,
-            nearest: false,
-        };
-        let (texture, key) = self.shadow_mask.unwrap_or((self.white, fallback));
+        let buffers = self.scene_buffers.clone();
+        self.scene_groups = self.make_scene_groups(&buffers);
+        if let Some(buffers) = self.mirror.as_ref().map(|m| m.scene_buffers.clone()) {
+            let groups = self.make_scene_groups(&buffers);
+            if let Some(m) = &mut self.mirror {
+                m.scene_groups = groups;
+            }
+        }
+        self.changed = true;
+    }
+
+    fn make_scene_groups(&mut self, buffers: &[wgpu::Buffer; 2]) -> Vec<wgpu::BindGroup> {
+        let (texture, key) = self.shadow_mask.unwrap_or((self.white, CLAMPED));
         let sampler = self.sampler(key);
         let view = &self.textures[texture.0].view;
-        self.counters.bind_groups += self.scene_buffers.len() as u64;
-        self.scene_groups = (self.scene_buffers.iter())
+        self.counters.bind_groups += buffers.len() as u64;
+        (buffers.iter())
             .map(|buffer| {
                 self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("scene"),
@@ -636,8 +710,7 @@ impl Renderer {
                     ],
                 })
             })
-            .collect();
-        self.changed = true;
+            .collect()
     }
 
     /// The 1x1 white texture the renderer uses where a material has none (untextured quads).
@@ -1178,6 +1251,9 @@ impl Renderer {
             center: Vec3::ZERO,
             radius: 0.0,
             culled: false,
+            mirror_surface: false,
+            in_mirror: true,
+            mirror_hidden: false,
         });
         self.opaque_dirty = true;
         ObjectId(self.objects.len() - 1)
@@ -1388,7 +1464,8 @@ impl Renderer {
         true
     }
 
-    /// Drop all models and objects (switching stages). Keeps pipelines, samplers and textures; release
+    /// Drop all models and objects (switching stages), and the mirror with its target. Keeps pipelines,
+    /// samplers and textures; release
     /// stage textures with [`Renderer::truncate_textures`] using a count taken before loading the stage.
     pub fn clear_scene(&mut self) {
         self.objects.clear();
@@ -1403,6 +1480,9 @@ impl Renderer {
         self.tilt = Mat4::IDENTITY;
         self.wave_objects = 0;
         self.wave_time = 0.0;
+        self.mirror = None;
+        self.mirror_active = false;
+        self.mirror_surfaces.clear();
         self.opaque_dirty = true;
         self.changed = true;
     }
@@ -1434,6 +1514,13 @@ impl Renderer {
         if matches!(self.shadow_mask, Some((t, _)) if t.0 >= self.textures.len()) {
             self.shadow_mask = None;
             self.rebuild_scene_groups();
+        }
+        // A mirror whose gradient is gone goes with it.
+        let count = self.textures.len();
+        let stale = |m: &MirrorState| (m.mirror.distortion).is_some_and(|d| d.grad.0 >= count);
+        if self.mirror.as_ref().is_some_and(stale) {
+            self.mirror = None;
+            self.mirror_active = false;
         }
     }
 
@@ -1837,6 +1924,103 @@ impl Renderer {
         culled
     }
 
+    /// Flag what the capture leaves out: mirror surfaces, objects taken out with
+    /// [`Renderer::set_in_mirror`], spheres wholly behind the mirror's plane (the reference's test in
+    /// `Model.ts`) or outside the reflected view.
+    fn cull_mirror(&mut self, frame: &MirrorFrame) {
+        let bg = frustum_planes(&frame.clip[0]);
+        let world = frustum_planes(&frame.clip[1]);
+        let tilted = frustum_planes(&(frame.clip[1] * self.tilt));
+        for o in &mut self.objects {
+            if !o.visible {
+                continue;
+            }
+            // Tilted objects are tested in the space before the tilt, against the plane as it was given.
+            let (planes, plane) = match (o.layer, o.tilted) {
+                (Layer::Background, _) => (&bg, &frame.shown),
+                (Layer::World, false) => (&world, &frame.shown),
+                (Layer::World, true) => (&tilted, &frame.stage),
+            };
+            o.mirror_hidden = o.mirror_surface
+                || !o.in_mirror
+                || plane.distance(o.center) < -o.radius
+                || sphere_outside(planes, o.center, o.radius);
+        }
+    }
+
+    /// Work out whether this frame shows a mirror and, if so, bring the capture's uniforms up to date.
+    /// Returns the bytes uploaded and what the capture's culling and sorting need.
+    fn prepare_mirror(
+        &mut self,
+        camera: &Camera,
+        scenes: &[SceneUniform; 2],
+    ) -> (usize, Option<MirrorFrame>) {
+        self.mirror_active = false;
+        let Some(m) = &mut self.mirror else {
+            return (0, None);
+        };
+        // Without a mirror surface in view nobody would see the capture.
+        let objects = &self.objects;
+        let seen = self.mirror_surfaces.iter().any(|i| {
+            let o = &objects[*i as usize];
+            o.visible && !o.culled && o.layer == Layer::World
+        });
+        let (true, Some(stage), true) = (
+            seen,
+            Plane::from_matrix(&m.mirror.plane),
+            m.target.is_some() && m.group.is_some(),
+        ) else {
+            return (0, None);
+        };
+        // What is shown is the tilted stage, so the mirror is where the tilt puts it.
+        let shown = stage.transformed(&self.tilt);
+        let view = mirror::flip_x() * camera.view * shown.reflection();
+        let cut = view.inverse().transpose() * shown.equation(CLIP_LIFT);
+        let mut uploaded = 0;
+        let mut clip = [Mat4::IDENTITY; 2];
+        for (i, scene) in scenes.iter().enumerate() {
+            let proj = Mat4::from_cols_array_2d(&scene.proj);
+            clip[i] = proj * view;
+            let u = SceneUniform {
+                view: view.to_cols_array_2d(),
+                proj: mirror::oblique_projection(&proj, cut)
+                    .unwrap_or(proj)
+                    .to_cols_array_2d(),
+                ..*scene
+            };
+            if m.scene_data[i] != Some(u) {
+                self.queue
+                    .write_buffer(&m.scene_buffers[i], 0, bytemuck::bytes_of(&u));
+                m.scene_data[i] = Some(u);
+                uploaded += std::mem::size_of::<SceneUniform>();
+            }
+        }
+        let d = m.mirror.distortion;
+        let row = |r: Option<[f32; 3]>| r.map_or([0.0; 4], |[x, y, z]| [x, y, z, 0.0]);
+        let u = MirrorUniform {
+            clip: clip[1].to_cols_array_2d(),
+            params: [m.mirror.alpha, d.is_some() as u32 as f32, 0.0, 0.0],
+            ind0: row(d.map(|d| d.ind0)),
+            ind1: row(d.map(|d| d.ind1)),
+        };
+        if m.uniform_data != Some(u) {
+            self.queue
+                .write_buffer(&m.uniform, 0, bytemuck::bytes_of(&u));
+            m.uniform_data = Some(u);
+            uploaded += std::mem::size_of::<MirrorUniform>();
+        }
+        self.mirror_active = true;
+        (
+            uploaded,
+            Some(MirrorFrame {
+                view,
+                clip,
+                stage,
+                shown,
+            }),
+        )
+    }
+
     /// Does this object draw all its meshes in the sorted, blended pass?
     fn sorts_all(o: &Object) -> bool {
         o.alpha < 1.0 || o.color_mul[3] < 1.0 || o.sort_bias.is_some()
@@ -1878,14 +2062,20 @@ impl Renderer {
         self.opaque_dirty = false;
     }
 
-    /// Collect this frame's blended draws, farthest first.
-    fn collect_translucent(&mut self, view: &Mat4) {
+    /// Collect this frame's blended draws, farthest first: those of the picture, or with `mirror` those
+    /// of the capture as seen through its `view`.
+    fn collect_translucent(&mut self, view: &Mat4, mirror: bool) {
         let view_tilted = *view * self.tilt;
-        for list in &mut self.translucent {
+        let mut lists = std::mem::take(if mirror {
+            &mut self.mirror_translucent
+        } else {
+            &mut self.translucent
+        });
+        for list in &mut lists {
             list.clear();
         }
         for (oi, o) in self.objects.iter().enumerate() {
-            if !o.visible || o.culled {
+            if !o.visible || if mirror { o.mirror_hidden } else { o.culled } {
                 continue;
             }
             let sort_all = Self::sorts_all(o);
@@ -1915,7 +2105,7 @@ impl Renderer {
                             + o.depth_offset
                     }
                 };
-                self.translucent[layer].push(DrawItem {
+                lists[layer].push(DrawItem {
                     object: oi as u32,
                     mesh: mi as u32,
                     key: 0,
@@ -1923,19 +2113,25 @@ impl Renderer {
                 });
             }
         }
-        for list in &mut self.translucent {
+        for list in &mut lists {
             // Stable, like the order the reference gets for equal distances.
             list.sort_by(|a, b| b.dist.total_cmp(&a.dist));
+        }
+        if mirror {
+            self.mirror_translucent = lists;
+        } else {
+            self.translucent = lists;
         }
     }
 
     /// Issue the draws of `items`, skipping every pipeline, bind group and buffer that is already bound.
-    /// `blend` picks each mesh's blending pipeline (solid meshes faded by their object need it).
+    /// `blend` picks each mesh's blending pipeline (solid meshes faded by their object need it);
+    /// `mirror` says the pass is the capture, which has its own set of hidden objects.
     fn draw_items(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
         items: &[DrawItem],
-        blend: bool,
+        (blend, mirror): (bool, bool),
         bound: &mut Bound,
         stats: &mut FrameStats,
     ) {
@@ -1944,7 +2140,13 @@ impl Renderer {
         };
         for it in items {
             let obj = &self.objects[it.object as usize];
-            if !obj.visible || obj.culled {
+            if !obj.visible
+                || if mirror {
+                    obj.mirror_hidden
+                } else {
+                    obj.culled
+                }
+            {
                 continue;
             }
             let mesh = &self.models[obj.model.0].meshes[it.mesh as usize];
@@ -2049,6 +2251,291 @@ impl Renderer {
         }
     }
 
+    // ---- mirror floors ------------------------------------------------------------------------------
+
+    /// The mirror of the loaded stage, or `None` for none (the state after [`Renderer::clear_scene`]).
+    /// With one, every frame in which a mirror surface ([`Renderer::set_mirror_surface`]) is in view
+    /// draws the scene a second time, reflected in the mirror's plane and cut off at it, into a target of
+    /// [`Renderer::set_mirror_scale`] times the frame, and then draws the mirror surfaces again over the
+    /// opaque geometry with that picture on them (`FrameStats::mirror_draws`).
+    ///
+    /// Creates what the mirror needs: three uniform buffers, two scene bind groups, the target (colour
+    /// and depth) with its bind group and, the first time, one pipeline. Call it while loading; the
+    /// target is made here when a frame has been drawn before, else with the first frame, and again
+    /// when the frame's size changes. `None` frees all of it but the pipeline. Without a mirror nothing
+    /// exists and a frame is what it was. [`Renderer::truncate_textures`] drops a mirror whose gradient
+    /// texture it frees.
+    pub fn set_mirror(&mut self, mirror: Option<Mirror>) {
+        self.changed = true;
+        self.mirror_active = false;
+        self.mirror = None;
+        let Some(mirror) = mirror else {
+            return;
+        };
+        if self.mirror_gpu.is_none() {
+            self.counters.pipelines += 1;
+            self.mirror_gpu = Some(MirrorGpu::new(
+                &self.device,
+                &self.scene_layout,
+                &self.object_layout,
+                self.target_format,
+                DEPTH_FORMAT,
+            ));
+        }
+        self.counters.buffers += 3;
+        let buffer = |label, size| {
+            self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(label),
+                size: size as u64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            })
+        };
+        let scene = std::mem::size_of::<SceneUniform>();
+        let scene_buffers = [
+            buffer("mirror scene bg", scene),
+            buffer("mirror scene world", scene),
+        ];
+        let uniform = buffer("mirror", std::mem::size_of::<MirrorUniform>());
+        let scene_groups = self.make_scene_groups(&scene_buffers);
+        self.mirror = Some(MirrorState {
+            mirror,
+            target: None,
+            scene_buffers,
+            scene_groups,
+            scene_data: [None, None],
+            uniform,
+            uniform_data: None,
+            group: None,
+        });
+        if let Some(size) = self.depth.as_ref().map(|d| d.2) {
+            self.ensure_mirror_target(size);
+        }
+    }
+
+    /// The mirror set with [`Renderer::set_mirror`].
+    pub fn mirror(&self) -> Option<&Mirror> {
+        self.mirror.as_ref().map(|m| &m.mirror)
+    }
+
+    /// Move the mirror's plane ([`Mirror::plane`]): for a mirror that rides on an anim group, every
+    /// frame. Costs the uniform uploads of a moved camera and creates nothing; nothing happens without a
+    /// mirror.
+    pub fn set_mirror_plane(&mut self, plane: Mat4) {
+        if let Some(m) = &mut self.mirror {
+            m.mirror.plane = plane;
+        }
+    }
+
+    /// Side of the mirror's target as a fraction of the frame's, 0.5 unless set (a quarter of the
+    /// pixels); at most 1, and the target is never smaller than one pixel. Kept across stages. Changing
+    /// it while a mirror is set replaces the target at the next frame, like a resize: an option, not
+    /// something to animate.
+    pub fn set_mirror_scale(&mut self, scale: f32) {
+        if scale.is_nan() {
+            return;
+        }
+        let scale = scale.clamp(0.0, 1.0);
+        self.changed |= self.mirror_scale != scale;
+        self.mirror_scale = scale;
+    }
+
+    /// Whether the object is a mirror model (`mirrorModelNames`, the bonus-wave floor on stage 92). It
+    /// is drawn as ever, left out of the capture, and drawn once more after the opaque geometry showing
+    /// the capture, blended by the mirror's alpha times its vertex alpha (all its meshes, both faces,
+    /// depth tested, waved if it has a wave). World layer only. Does nothing while no mirror is set.
+    pub fn set_mirror_surface(&mut self, object: ObjectId, on: bool) {
+        let o = &mut self.objects[object.0];
+        if o.mirror_surface != on {
+            o.mirror_surface = on;
+            self.changed = true;
+            if on {
+                self.mirror_surfaces.push(object.0 as u32);
+            } else {
+                self.mirror_surfaces.retain(|i| *i != object.0 as u32);
+            }
+        }
+    }
+
+    /// Whether the object shows in the mirror (true until set). The reference leaves out background
+    /// objects with flag bit 7 and anim-group models without flag bit 2.
+    pub fn set_in_mirror(&mut self, object: ObjectId, visible: bool) {
+        let o = &mut self.objects[object.0];
+        self.changed |= o.in_mirror != visible;
+        o.in_mirror = visible;
+    }
+
+    /// Size of the mirror's target in pixels, once it exists.
+    pub fn mirror_size(&self) -> Option<(u32, u32)> {
+        Some(self.mirror.as_ref()?.target.as_ref()?.size)
+    }
+
+    /// Bytes of the mirror's target, colour and depth; zero without one. Not part of
+    /// [`Renderer::texture_bytes`].
+    pub fn mirror_bytes(&self) -> usize {
+        (self.mirror.as_ref())
+            .and_then(|m| m.target.as_ref())
+            .map_or(0, MirrorTarget::bytes)
+    }
+
+    /// Make the mirror's target for a frame of `size`, and the overlay's bind group that reads it.
+    /// Nothing happens without a mirror or while the target fits.
+    fn ensure_mirror_target(&mut self, size: (u32, u32)) {
+        let want = mirror::target_size(size, self.mirror_scale);
+        let fits =
+            |m: &MirrorState| m.group.is_some() && matches!(&m.target, Some(t) if t.size == want);
+        if self.mirror.as_ref().is_none_or(fits) {
+            return;
+        }
+        let sampler = self.sampler(CLAMPED);
+        let (Some(m), Some(gpu)) = (&mut self.mirror, &self.mirror_gpu) else {
+            return;
+        };
+        self.changed = true;
+        self.counters.textures += 2;
+        self.counters.bind_groups += 1;
+        let target = MirrorTarget::new(&self.device, want, self.target_format, DEPTH_FORMAT);
+        let grad = (m.mirror.distortion)
+            .map(|d| d.grad)
+            .filter(|t| t.0 < self.textures.len())
+            .unwrap_or(self.white);
+        m.group = Some(self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("mirror"),
+            layout: &gpu.layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: m.uniform.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&target.color),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&self.textures[grad.0].view),
+                },
+            ],
+        }));
+        m.target = Some(target);
+    }
+
+    /// The capture: the background and world passes of the picture once more into the mirror's target,
+    /// through the reflected camera. Left out: what [`Renderer::cull_mirror`] flagged, world-space quads,
+    /// instance batches other than the opaque ones (confetti stays, the reference draws no effects here)
+    /// and sprites.
+    fn draw_capture(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        clear: wgpu::Color,
+        stats: &mut FrameStats,
+    ) {
+        let Some(m) = &self.mirror else {
+            return;
+        };
+        let Some(target) = &m.target else {
+            return;
+        };
+        let mut capture = FrameStats::default();
+        for layer in 0..2 {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some(if layer == 0 {
+                    "mirror background"
+                } else {
+                    "mirror world"
+                }),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &target.color,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: if layer == 0 {
+                            wgpu::LoadOp::Clear(clear)
+                        } else {
+                            wgpu::LoadOp::Load
+                        },
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &target.depth,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Discard,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_bind_group(0, &m.scene_groups[layer], &[]);
+            let mut bound = Bound::default();
+            let items = &self.solid[layer];
+            self.draw_items(&mut pass, items, (false, true), &mut bound, &mut capture);
+            let items = &self.ordered[layer];
+            self.draw_items(&mut pass, items, (true, true), &mut bound, &mut capture);
+            if layer == 1 {
+                self.draw_instances(&mut pass, DrawOrder::Opaque, &mut bound, &mut capture);
+            }
+            let items = &self.mirror_translucent[layer];
+            self.draw_items(&mut pass, items, (true, true), &mut bound, &mut capture);
+        }
+        stats.mirror_draws += capture.draws;
+        stats.state_changes += capture.state_changes;
+    }
+
+    /// The mirror surfaces once more, over the opaque geometry of the world pass, with the overlay
+    /// program: one draw per mesh.
+    fn draw_mirror_surfaces(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        bound: &mut Bound,
+        stats: &mut FrameStats,
+    ) {
+        let (Some(gpu), Some(m), Some(objects)) =
+            (&self.mirror_gpu, &self.mirror, &self.object_buffer)
+        else {
+            return;
+        };
+        let Some(group) = &m.group else {
+            return;
+        };
+        let mut any = false;
+        for index in &self.mirror_surfaces {
+            let obj = &self.objects[*index as usize];
+            if !obj.visible || obj.culled || obj.layer != Layer::World {
+                continue;
+            }
+            if !any {
+                // Group 0 stays the scene of the world pass.
+                pass.set_pipeline(&gpu.pipeline);
+                pass.set_bind_group(2, group, &[]);
+                stats.state_changes += 2;
+                any = true;
+            }
+            let offset = *index as usize * self.object_stride;
+            pass.set_bind_group(1, &objects.group, &[offset as u32]);
+            stats.state_changes += 1;
+            for mesh in &self.models[obj.model.0].meshes {
+                pass.set_vertex_buffer(0, mesh.vertex.slice(..));
+                pass.set_index_buffer(mesh.index.slice(..), wgpu::IndexFormat::Uint32);
+                stats.state_changes += 1;
+                pass.draw_indexed(0..mesh.index_count, 0, 0..1);
+                stats.mirror_draws += 1;
+                stats.mirror_surface_draws += 1;
+            }
+        }
+        if any {
+            // The overlay replaced the pipeline, its layout from group 2 on and the buffers.
+            *bound = Bound::default();
+        }
+    }
+
     /// Render the scene into `target` (a view of a texture with the format given at construction).
     /// Submits the work to the queue.
     pub fn render(&mut self, target: &wgpu::TextureView, size: (u32, u32), camera: &Camera) {
@@ -2062,6 +2549,7 @@ impl Renderer {
     pub fn prepare(&mut self, size: (u32, u32), camera: &Camera) -> bool {
         let size = (size.0.max(1), size.1.max(1));
         self.ensure_depth(size);
+        self.ensure_mirror_target(size);
         let aspect = size.0 as f32 / size.1 as f32;
         let mut stats = FrameStats {
             objects: self.objects.len(),
@@ -2070,8 +2558,10 @@ impl Renderer {
         };
 
         let mut clip = [Mat4::IDENTITY; 2];
+        let mut scenes = [SceneUniform::default(); 2];
         for (i, bg) in [true, false].into_iter().enumerate() {
             let u = self.scene_uniform(camera, aspect, bg);
+            scenes[i] = u;
             clip[i] = Mat4::from_cols_array_2d(&u.proj) * camera.view;
             // A still camera (menus, pause) uploads nothing.
             if self.scene_data[i] != Some(u) {
@@ -2086,7 +2576,14 @@ impl Renderer {
         if self.opaque_dirty {
             self.rebuild_opaque();
         }
-        self.collect_translucent(&camera.view);
+        self.collect_translucent(&camera.view, false);
+        // One test of an `Option` on a stage without a mirror.
+        let (mirror_bytes, mirror_frame) = self.prepare_mirror(camera, &scenes);
+        stats.upload_bytes += mirror_bytes;
+        if let Some(frame) = mirror_frame {
+            self.cull_mirror(&frame);
+            self.collect_translucent(&frame.view, true);
+        }
         let (instance_bytes, instances_changed) = self.instances.prepare(&self.queue);
         let (quad_bytes, quads_changed) = self.quads.prepare(&self.queue);
         stats.upload_bytes += instance_bytes + quad_bytes;
@@ -2120,6 +2617,8 @@ impl Renderer {
             stats.translucent_draws = self.stats.translucent_draws;
             stats.instance_draws = self.stats.instance_draws;
             stats.quad_draws = self.stats.quad_draws;
+            stats.mirror_draws = self.stats.mirror_draws;
+            stats.mirror_surface_draws = self.stats.mirror_surface_draws;
             stats.state_changes = 0;
         }
         self.stats = stats;
@@ -2134,6 +2633,8 @@ impl Renderer {
             instance_draws: 0,
             quad_draws: 0,
             state_changes: 0,
+            mirror_draws: 0,
+            mirror_surface_draws: 0,
             ..self.stats
         };
         let (_, depth_view, _) = self.depth.as_ref().unwrap();
@@ -2148,6 +2649,9 @@ impl Renderer {
             b: self.clear_color[2],
             a: self.clear_color[3],
         };
+        if self.mirror_active {
+            self.draw_capture(&mut encoder, clear, &mut stats);
+        }
         for layer in 0..2 {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some(if layer == 0 { "background" } else { "world" }),
@@ -2178,28 +2682,23 @@ impl Renderer {
             });
             pass.set_bind_group(0, &self.scene_groups[layer], &[]);
             let mut bound = Bound::default();
-            self.draw_items(&mut pass, &self.solid[layer], false, &mut bound, &mut stats);
-            self.draw_items(
-                &mut pass,
-                &self.ordered[layer],
-                true,
-                &mut bound,
-                &mut stats,
-            );
+            let items = &self.solid[layer];
+            self.draw_items(&mut pass, items, (false, false), &mut bound, &mut stats);
+            let items = &self.ordered[layer];
+            self.draw_items(&mut pass, items, (true, false), &mut bound, &mut stats);
             // Particles live in the world layer, at the three places a `DrawOrder` names.
             let [with_opaque, before_sorted, after_sorted] = DRAW_ORDERS;
             if layer == 1 {
                 self.draw_effects(&mut pass, with_opaque, &mut bound, &mut stats);
+                // The reference's "Mirror Overlay" pass, between its opaque and translucent lists.
+                if self.mirror_active {
+                    self.draw_mirror_surfaces(&mut pass, &mut bound, &mut stats);
+                }
                 self.draw_effects(&mut pass, before_sorted, &mut bound, &mut stats);
             }
             let opaque_draws = stats.draws;
-            self.draw_items(
-                &mut pass,
-                &self.translucent[layer],
-                true,
-                &mut bound,
-                &mut stats,
-            );
+            let items = &self.translucent[layer];
+            self.draw_items(&mut pass, items, (true, false), &mut bound, &mut stats);
             stats.translucent_draws += stats.draws - opaque_draws;
             if layer == 1 {
                 self.draw_effects(&mut pass, after_sorted, &mut bound, &mut stats);
