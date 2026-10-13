@@ -15,6 +15,9 @@
 /// Web Audio backend of the game's audio system (`mb_app::audio`).
 #[cfg(target_arch = "wasm32")]
 mod audio;
+/// The browser driver: the canvas, its event loop and the frame.
+#[cfg(target_arch = "wasm32")]
+mod shell;
 
 #[cfg(target_arch = "wasm32")]
 mod web {
@@ -23,12 +26,12 @@ mod web {
     use std::io;
     use std::rc::Rc;
 
+    use crate::shell::{self, Platform};
     use js_sys::{Array, Function, Uint8Array};
     use mb_app::content::{boot_files, Content, DeferredSource, Fetch};
     use mb_app::host;
     use mb_app::import::Importer;
     use mb_app::input::{Action, Axis, InputState};
-    use mb_app::shell::{self, Platform};
     use mb_app::tilt::TiltSteering;
     use mb_app::ui::Insets;
     use mb_assets::disc::{DiscStream, ImageKind, SNIFF_LEN};

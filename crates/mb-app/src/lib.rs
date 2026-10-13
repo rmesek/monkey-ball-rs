@@ -1,4 +1,8 @@
-//! Application shell: windowing, input, game flow, platform glue.
+//! The game as a library: everything that is the same on every platform, and nothing that knows a window,
+//! an event loop or an operating system. A platform driver (`mb-desktop`, `mb-web`; see
+//! `docs/ARCHITECTURE.md`) owns the window and the GPU surface, feeds [`input::InputState`], carries out
+//! [`host::Command`]s, hands over a [`content::Content`], a `mb_game::Storage` and an
+//! [`audio::AudioBackend`], and calls [`game::GameStack::update`] and the renderer once per frame.
 //!
 //! * [`content`]: where game files come from (a disc image read in place, or imported game data that is
 //!   prepared before it is read) and the lists of files the game needs.
@@ -6,31 +10,25 @@
 //! * [`host`] / [`tilt`]: the seam to platform features (fullscreen, removing imported data, device tilt).
 //!   A game state reaches the platform through these and through [`input`] only.
 //! * [`game`]: `Game` state trait and the state stack.
-//! * [`input`]: logical actions, axes, the steering vector and the pointer; shells only feed it.
+//! * [`input`]: logical actions, axes, the steering vector and the pointer; drivers only feed it.
 //! * [`menu`]: title menu, course / stage select, options and the course flow (root state).
 //! * [`play`] + [`play_scene`] + [`particles`] + [`hud`]: one stage being played: fixed-step simulation,
 //!   3D scene, the particles and shadow on top of it, HUD.
-//! * [`audio`]: sounds, music and the backend trait (`audio_cpal`: native device output). See `docs/AUDIO.md`.
+//! * [`audio`]: sounds, music and the backend trait (`audio_cpal`: device output on native targets; the
+//!   browser has its own in `mb-web`). See `docs/AUDIO.md`.
 //! * [`text`] / [`widgets`]: sprite fonts from the disc and the menu list widget.
 //! * [`stage_scene`] / [`stage_info`] / [`anim`]: assembling an SMB1 stage into renderer objects;
 //!   [`backdrop`]: what the night, storm and sunset backgrounds animate; [`mirror`]: which stages have a
 //!   mirror floor and in which plane.
 //! * [`import`]: copying the files the game uses out of a disc image into a game pack, a piece at a time.
-//! * [`ui`]: safe-area layout and the on-screen touch controls. [`gpu`]: adapter and device setup shared by
-//!   the drivers. [`perf`]: frame statistics for the `?fps=1` overlay and the browser check.
-//! * The drivers, one per target: [`app`] is the desktop window (blocking GPU setup, vsync pacing, native
-//!   gamepads, a mouse pointer) and `shell` is the browser canvas (asynchronous GPU setup, frames from
-//!   `requestAnimationFrame`, platform hooks for `mb-web`). They share everything above them: the state
-//!   stack, `InputState`, the touch controls, the renderer.
+//! * [`ui`]: safe-area layout and the on-screen touch controls. [`gpu`]: what every driver does the same
+//!   way when it sets the GPU up. [`perf`]: frame statistics for the `?fps=1` overlay and the browser check.
 //! * Behind the `dev` feature (on for this crate's tests, off in the product): `headless` (windowless
 //!   driver with scripted input), `autopilot` and `image`. See `docs/GAMEPLAY.md`.
 
 pub mod anim;
-// The desktop driver; the browser's is `shell`.
-#[cfg(not(target_arch = "wasm32"))]
-pub mod app;
 pub mod audio;
-// Device output through cpal on desktop. The browser shell has its own Web Audio backend.
+// Device output through cpal on native targets. The browser driver has its own Web Audio backend.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod audio_cpal;
 // A closed-loop player for scripted runs and tests.
@@ -58,9 +56,6 @@ pub mod particles;
 pub mod perf;
 pub mod play;
 pub mod play_scene;
-// The browser driver (`mb-web` supplies the platform hooks).
-#[cfg(target_arch = "wasm32")]
-pub mod shell;
 pub mod stage_info;
 pub mod stage_scene;
 pub mod text;
@@ -68,12 +63,12 @@ pub mod tilt;
 pub mod ui;
 pub mod widgets;
 
-/// Re-exported so shells can implement [`audio::AudioBackend`] (its buffers are `mb_audio` sounds).
+/// Re-exported so drivers can implement [`audio::AudioBackend`] (its buffers are `mb_audio` sounds).
 pub use mb_audio;
-/// Re-exported so shells can name `Storage` implementations without depending on `mb-game` themselves.
+/// Re-exported so drivers can name `Storage` implementations without depending on `mb-game` themselves.
 pub use mb_game;
 
-/// The state every platform shell starts in once content is open: the title menu. `storage` is where the
+/// The state every platform driver starts in once content is open: the title menu. `storage` is where the
 /// profile (progress, settings) is kept: `mb_game::FileStorage` on desktop, the platform's own elsewhere.
 pub fn initial_game(storage: Box<dyn mb_game::Storage>) -> Box<dyn game::Game> {
     Box::new(menu::Menu::new(storage))

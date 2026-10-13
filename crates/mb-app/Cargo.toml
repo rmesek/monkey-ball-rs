@@ -1,21 +1,20 @@
 [package]
 name = "mb-app"
-description = "The game above the engine: states (menus, loading, play, HUD), input, audio, content access; the desktop program and the browser driver"
+description = "The game as a library, the same on every platform: states (menus, loading, play, HUD), scene assembly, the input, host and content seams. No window, no event loop: the platform drivers (mb-desktop, mb-web) are built on it"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
 
-[[bin]]
-name = "mb-app"
-path = "src/main.rs"
-
 [features]
 # Developer and test support that is not part of the product: the windowless driver and the autopilot the
-# integration tests run on, test doubles (`DeferredPack`, `RecordingBackend`), and the program's `--autoplay`
-# and `--exit-after` options. Off in `cargo build` / `cargo run` and in the browser build; on for this crate's
-# own tests through the dev-dependency below.
+# integration tests run on, and test doubles (`DeferredPack`, `RecordingBackend`). Off in every product
+# build; on for this crate's own tests through the dev-dependency below, and for the desktop program's
+# developer options through `mb-desktop`'s `dev` feature.
 dev = []
+# `input::action_for_key`: the keyboard bindings in terms of winit's key codes, for drivers built on winit.
+# Nothing else in this crate knows about a window.
+winit = ["dep:winit"]
 
 [dependencies]
 mb-assets = { path = "../mb-assets" }
@@ -26,9 +25,8 @@ mb-render = { path = "../mb-render" }
 mb-engine = { path = "../mb-engine" }
 mb-game = { path = "../mb-game" }
 mb-audio = { path = "../mb-audio" }
-# Window + input event loop for the desktop window and the browser canvas (decision recorded in docs/PLAN.md).
-# 0.30 is the latest stable release (0.31 is still beta).
-winit = "0.30"
+# Key codes only, and only with the `winit` feature (see above). The same version as the drivers.
+winit = { version = "0.30", optional = true }
 # Same wgpu version as mb-render so Device/Queue/Surface types are shared.
 wgpu = "30"
 # Camera/transform maths shared with mb-render's public API.
@@ -37,18 +35,14 @@ glam = "0.30"
 # timings, the browser driver's clock).
 web-time = "1"
 
-# The desktop program only (the browser has Web Audio, the Gamepad API and the page's file input instead).
+# Native targets (desktop now, a native Android or iOS app later); the browser has Web Audio and awaits.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-# Blocks on the async wgpu adapter/device requests (the browser driver awaits them instead).
+# Blocks on the async wgpu adapter/device requests (`gpu::request_gpu`; the browser driver awaits them).
 pollster = "0.4"
-# Audio device output stream (WASAPI / CoreAudio / ALSA): pulls PCM from mb-audio's mixer.
+# Audio device output stream (WASAPI / CoreAudio / ALSA; AAudio on Android): pulls PCM from mb-audio's mixer.
 cpal = "0.16"
-# Native "open file" dialog so the disc image can be picked without a command line.
-rfd = "0.17"
-# Gamepad input (XInput / evdev / IOKit).
-gilrs = "0.11"
 
 [dev-dependencies]
-# This crate itself with `dev` on: `cargo test` then builds the library, the tests and the binary the kill
-# test starts with the test support compiled in, and needs no flag.
-mb-app = { path = ".", features = ["dev"] }
+# This crate itself with `dev` on: `cargo test` then builds the library and the tests with the test support
+# compiled in, and needs no flag. `winit` so the key binding test runs when this crate is tested alone.
+mb-app = { path = ".", features = ["dev", "winit"] }

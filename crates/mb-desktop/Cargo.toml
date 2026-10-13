@@ -1,0 +1,38 @@
+[package]
+name = "mb-desktop"
+description = "The desktop program (Windows, Linux, macOS): the window and its event loop, native gamepads, the file dialog, the command line"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# The executable keeps the name it has had since 0.1.0.
+[[bin]]
+name = "mb-app"
+path = "src/main.rs"
+
+[features]
+# The developer options of the command line (`--autoplay`, `--exit-after`), which need the game library's
+# test support. Off in `cargo build` / `cargo run`; on for this crate's own test through the dev-dependency
+# below.
+dev = ["mb-app/dev"]
+
+[dependencies]
+# The game; `winit` switches on its keyboard bindings for winit's key codes.
+mb-app = { path = "../mb-app", features = ["winit"] }
+mb-game = { path = "../mb-game" }
+mb-render = { path = "../mb-render" }
+# Window + input event loop (decision recorded in docs/PLAN.md). 0.30 is the latest stable release (0.31 is
+# still beta).
+winit = "0.30"
+# Same wgpu version as mb-render so Device/Queue/Surface types are shared.
+wgpu = "30"
+# Native "open file" dialog so the disc image can be picked without a command line.
+rfd = "0.17"
+# Gamepad input (XInput / evdev / IOKit).
+gilrs = "0.11"
+
+[dev-dependencies]
+# This crate itself with `dev` on: `cargo test` then builds the binary the kill test starts with the
+# developer options compiled in, and needs no flag.
+mb-desktop = { path = ".", features = ["dev"] }

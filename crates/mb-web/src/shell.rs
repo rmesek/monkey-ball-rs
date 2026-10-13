@@ -1,6 +1,6 @@
-//! The browser driver (wasm32 only; `mb-web` starts it and supplies the [`Platform`] hooks).
+//! The browser driver (wasm32 only; `lib.rs` starts it and supplies the [`Platform`] hooks).
 //!
-//! The desktop driver (`app.rs`) blocks on GPU setup and uses `std::time`; neither works in the browser (no
+//! The desktop driver (`mb-desktop`'s `app.rs`) blocks on GPU setup and uses `std::time`; neither works in the browser (no
 //! blocking, `Instant::now` panics). This driver therefore (a) runs GPU setup through
 //! [`Platform::run_local`], which spawns it on the JS event loop, and (b) uses `web_time` clocks. What the
 //! page knows and the game does not (safe-area insets, gamepads, tilt, the back gesture, error display) comes
@@ -31,12 +31,12 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowAttributes, WindowId};
 
-use crate::content::Content;
-use crate::game::{Game, GameCtx, GameStack};
-use crate::gpu::{pick_surface_format, Gpu};
-use crate::input::{action_for_key, Action, InputState};
-use crate::perf::FrameSample;
-use crate::ui::{Insets, Layout, TouchControls, TouchPhase};
+use mb_app::content::Content;
+use mb_app::game::{Game, GameCtx, GameStack};
+use mb_app::gpu::{pick_surface_format, required_limits, Gpu};
+use mb_app::input::{action_for_key, Action, InputState};
+use mb_app::perf::FrameSample;
+use mb_app::ui::{Insets, Layout, TouchControls, TouchPhase};
 
 /// Hooks a platform shell provides to the shared driver. All methods have neutral defaults.
 pub trait Platform: 'static {
@@ -49,7 +49,7 @@ pub trait Platform: 'static {
         Insets::default()
     }
     /// Per-frame polling of non-event input: gamepads, device tilt, a system "back" gesture. This is also
-    /// where a shell handles what game states asked of it (`crate::host::drain`).
+    /// where a shell handles what game states asked of it (`mb_app::host::drain`).
     fn poll_input(&mut self, _input: &mut InputState) {}
     /// Called every frame with the top state's [`Game::nav_depth`]: while it is not zero a system "back"
     /// should go back inside the game instead of leaving it.
@@ -161,18 +161,8 @@ struct Shell<P: Platform> {
 /// Instance for the browser: of `backends`, WebGPU when the browser really provides an adapter, otherwise
 /// WebGL2. `Instance::new` cannot find that out (it is synchronous), so the web path creates the instance here.
 async fn web_instance(backends: wgpu::Backends) -> wgpu::Instance {
-    let desc = crate::gpu::instance_descriptor(Some(backends));
+    let desc = mb_app::gpu::instance_descriptor(Some(backends));
     wgpu::util::new_instance_with_webgpu_detection(desc).await
-}
-
-/// Limits to request. GL/WebGL2 adapters get the WebGL2 baseline (raised to the adapter's texture size), which
-/// is what the renderer is written against; requesting everything a GL adapter reports is not portable.
-fn required_limits(adapter: &wgpu::Adapter) -> wgpu::Limits {
-    if adapter.get_info().backend == wgpu::Backend::Gl {
-        wgpu::Limits::downlevel_webgl2_defaults().using_resolution(adapter.limits())
-    } else {
-        adapter.limits()
-    }
 }
 
 async fn init_gpu(

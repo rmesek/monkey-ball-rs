@@ -22,5 +22,5 @@ Cargo.lock.bak
 .vscode/
 *.log
 
-# The built site (scripts/build-web.*)
+# The built site (cargo xtask build-web)
 web/dist/

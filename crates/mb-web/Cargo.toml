@@ -10,10 +10,13 @@ publish.workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-mb-app = { path = "../mb-app" }
+# The game; `winit` switches on its keyboard bindings for winit's key codes.
+mb-app = { path = "../mb-app", features = ["winit"] }
 mb-assets = { path = "../mb-assets" }
-# Same versions as mb-app so the types are shared.
+mb-render = { path = "../mb-render" }
+# The canvas as a window and its event loop (`src/shell.rs`); the same version as the desktop driver.
 winit = "0.30"
+# Same wgpu version as mb-render so the types are shared; `webgl` adds the WebGL2 backend.
 wgpu = { version = "30", features = ["webgl"] }
 
 # Everything below only exists on wasm32: on the host this crate is empty, so workspace-wide commands pass.
@@ -33,5 +36,7 @@ web-sys = { version = "0.3", features = [
     "AudioScheduledSourceNode", "AudioNode", "AudioParam", "AudioDestinationNode", "GainNode",
     "StereoPannerNode", "AnalyserNode", "EventTarget",
 ] }
+# The driver's clock: std::time::Instant panics on wasm32.
+web-time = "1"
 # Panics become console.error messages instead of "unreachable executed".
 console_error_panic_hook = "0.1"

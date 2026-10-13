@@ -1,5 +1,6 @@
-//! wgpu adapter / device setup of the desktop window and the windowless test driver (blocking; the browser
-//! driver sets its device up asynchronously in `shell`), and the surface format both drivers pick.
+//! What every platform driver does the same way when it sets the GPU up: the instance, the limits to ask
+//! for, the surface format, and the blocking adapter / device request of the native drivers and of the
+//! windowless test driver (the browser driver awaits the same requests in `mb-web`'s `shell.rs`).
 
 pub struct Gpu {
     pub instance: wgpu::Instance,
@@ -35,6 +36,18 @@ pub fn instance_descriptor(backends: Option<wgpu::Backends>) -> wgpu::InstanceDe
     descriptor
 }
 
+/// Limits to request. GL adapters (WebGL2 in the browser, OpenGL ES on a phone, OpenGL on a desktop without
+/// anything newer) get the WebGL2 baseline, raised to the adapter's texture size, which is what the renderer
+/// is written against; requesting everything a GL adapter reports is not portable. The other backends
+/// (Vulkan, Metal, DX12, WebGPU) get what the adapter has.
+pub fn required_limits(adapter: &wgpu::Adapter) -> wgpu::Limits {
+    if adapter.get_info().backend == wgpu::Backend::Gl {
+        wgpu::Limits::downlevel_webgl2_defaults().using_resolution(adapter.limits())
+    } else {
+        adapter.limits()
+    }
+}
+
 /// Request an adapter and device. With `compatible_surface` the adapter can present to it; without one
 /// (headless) a software adapter is accepted as a fallback so screenshots work on machines without a GPU.
 #[cfg(not(target_arch = "wasm32"))]
@@ -67,7 +80,7 @@ pub fn request_gpu(
         let device = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("mb device"),
             required_features: wgpu::Features::empty(),
-            required_limits: adapter.limits(),
+            required_limits: required_limits(&adapter),
             ..Default::default()
         }));
         match device {

@@ -1,6 +1,16 @@
 [workspace]
 resolver = "2"
-members = ["crates/mb-assets", "crates/mb-engine", "crates/mb-tpl", "crates/mb-gma", "crates/mb-stage", "crates/mb-audio", "crates/mb-render", "crates/mb-app", "crates/mb-web", "crates/mb-game", "xtask"]
+members = [
+    # Files and formats (std only).
+    "crates/mb-assets", "crates/mb-stage", "crates/mb-tpl", "crates/mb-gma", "crates/mb-audio",
+    # Simulation and rules (std only).
+    "crates/mb-engine", "crates/mb-game",
+    # Drawing (wgpu) and the game itself: the same on every platform.
+    "crates/mb-render", "crates/mb-app",
+    # One crate per platform.
+    "crates/mb-desktop", "crates/mb-web",
+    "xtask",
+]
 
 [workspace.package]
 version = "0.2.0"

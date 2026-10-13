@@ -1,7 +1,7 @@
 //! Desktop driver: winit event loop, wgpu surface and the per-frame update / render loop, plus the
 //! desktop-only devices (mouse pointer, native gamepads) and window niceties (fullscreen, fps in the title).
-//! Everything game-specific lives in [`crate::game::Game`] states; the browser has its own driver (`shell.rs`,
-//! which explains why there are two) and feeds the same `InputState`.
+//! Everything game-specific lives in [`mb_app::game::Game`] states; the browser has its own driver
+//! (`mb-web`'s `shell.rs`, which explains why there are two) and feeds the same `InputState`.
 //!
 //! Pacing: the surface presents with vsync (`Fifo`), so the loop runs once per display refresh without
 //! spinning; game states advance their simulation in fixed 60 Hz ticks from `ctx.dt`. While the window is
@@ -17,11 +17,11 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, ModifiersState, PhysicalKey};
 use winit::window::{Fullscreen, Window, WindowId};
 
-use crate::content::Content;
-use crate::game::{Game, GameCtx, GameStack};
-use crate::gpu::{pick_surface_format, request_gpu, Gpu};
-use crate::input::{action_for_key, Action, Axis, InputState};
-use crate::ui::{Insets, Layout, TouchControls, TouchPhase};
+use mb_app::content::Content;
+use mb_app::game::{Game, GameCtx, GameStack};
+use mb_app::gpu::{pick_surface_format, request_gpu, Gpu};
+use mb_app::input::{action_for_key, Action, Axis, InputState};
+use mb_app::ui::{Insets, Layout, TouchControls, TouchPhase};
 
 /// Pixels scrolled per mouse-wheel notch.
 const WHEEL_LINE: f32 = 60.0;
@@ -35,7 +35,7 @@ pub struct WindowOptions {
     pub exit_after: Option<f32>,
     pub fullscreen: bool,
     /// The game's audio system, to silence it while the window is hidden. The game states hold clones.
-    pub audio: Option<crate::audio::Audio>,
+    pub audio: Option<mb_app::audio::Audio>,
 }
 
 /// Frame pacing measured over a session.

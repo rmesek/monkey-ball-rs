@@ -311,7 +311,8 @@ impl InputState {
     }
 }
 
-/// Default desktop keyboard bindings.
+/// Default keyboard bindings, for drivers built on winit.
+#[cfg(feature = "winit")]
 pub fn action_for_key(key: winit::keyboard::KeyCode) -> Option<Action> {
     use winit::keyboard::KeyCode as K;
     Some(match key {
@@ -422,6 +423,7 @@ mod tests {
         assert_eq!(i.menu_nav(), (0, 0));
     }
 
+    #[cfg(feature = "winit")]
     #[test]
     fn keyboard_bindings() {
         assert_eq!(

@@ -1,12 +1,16 @@
-//! The desktop program.
+//! The desktop program (Windows, Linux, macOS): one of the platform drivers on top of the game library
+//! `mb-app` (see `docs/ARCHITECTURE.md`). [`app`] is the window and its event loop; this file is the command
+//! line, the file dialog and where the disc image and the saves are found.
 //!
-//! `mb-app` opens the disc image used last time, or asks for one with a file dialog; `mb-app <disc image>`
+//! The executable is called `mb-app`. It opens the disc image used last time, or asks for one with a file dialog; `mb-app <disc image>`
 //! uses that image. The game starts at the title menu. Options are listed in [`USAGE`]; a build with the
 //! `dev` feature adds the developer ones in [`DEV_USAGE`].
 
 use std::path::{Path, PathBuf};
 
-use mb_app::app::WindowOptions;
+pub mod app;
+
+use app::WindowOptions;
 use mb_app::audio::Audio;
 use mb_app::content::{open_disc_image, Content, LAST_DISC_KEY};
 use mb_app::menu::{Autostart, Menu};
@@ -362,7 +366,7 @@ fn run() -> Result<(), String> {
         fullscreen: args.fullscreen,
         audio: audio.clone(),
     };
-    let stats = mb_app::app::run_windowed(content, Box::new(menu), options)?;
+    let stats = app::run_windowed(content, Box::new(menu), options)?;
     if args.dev.exit_after().is_some() {
         // A timed run reports what it measured.
         println!("{}", stats.summary());

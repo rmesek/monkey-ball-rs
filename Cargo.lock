@@ -1176,7 +1176,6 @@ name = "mb-app"
 version = "0.2.0"
 dependencies = [
  "cpal",
- "gilrs",
  "glam",
  "mb-app",
  "mb-assets",
@@ -1188,7 +1187,6 @@ dependencies = [
  "mb-stage",
  "mb-tpl",
  "pollster",
- "rfd",
  "web-time",
  "wgpu",
  "winit",
@@ -1207,6 +1205,20 @@ name = "mb-audio"
 version = "0.2.0"
 dependencies = [
  "mb-assets",
+]
+
+[[package]]
+name = "mb-desktop"
+version = "0.2.0"
+dependencies = [
+ "gilrs",
+ "mb-app",
+ "mb-desktop",
+ "mb-game",
+ "mb-render",
+ "rfd",
+ "wgpu",
+ "winit",
 ]
 
 [[package]]
@@ -1263,9 +1275,11 @@ dependencies = [
  "js-sys",
  "mb-app",
  "mb-assets",
+ "mb-render",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
+ "web-time",
  "wgpu",
  "winit",
 ]

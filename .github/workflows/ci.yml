@@ -9,7 +9,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # rust-toolchain.toml names the toolchain, its components and the wasm32 target.
+      # rust-toolchain.toml names the toolchain, its components and the wasm32 and Android targets.
       - run: rustup show
       # Headers for the desktop crates' Linux backends (audio, gamepads, the file dialog, windowing).
       - run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev libgtk-3-dev libxkbcommon-dev libwayland-dev

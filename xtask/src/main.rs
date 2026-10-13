@@ -20,7 +20,7 @@ const USAGE: &str = "usage:
       needs the wasm-bindgen command at the version of the wasm-bindgen crate in Cargo.lock
   cargo xtask check
       the quality gates: no game data tracked, cargo fmt, clippy (workspace, desktop program as shipped,
-      browser build) and cargo test --workspace --release";
+      browser build, the game library for Android) and cargo test --workspace --release";
 
 /// Files that are game data whatever their content: they must never be tracked.
 const GAME_DATA_EXTENSIONS: [&str; 12] = [
@@ -232,7 +232,7 @@ fn check() -> Result<(), String> {
             }
         }
     }
-    let gates: [&[&str]; 5] = [
+    let gates: [&[&str]; 6] = [
         &["fmt", "--all", "--", "--check"],
         &[
             "clippy",
@@ -243,7 +243,7 @@ fn check() -> Result<(), String> {
             "warnings",
         ],
         // The product configurations: the desktop program without the dev feature, and the browser build.
-        &["clippy", "-p", "mb-app", "--", "-D", "warnings"],
+        &["clippy", "-p", "mb-desktop", "--", "-D", "warnings"],
         &[
             "clippy",
             "-p",
@@ -255,6 +255,25 @@ fn check() -> Result<(), String> {
             "--",
             "-D",
             "warnings",
+        ],
+        // The game library and everything under it for a native Android target: no app is built from
+        // it yet, but nothing shared may stop compiling there (docs/ARCHITECTURE.md). Needs only the
+        // target's standard library (rust-toolchain.toml), no NDK.
+        &[
+            "clippy",
+            "-p",
+            "mb-app",
+            "--target",
+            "aarch64-linux-android",
+            "--target-dir",
+            "target/android",
+            "--",
+            "-D",
+            "warnings",
+            // False there: Android has no native thread-locals, and the lint does not see the `const`
+            // through the expansion `thread_local!` has on such targets.
+            "-A",
+            "clippy::missing_const_for_thread_local",
         ],
         &["test", "--workspace", "--release"],
     ];
