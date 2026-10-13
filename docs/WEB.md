@@ -15,8 +15,7 @@ Needs Rust and nothing else: the `wasm32-unknown-unknown` target comes with the 
 (`rust-toolchain.toml` names it), and the build tool links wasm-bindgen's post-processing as a library at
 the version of the `wasm-bindgen` crate (both pinned; a test compares them).
 
-`cargo web` builds the site and serves it on `http://localhost:8080` (`--port N` for another port).
-`cargo xtask build-web` only builds it, into `target/site/` (git-ignored):
+`cargo web` (an alias of `cargo xtask build-web`) builds it into `target/site/`:
 
 ```
 cargo xtask build-web [--dev]

@@ -1,25 +1,21 @@
 //! The project's build tool: one entry point on every platform, no shell scripts.
 //!
 //! ```text
-//! cargo web [--dev] [--port N]          build the static web site and serve it on this machine
-//! cargo xtask build-web [--dev]         build the static web site into target/site/
+//! cargo web [--dev]                     build the static web site into target/site/
 //! cargo xtask check                     run the quality gates (AGENTS.md)
 //! ```
-//! `cargo web` and `cargo xtask` are aliases in `.cargo/config.toml` (and `cargo desktop` runs the desktop
-//! program).
+//! `cargo web` is `cargo xtask build-web`; both, and `cargo desktop` (which runs the desktop program), are
+//! aliases in `.cargo/config.toml`. The tool builds; it serves nothing.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 mod bundle;
-mod serve;
 
 const USAGE: &str = "usage:
-  cargo web [--dev] [--port N]
-      build the site (as build-web) and serve it on http://localhost:8080 until Ctrl+C
-  cargo xtask build-web [--dev]
+  cargo web [--dev]        (the same as: cargo xtask build-web [--dev])
       build the browser target and assemble the static site in target/site/, to be hosted by any static
-      file server (python -m http.server will do)
+      file server: python -m http.server -d target/site 8080
         --dev     unoptimised build (quick to compile, slow to run; keeps function names for stack traces)
   cargo xtask check
       the quality gates: no game data tracked, cargo fmt, clippy (workspace, desktop program as shipped,
@@ -164,21 +160,16 @@ fn build_web(dev: bool) -> Result<PathBuf, String> {
     Ok(out)
 }
 
-/// `--dev` and `--port N` of the web commands.
-fn web_options(args: impl Iterator<Item = String>, port: bool) -> Result<(bool, u16), String> {
-    let (mut dev, mut number) = (false, 8080);
-    let mut args = args;
-    while let Some(arg) = args.next() {
+/// The one option of the web build.
+fn web_options(args: impl Iterator<Item = String>) -> Result<bool, String> {
+    let mut dev = false;
+    for arg in args {
         match arg.as_str() {
             "--dev" => dev = true,
-            "--port" if port => {
-                number = (args.next().and_then(|v| v.parse().ok()))
-                    .ok_or(format!("--port needs a number\n{USAGE}"))?
-            }
             other => return Err(format!("unknown option {other}\n{USAGE}")),
         }
     }
-    Ok((dev, number))
+    Ok(dev)
 }
 
 /// Tracked files that look like game data (by extension).
@@ -265,13 +256,13 @@ fn check() -> Result<(), String> {
 fn main() {
     let mut args = std::env::args().skip(1);
     let result = match args.next().as_deref() {
-        Some("build-web") => web_options(args, false).and_then(|(dev, _)| {
+        Some("build-web") => web_options(args).and_then(|dev| {
             build_web(dev)?;
-            println!("host that folder with any static file server: python -m http.server -d target/site 8080");
+            println!(
+                "host that folder with any static file server: python -m http.server -d target/site 8080"
+            );
             Ok(())
         }),
-        Some("web") => web_options(args, true)
-            .and_then(|(dev, port)| build_web(dev).and_then(|dist| serve::run(&dist, port))),
         Some("check") if args.next().is_none() => check(),
         _ => {
             eprintln!("{USAGE}");

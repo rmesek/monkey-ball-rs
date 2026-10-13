@@ -97,6 +97,16 @@ Nothing is started. What exists and what is missing:
 | Gamepads | Gamepad API | missing: `gilrs` has no Android backend |
 | Guide | [ANDROID_WEBVIEW.md](ANDROID_WEBVIEW.md) | this table |
 
+**Where a native app keeps the game.** The image is needed once, at first setup. The document picker
+hands the app a file descriptor for the file the user chose; `import_to_file` copies the 145 MB the game
+uses out of it into `game.pack` in the app's internal files directory, where the saves go too. From then on
+the app opens that pack and never asks for the image, which the user may delete. Internal storage belongs
+to the app: it needs no permission, no other app can read it, and it lasts until the user clears the app's
+data or uninstalls it, which is exactly when the game should ask again. No permission on the original
+file has to be kept. The pack should be left out of the system's cloud backup (it is far over the size
+limit and can be imported again); the saves can stay in. This is the desktop's model with another
+directory, and the code for it is the code the desktop already runs.
+
 What will cost the most in a native port, in order:
 
 1. **The surface life cycle.** Android destroys the surface whenever the app leaves the screen. Both
@@ -123,7 +133,6 @@ Findings of a read-through, not yet acted on. None is a fault a player sees.
 | The platform seam is global state: capabilities, info lines and the command queue are thread-locals | `mb-app/src/host.rs` | carry them in `GameCtx`; tests then need no resetting |
 | Two drivers repeat touch routing, frame set-up and surface errors | `mb-desktop/src/app.rs`, `mb-web/src/shell.rs` | see "Adding Android", 2 |
 | The desktop import runs before the window opens; progress goes to the terminal only | `mb-desktop/src/lib.rs` | acceptable at a second or two; a loading state if it ever is not |
-| The browser has a second way to read the game ("live": from the picked file, where the page may not store) | `web/worker.js`, `web/main.js`, `mb-web/src/lib.rs` | drop it if "needs storage" is an acceptable requirement; it is what makes plain-http addresses and private windows work |
 | Frame statistics for the browser test ship in the product | `mb-app/src/perf.rs`, `mb-web` | kept so the test measures the real build |
 | Calls on the renderer that only tests use; a material flag no file on the disc sets | `set_mirror_capture_whole`, `set_mirror_scale`, `set_color_mul`, `set_tex_matrix`; `LayerInfo::uv_scroll` | remove with their tests |
 | Some budget constants are still named after version 0.1.0 | `mb-app/tests/memory.rs`, `xtask`, `scripts/web-e2e.ts` | rename; the numbers are the budgets |

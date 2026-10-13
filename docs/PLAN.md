@@ -39,7 +39,7 @@ its voices, jingles, menu music, minigames).
 | The desktop program | `mb-desktop` | the kill test |
 | The static site | `mb-web`, `web/` | `scripts/web-e2e.ts` |
 
-Last run of everything, 2026-10-13, Windows 11, USA disc: `cargo xtask check` passes with 549
+Last run of everything, 2026-10-13, Windows 11, USA disc: `cargo xtask check` passes with 548
 tests; `deno run -A scripts/web-e2e.ts` passes its 93 checks in Chrome 154.
 
 ## Budgets
@@ -96,7 +96,6 @@ Each is a statement about where the evidence stops.
 | Licence | `Cargo.toml` declares `MIT OR Apache-2.0`; there is no `LICENSE` file, and the reference this code was ported from carries no licence statement. For the owner to settle before publishing more widely. |
 | The review findings | [ARCHITECTURE.md](ARCHITECTURE.md), "Review": ten places where the code is harder to change than it should be. None acted on. |
 | Desktop import feedback | The import runs before the window opens and reports to the terminal only: a program started by double-click shows nothing for a second or two. |
-| The browser's second content path | Where a page may not store data it plays from the picked file ("live" mode). Dropping it would remove a path through page, worker and glue; it is what keeps plain-http addresses and private windows working. Owner's call. |
 | Tilt without readings | If the device never delivers sensor readings there is no stick to fall back on until the player switches Options -> Controls back. |
 | Phones | Nothing ran on a real phone. The file chooser asks for `application/octet-stream`; a file manager that reports the image under another type greys it out, hence the "show all files" button. |
 | Continue rule | "Continue resets the score and keeps the bananas", game over, five continues and the 1UP per 100 bananas come from memory of the original, not from a source. |
@@ -115,7 +114,12 @@ Each is a statement about where the evidence stops.
 - **One crate per platform** on a game library without a window; the next platform is another crate.
 - **Game data is imported once on every platform** into one pack: a file on the desktop (and later on
   Android), the private file system in the browser. The image is not needed afterwards.
-- **One command per target:** `cargo desktop`, `cargo web`. No shell scripts, nothing to install but Rust.
+- **One command per target:** `cargo desktop` runs the program, `cargo web` builds the site into
+  `target/site/`. The build tool builds and serves nothing: hosting is the user's own static file server.
+  No shell scripts, nothing to install but Rust.
+- **The browser target works where a page may not store data** (private windows, plain-http addresses):
+  it then plays from the picked file and asks for it again next time. This second way of reading the game
+  stays for that reason.
 - **The site is plain files** that a server no more capable than `python -m http.server` can host: no
   custom headers, so no threads; relative paths; WebGL2 as a first-class backend.
 - **Graphics:** `wgpu`, one renderer for every target, nothing beyond WebGL2's limits.

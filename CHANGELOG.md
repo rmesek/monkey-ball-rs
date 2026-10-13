@@ -8,8 +8,9 @@ The same game, made smaller and easier to understand, port and change. Nothing n
 
 For a player:
 
-- **One command per target:** `cargo desktop` and `cargo web` (builds the site and serves it on
-  `http://localhost:8080`). Nothing to install but Rust: the web build no longer needs the `wasm-bindgen`
+- **One command per target:** `cargo desktop` runs the desktop program, `cargo web` builds the site into
+  `target/site/` (it used to be `web/dist/`), to be hosted with any static file server such as
+  `python -m http.server`. Nothing to install but Rust: the web build no longer needs the `wasm-bindgen`
   command.
 - **The desktop imports the game once**, like the browser: the files the game uses are copied into
   `game.pack` in the data folder, and the disc image is not needed after that. Options has "Remove game
@@ -39,7 +40,7 @@ Under the hood:
   supplies, a review of what is hard to change), `docs/PLAN.md` (state and open items). The plan of the
   port and the notes on the reference are deleted; the notes on single subjects stay.
 - **Rust edition 2024.**
-- **Size and tests:** the wasm module is 4 009 217 bytes (0.2.0: 4 016 134); 549 tests; the
+- **Size and tests:** the wasm module is 4 009 217 bytes (0.2.0: 4 016 134); 548 tests; the
   browser test makes 93 checks.
 
 ## 0.2.0

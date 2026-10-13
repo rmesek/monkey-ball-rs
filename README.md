@@ -27,16 +27,16 @@ Web browser:
 
 ```
 cargo web
+python -m http.server -d target/site 8080
 ```
 
-and open `http://localhost:8080`. Both commands work the same in every shell on Windows, Linux and macOS.
+and open `http://localhost:8080`. `cargo web` builds the site into `target/site/` as plain files and serves
+nothing; any static file server can host that folder, from any path. The commands work the same in every
+shell on Windows, Linux and macOS.
 
 The first time, the game asks for the disc image and copies the files it uses (about 145 MB) into its own
 storage: the program's data folder on the desktop, the site's private storage in the browser. After that it
 starts without the image.
-
-`cargo web` leaves the site in `target/site/` as plain files. Any static file server can host that folder
-(`python -m http.server -d target/site 8080`); `cargo xtask build-web` builds it without serving.
 
 ## Controls
 

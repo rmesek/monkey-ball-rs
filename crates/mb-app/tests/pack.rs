@@ -95,13 +95,14 @@ fn a_pack_file_reads_as_the_image_does_and_a_cut_import_leaves_none() {
     let pack = dir.join("game.pack");
     let image = mb_app::content::open_disc_image(&path).unwrap();
 
+    // From an open file, not a path: what a platform has that is handed a file descriptor.
+    let opened = FileStream::from(std::fs::File::open(&path).unwrap());
     let mut calls = 0;
-    let len =
-        mb_app::import::import_to_file(FileStream::open(&path).unwrap(), &pack, &mut |d, t| {
-            assert!(d <= t);
-            calls += 1;
-        })
-        .unwrap();
+    let len = mb_app::import::import_to_file(opened, &pack, &mut |d, t| {
+        assert!(d <= t);
+        calls += 1;
+    })
+    .unwrap();
     assert!(calls > 100, "progress was reported {calls} times");
     assert_eq!(len, std::fs::metadata(&pack).unwrap().len());
     assert_eq!(len, pack_bytes().unwrap().len() as u64);

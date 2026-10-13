@@ -23,8 +23,8 @@ a WebView and natively; do not start it, or any other target, unless the owner a
    or `Super Monkey Ball*.rvz|iso|gcm` in the directory that contains the repository) and skip without it.
 3. **Never modify, move or rename the user's disc image.** It is opened read-only.
 4. **Strictly offline.** No networking crates. The page requests nothing but its own files, and its
-   Content-Security-Policy says so. (`cargo web` serves the built site on this machine; that is the build
-   tool, not the game.)
+   Content-Security-Policy says so. The build tool serves nothing either: it builds, and hosting the
+   built site is the user's own static file server.
 5. **Rust only** for the game and the build tool; no shell scripts. The exceptions are the page (`web/`)
    and the browser test (`scripts/web-e2e.ts`).
 6. **Every third-party dependency has a one-line reason** in its `Cargo.toml`. Remove one when its last
