@@ -161,8 +161,7 @@ struct Shell<P: Platform> {
 /// Instance for the browser: of `backends`, WebGPU when the browser really provides an adapter, otherwise
 /// WebGL2. `Instance::new` cannot find that out (it is synchronous), so the web path creates the instance here.
 async fn web_instance(backends: wgpu::Backends) -> wgpu::Instance {
-    let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
-    desc.backends = backends;
+    let desc = crate::gpu::instance_descriptor(Some(backends));
     wgpu::util::new_instance_with_webgpu_detection(desc).await
 }
 
@@ -431,6 +430,7 @@ impl<P: Platform> Shell<P> {
         }
         let camera = top.camera();
         let animating = top.play_view().is_some_and(|v| !v.paused);
+        let shadow = top.play_view().is_some_and(|v| v.shadow);
         let ticks = match (tick_before, top.play_view().map(|v| v.sim.tick)) {
             (Some(a), Some(b)) => b.saturating_sub(a),
             _ => 0,
@@ -476,6 +476,10 @@ impl<P: Platform> Shell<P> {
             state_changes: stats.state_changes as u32,
             upload_bytes: stats.upload_bytes as u32,
             wakeups: std::mem::take(&mut self.wakeups),
+            mirror_draws: stats.mirror_draws as u32,
+            instances: stats.instances as u32,
+            quads: stats.quads as u32,
+            shadow,
         };
         self.platform.on_frame(&sample);
     }

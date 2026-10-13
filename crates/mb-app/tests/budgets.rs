@@ -161,11 +161,46 @@ const DRAWS_ADDED: &[(u32, usize, usize)] = &[
     (85, 3, 4), (86, 4, 4), (87, 0, 2), (88, 0, 2), (89, 0, 2), (90, 0, 2),
 ];
 
-/// The count a stage is held to: its 0.1.0 row plus what [`DRAWS_ADDED`] records for it.
-fn expected_draws(row: &(u32, usize, usize)) -> (u32, usize, usize) {
+/// The most a stage may draw: its 0.1.0 row plus what [`DRAWS_ADDED`] records for it.
+fn ceiling_of_0_1_0(row: &(u32, usize, usize)) -> (u32, usize, usize) {
     let added = DRAWS_ADDED.iter().find(|a| a.0 == row.0);
     let (intro, play) = added.map_or((0, 0), |a| (a.1, a.2));
     (row.0, row.1 + intro, row.2 + play)
+}
+
+/// `(stage, draws at INTRO_TICK, draws at PLAY_TICK)` as the stages are drawn now, outside particles
+/// and mirrors: the same things as in [`DRAWS_0_1_0`] and [`DRAWS_ADDED`], in fewer calls. Since the
+/// meshes of a model that share pipeline and material are uploaded as one (`mb-render`,
+/// `Renderer::make_meshes`: the two halves of every shape, one per culled face, and shapes of one
+/// material), a stage draws 15 to 50 % fewer calls than 0.1.0 did. Recorded then; a stage that draws
+/// more than its row got slower, and one that draws more than 0.1.0 breaks the budget of the plan.
+#[rustfmt::skip]
+const DRAWS: &[(u32, usize, usize)] = &[
+    (1, 213, 196), (2, 263, 234), (3, 232, 159), (4, 182, 189), (91, 155, 165), (5, 202, 186),
+    (6, 239, 160), (7, 332, 330), (8, 219, 205), (9, 205, 208), (11, 197, 155), (12, 267, 235),
+    (13, 208, 186), (14, 203, 210), (15, 195, 198), (16, 186, 174), (17, 235, 239), (18, 290, 288),
+    (92, 153, 163), (21, 417, 411), (22, 236, 198), (23, 256, 205), (24, 381, 337), (25, 223, 184),
+    (26, 242, 200), (27, 213, 152), (28, 319, 113), (29, 261, 200), (93, 293, 303), (31, 333, 333),
+    (32, 156, 158), (33, 177, 152), (34, 222, 229), (35, 276, 253), (36, 166, 154), (37, 213, 193),
+    (38, 207, 182), (39, 208, 196), (40, 242, 185), (41, 194, 152), (42, 221, 218), (43, 185, 181),
+    (44, 232, 147), (45, 404, 400), (46, 331, 198), (47, 352, 243), (48, 352, 175), (51, 394, 358),
+    (52, 189, 195), (53, 179, 154), (54, 278, 252), (55, 290, 269), (56, 167, 143), (57, 439, 312),
+    (58, 218, 228), (59, 158, 161), (61, 137, 144), (62, 107, 117), (63, 187, 197), (64, 175, 142),
+    (65, 134, 130), (66, 168, 114), (67, 119, 126), (68, 144, 154), (69, 134, 141), (94, 154, 144),
+    (71, 190, 176), (72, 255, 193), (73, 200, 195), (74, 214, 188), (75, 260, 262), (76, 364, 367),
+    (77, 248, 205), (78, 253, 216), (79, 219, 153), (95, 166, 176), (81, 117, 187), (82, 186, 234),
+    (83, 146, 202), (84, 200, 201), (85, 239, 232), (86, 253, 243), (87, 105, 175), (88, 133, 191),
+    (89, 383, 444), (90, 133, 179), (101, 305, 300), (102, 229, 200), (103, 236, 206), (104, 232, 200),
+    (105, 244, 248), (106, 322, 248), (107, 291, 262), (108, 377, 270), (109, 373, 328), (110, 235, 206),
+    (111, 252, 227), (112, 233, 235), (113, 271, 226), (121, 252, 274), (122, 289, 288), (123, 261, 268),
+    (124, 234, 149), (125, 415, 418), (126, 180, 174), (127, 197, 197), (128, 188, 195), (129, 179, 186),
+    (130, 199, 206),
+];
+
+/// The count a stage is held to: its row of [`DRAWS`].
+fn expected_draws(stage: u32) -> (u32, usize, usize) {
+    let row = DRAWS.iter().find(|row| row.0 == stage);
+    *row.unwrap_or_else(|| panic!("no row for stage {stage}"))
 }
 
 /// Most draw calls the particles may add to a frame (sparks, stars, flash, sparkle, glow, confetti).
@@ -179,13 +214,13 @@ const PARTICLE_DRAW_BUDGET: usize = 12;
 /// stage, it is zero.
 #[rustfmt::skip]
 const MIRROR_DRAWS: &[(u32, usize, usize)] = &[
-    (91, 188, 197), (92, 187, 196), (21, 505, 492), (93, 357, 366), (48, 447, 187), (62, 120, 116),
-    (94, 187, 172), (71, 241, 239), (72, 408, 300), (74, 326, 290), (75, 390, 414), (76, 551, 562),
-    (77, 402, 289), (78, 388, 333), (95, 53, 53), (82, 279, 314), (83, 169, 215), (85, 278, 282),
-    (86, 376, 304), (89, 773, 805), (101, 225, 300), (102, 218, 249), (103, 223, 228), (104, 181, 211),
-    (105, 252, 317), (106, 318, 264), (108, 189, 207), (109, 253, 285), (110, 252, 220), (111, 225, 255),
-    (112, 166, 176), (113, 271, 300), (121, 55, 93), (123, 31, 66), (125, 275, 310), (128, 40, 66),
-    (129, 107, 194),
+    (91, 135, 144), (92, 134, 143), (21, 240, 300), (93, 274, 283), (48, 313, 138), (62, 75, 77),
+    (94, 134, 127), (71, 114, 149), (72, 182, 166), (74, 65, 92), (75, 171, 218), (76, 249, 330),
+    (77, 108, 180), (78, 138, 174), (95, 46, 46), (82, 117, 189), (83, 43, 131), (85, 50, 175),
+    (86, 65, 98), (89, 323, 398), (101, 141, 197), (102, 139, 140), (103, 144, 142), (104, 105, 105),
+    (105, 152, 209), (106, 208, 162), (108, 85, 129), (109, 164, 176), (110, 113, 125), (111, 136, 170),
+    (112, 94, 124), (113, 156, 180), (121, 48, 71), (123, 31, 50), (125, 269, 288), (128, 34, 44),
+    (129, 34, 89),
 ];
 
 /// Bytes of the mirror's target under the 640 x 360 frame of these tests: half the frame each way,
@@ -312,11 +347,10 @@ fn every_stage_draws_what_it_did_in_0_1_0_outside_the_particles() {
     for (_, line) in &costs {
         eprintln!("{line}");
     }
-    // One more pass over about the scene less the stage: the mirror at most doubles the draws of a
-    // frame. (Stages 82 and 89 in the fly-in are the ones above that, at 109 and 104 %: from below
-    // their floors more of the storm background is in view than from above.)
+    // One more pass over about the scene less the stage's own models, cut to what the mirror models
+    // in view can show: the mirror never doubles the draws of a frame.
     assert!(
-        costs.iter().all(|c| c.0 < 110),
+        costs.iter().all(|c| c.0 < 100),
         "a mirror more than doubles a frame"
     );
     assert_eq!(mirrors, MIRROR_DRAWS, "mirror draws changed");
@@ -327,15 +361,31 @@ fn every_stage_draws_what_it_did_in_0_1_0_outside_the_particles() {
     );
     let mut over = Vec::new();
     for (now, then) in measured.iter().zip(DRAWS_0_1_0) {
-        let expected = expected_draws(then);
+        let expected = expected_draws(now.0);
         if *now != expected {
             over.push(format!(
                 "stage {}: {now:?}, expected {expected:?} (0.1.0 had {then:?})",
                 now.0
             ));
         }
+        // Never more than 0.1.0 drew for the same picture.
+        let ceiling = ceiling_of_0_1_0(then);
+        assert!(
+            now.0 == ceiling.0 && now.1 <= ceiling.1 && now.2 <= ceiling.2,
+            "stage {}: {now:?} is more than 0.1.0's {ceiling:?}",
+            now.0
+        );
     }
     assert!(over.is_empty(), "draw calls changed:\n{}", over.join("\n"));
+    let total = |rows: &mut dyn Iterator<Item = (usize, usize)>| {
+        rows.fold((0, 0), |sum, row| (sum.0 + row.0, sum.1 + row.1))
+    };
+    let now = total(&mut measured.iter().map(|m| (m.1, m.2)));
+    let then = total(&mut DRAWS_0_1_0.iter().map(|m| (m.1, m.2)));
+    eprintln!(
+        "all stages, fly-in / play: {} / {} draws; 0.1.0 drew {} / {}",
+        now.0, now.1, then.0, then.1
+    );
 }
 
 /// Play floor 1 of a course with the autopilot, from the fly-in to the end of the goal sequence, rendering
@@ -545,8 +595,7 @@ fn with_reflections_off_the_mirror_stages_cost_what_they_did() {
     show_title(&mut h);
     for row in MIRROR_DRAWS {
         let stage = row.0;
-        let then = DRAWS_0_1_0.iter().find(|r| r.0 == stage).expect("a row");
-        let expected = expected_draws(then);
+        let expected = expected_draws(stage);
         let off = measure_stage(&mut h, stage, false);
         let (objects, textures) = (h.renderer().object_count(), h.renderer().load_stats);
         assert_eq!((stage, off[0].base, off[1].base), expected);
@@ -675,7 +724,7 @@ fn no_gpu_object_is_created_while_a_mirror_stage_is_played_or_after_a_resize() {
         let mirrored = play(&mut h, 200, &format!("stage {stage} after the resize"));
         // (Where the ball has rolled off by now, the mirror may be out of sight.)
         assert!(
-            !matches!(stage, 92 | 102 | 103) || mirrored > 100,
+            !matches!(stage, 92 | 102 | 103) || mirrored > 0,
             "stage {stage}: {mirrored}"
         );
         // Back to the size of these tests, with a frame drawn at it, as a window always has: the

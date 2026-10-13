@@ -213,61 +213,80 @@ and 128), the mirror models, and all particles (`Renderer::set_in_mirror`, the r
 **Reflections off** (the option below): `set_mirror` is never called and the mirror models are not
 created. The stage is then built and drawn exactly as before the mirrors existed.
 
-Cost, at 640 x 360 (`tests/budgets.rs`, `MIRROR_DRAWS`): the draws of a frame without the mirror and
-with it, in the fly-in (tick 60) and in play (tick 420), the dearest stages first.
+Cost, at 640 x 360 (`tests/budgets.rs`, `DRAWS` and `MIRROR_DRAWS`): the draws of a frame without the
+mirror and with it, in the fly-in (tick 60) and in play (tick 420), the dearest stages first, and what
+version 0.1.0 drew for the same frame without any mirror.
 
-| Stage | Fly-in | Play |
-|---|---|---|
-| 82 | 256 -> 535 (+109 %) | 356 -> 670 (+88 %) |
-| 89 | 744 -> 1517 (+104 %) | 848 -> 1653 (+95 %) |
-| 86 | 380 -> 756 (+99 %) | 367 -> 671 (+83 %) |
-| 76 | 605 -> 1156 (+91 %) | 602 -> 1164 (+93 %) |
-| 93 | 386 -> 743 (+92 %) | 396 -> 762 (+92 %) |
-| 78 | 464 -> 852 (+84 %) | 365 -> 698 (+91 %) |
-| 48 | 497 -> 944 (+90 %) | 244 -> 431 (+77 %) |
-| 74 | 374 -> 700 (+87 %) | 323 -> 613 (+90 %) |
-| 83 | 189 -> 358 (+89 %) | 291 -> 506 (+74 %) |
-| 71 | 327 -> 568 (+74 %) | 271 -> 510 (+88 %) |
-| 113 | 431 -> 702 (+63 %) | 341 -> 641 (+88 %) |
-| 92 | 216 -> 403 (+87 %) | 226 -> 422 (+87 %) |
-| 94 | 218 -> 405 (+86 %) | 198 -> 370 (+87 %) |
-| 21 | 588 -> 1093 (+86 %) | 580 -> 1072 (+85 %) |
-| 75 | 485 -> 875 (+80 %) | 483 -> 897 (+86 %) |
-| 91 | 222 -> 410 (+85 %) | 232 -> 429 (+85 %) |
-| 77 | 474 -> 876 (+85 %) | 344 -> 633 (+84 %) |
-| 72 | 495 -> 903 (+82 %) | 360 -> 660 (+83 %) |
-| 85 | 349 -> 627 (+80 %) | 342 -> 624 (+82 %) |
-| 102 | 372 -> 590 (+59 %) | 308 -> 557 (+81 %) |
-| 105 | 404 -> 656 (+62 %) | 393 -> 710 (+81 %) |
-| 111 | 403 -> 628 (+56 %) | 343 -> 598 (+74 %) |
-| 62 | 167 -> 287 (+72 %) | 175 -> 291 (+66 %) |
-| 106 | 498 -> 816 (+64 %) | 368 -> 632 (+72 %) |
-| 110 | 383 -> 635 (+66 %) | 312 -> 532 (+71 %) |
-| 104 | 375 -> 556 (+48 %) | 308 -> 519 (+69 %) |
-| 101 | 493 -> 718 (+46 %) | 470 -> 770 (+64 %) |
-| 103 | 429 -> 652 (+52 %) | 364 -> 592 (+63 %) |
-| 129 | 323 -> 430 (+33 %) | 331 -> 525 (+59 %) |
-| 125 | 541 -> 816 (+51 %) | 537 -> 847 (+58 %) |
-| 109 | 591 -> 844 (+43 %) | 502 -> 787 (+57 %) |
-| 108 | 550 -> 739 (+34 %) | 388 -> 595 (+53 %) |
-| 112 | 395 -> 561 (+42 %) | 382 -> 558 (+46 %) |
-| 95 | 235 -> 288 (+23 %) | 245 -> 298 (+22 %) |
-| 121 | 378 -> 433 (+15 %) | 401 -> 494 (+23 %) |
-| 128 | 319 -> 359 (+13 %) | 327 -> 393 (+20 %) |
-| 123 | 393 -> 424 (+8 %) | 401 -> 467 (+16 %) |
+| Stage | Fly-in | Play | 0.1.0 (and its additions), no mirror |
+|---|---|---|---|
+| 93 | 293 -> 567 (+94 %) | 303 -> 586 (+93 %) | 386 / 396 |
+| 76 | 364 -> 613 (+68 %) | 367 -> 697 (+90 %) | 605 / 602 |
+| 89 | 383 -> 706 (+84 %) | 444 -> 842 (+90 %) | 744 / 848 |
+| 48 | 352 -> 665 (+89 %) | 175 -> 313 (+79 %) | 497 / 244 |
+| 92 | 153 -> 287 (+88 %) | 163 -> 306 (+88 %) | 216 / 226 |
+| 94 | 154 -> 288 (+87 %) | 144 -> 271 (+88 %) | 218 / 198 |
+| 77 | 248 -> 356 (+44 %) | 205 -> 385 (+88 %) | 474 / 344 |
+| 91 | 155 -> 290 (+87 %) | 165 -> 309 (+87 %) | 222 / 232 |
+| 72 | 255 -> 437 (+71 %) | 193 -> 359 (+86 %) | 495 / 360 |
+| 71 | 190 -> 304 (+60 %) | 176 -> 325 (+85 %) | 327 / 271 |
+| 105 | 244 -> 396 (+62 %) | 248 -> 457 (+84 %) | 404 / 393 |
+| 75 | 260 -> 431 (+66 %) | 262 -> 480 (+83 %) | 485 / 483 |
+| 78 | 253 -> 391 (+55 %) | 216 -> 390 (+81 %) | 464 / 365 |
+| 82 | 186 -> 303 (+63 %) | 234 -> 423 (+81 %) | 256 / 356 |
+| 113 | 271 -> 427 (+58 %) | 226 -> 406 (+80 %) | 431 / 341 |
+| 85 | 239 -> 289 (+21 %) | 232 -> 407 (+75 %) | 349 / 342 |
+| 111 | 252 -> 388 (+54 %) | 227 -> 397 (+75 %) | 403 / 343 |
+| 21 | 417 -> 657 (+58 %) | 411 -> 711 (+73 %) | 588 / 580 |
+| 62 | 107 -> 182 (+70 %) | 117 -> 194 (+66 %) | 167 / 175 |
+| 102 | 229 -> 368 (+61 %) | 200 -> 340 (+70 %) | 372 / 308 |
+| 103 | 236 -> 380 (+61 %) | 206 -> 348 (+69 %) | 429 / 364 |
+| 125 | 415 -> 684 (+65 %) | 418 -> 706 (+69 %) | 541 / 537 |
+| 101 | 305 -> 446 (+46 %) | 300 -> 497 (+66 %) | 493 / 470 |
+| 83 | 146 -> 189 (+29 %) | 202 -> 333 (+65 %) | 189 / 291 |
+| 106 | 322 -> 530 (+65 %) | 248 -> 410 (+65 %) | 498 / 368 |
+| 110 | 235 -> 348 (+48 %) | 206 -> 331 (+61 %) | 383 / 312 |
+| 109 | 373 -> 537 (+44 %) | 328 -> 504 (+54 %) | 591 / 502 |
+| 104 | 232 -> 337 (+45 %) | 200 -> 305 (+53 %) | 375 / 308 |
+| 112 | 233 -> 327 (+40 %) | 235 -> 359 (+53 %) | 395 / 382 |
+| 74 | 214 -> 279 (+30 %) | 188 -> 280 (+49 %) | 374 / 323 |
+| 108 | 377 -> 462 (+23 %) | 270 -> 399 (+48 %) | 550 / 388 |
+| 129 | 179 -> 213 (+19 %) | 186 -> 275 (+48 %) | 323 / 331 |
+| 86 | 253 -> 318 (+26 %) | 243 -> 341 (+40 %) | 380 / 367 |
+| 95 | 166 -> 212 (+28 %) | 176 -> 222 (+26 %) | 235 / 245 |
+| 121 | 252 -> 300 (+19 %) | 274 -> 345 (+26 %) | 378 / 401 |
+| 128 | 188 -> 222 (+18 %) | 195 -> 239 (+23 %) | 319 / 327 |
+| 123 | 261 -> 292 (+12 %) | 268 -> 318 (+19 %) | 393 / 401 |
 
 The capture is most of the picture again: everything but the stage's own models, so the backdrop with
-its objects, the bananas and the goals. On the storm stages 82 and 89 it is more than the picture in
-the fly-in, because from below the floor more of the background is in view than from above; nothing is
-in it that the reference leaves out. In draw calls the dearest frames are those of stages 89 (1653), 76
-(1164) and 21 (1093), each close to twice what it was; on stage 21 that pays for a strip of mirror a
-few hundred pixels large. The master floors are cheap because their background objects carry flag bit
-7. The target is half the frame each way, colour and depth: 460,800 bytes under 640 x 360, 1.84 MB
-under 1280 x 720 (`Renderer::mirror_bytes`, not texture bytes). No texture is uploaded for a mirror;
-a flat mirror adds an object per mirror model. The load creates the mirror's buffers, bind groups and
-target; a play frame creates nothing, also while the plane of stage 103 moves or the level of stage 110
-changes; a resize of the frame replaces the target (two textures, one bind group) with the frame's
-depth texture, in the first frame after it.
+its objects, the bananas, the bumpers and the goals. Two things keep it down, neither of which changes
+a pixel of the picture:
+
+* **The capture is cut to the mirror.** The overlay reads the capture only where a fragment of a mirror
+  model lands in it, so only the bounds of the mirror models in view, as the capture sees them, are
+  drawn (a scissor rectangle, two texels wider for the bilinear filter), and only the objects whose
+  spheres reach into that part of the view (`mb-render`, `mirror::projected_box`, `window_planes`). With
+  a floor that fills the lower half of the screen that saves little; where the mirror is a strip or a
+  tile in the distance it saves most of the pass, and nothing is captured when no mirror model reaches
+  into the picture. Over 183 frames of nine stages from 21 cameras, 16 % of the capture's draws.
+  `cutting_the_capture_to_the_mirror_changes_no_pixel` draws each of those frames both ways and
+  compares the bytes.
+* **A model's meshes of one state are one mesh** (`Renderer::make_meshes`), in every pass: see
+  `docs/GMA.md`. All 109 stages together draw 25,517 / 23,343 calls at the two ticks where 0.1.0 drew
+  38,960 / 35,048, so a mirror stage with its capture now draws about what 0.1.0 drew without one
+  (stage 89 in play: 842 against 848).
+
+What is left is the reflection itself: on the stages at the top of the table the capture holds nearly
+everything the picture holds (the 40 bumpers and 40 bananas of stage 93, the 30 bumpers of stage 89),
+all of it really visible in the floor, so the pass stays at 80 to 94 % of the frame's draws there. The
+dearest frames are now those of stages 89 (842), 21 (711) and 125 (706). The master floors are cheap
+because their background objects carry flag bit 7. The target is half the frame each way, colour and
+depth: 460,800 bytes under 640 x 360, 1.84 MB under 1280 x 720 (`Renderer::mirror_bytes`, not texture
+bytes). No texture is uploaded for a mirror; a flat mirror adds an object per mirror model. The load
+creates the mirror's buffers, bind groups and target; a play frame creates nothing, also while the
+plane of stage 103 moves or the level of stage 110 changes; a resize of the frame replaces the target
+(two textures, one bind group) with the frame's depth texture, in the first frame after it. The
+capture is submitted by itself before the picture is encoded, so a backend that keeps its command
+lists in ordinary memory (WebGL2) never holds both.
 
 Different from the reference, on purpose:
 
@@ -364,7 +383,7 @@ once it has been let go.
 | Music volume | off, 10 .. 100 (default 50) | stage music |
 | Sound volume | off, 10 .. 100 (default 30) | effects: roll, impacts, bananas, goal, clock, menus |
 | Announcer volume | off, 10 .. 100 (default 30) | READY, GO, GOAL, FALL OUT, countdown, ... |
-| Reflections | on / off (default on) | the mirror floors of the 37 stages that have one; off saves their extra pass (up to twice those stages' draw calls, see "Mirror floors") on a weak device |
+| Reflections | on / off (default on) | the mirror floors of the 37 stages that have one; off saves their extra pass (up to 94 % of those stages' draw calls, see "Mirror floors") on a weak device |
 
 Selecting a row steps its value (volumes by ten, wrapping from 100 to off). Changes are saved with the
 profile and apply at once; a category that is off is not played at all. Reflections is read when a stage
@@ -469,8 +488,9 @@ Different from `hud.ts` here:
   its mirror. `tests/pack.rs` loads seven mirror stages over the pack with the option on and off.
   `menu.rs` has the row's unit test.
 - `tests/budgets.rs`: the regression budgets of `docs/PARITY_PLAN.md`. Draw calls outside the particles of
-  every course stage at tick 60 (fly-in) and 420 (play) equal a table recorded from 0.1.0 (its model draws
-  were compared with a build of the `v0.1.0` tag, all 109 stages identical) plus what `DRAWS_ADDED` records
+  every course stage at tick 60 (fly-in) and 420 (play) equal a recorded table (`DRAWS`) and are never
+  more than the table recorded from 0.1.0 (its model draws were compared with a build of the `v0.1.0`
+  tag, all 109 stages identical) plus what `DRAWS_ADDED` records
   for the 22 stages that draw something new (the wave floor of stage 92: 1; the windows of the eleven night
   stages with shown diners: 4 to 29; the fires of the ten storm stages: 0 to 4); particles add at most 12;
   the renderer's `GpuCounters`, texture and object counts do not change from the end of a stage's load to
@@ -480,13 +500,23 @@ Different from `hud.ts` here:
   with its 2.1 to 2.2 MB of flipbook textures, uploads more than that limit (the largest is stage 90 with
   14,251,776). The mirror's draws are counted apart (`FrameStats::mirror_draws`): a table holds them
   for the 37 mirror stages at the two ticks, no other stage has any, the frame's own draws of every
-  stage still equal the 0.1.0 table with its recorded additions, no mirror adds more than 110 % to a
+  stage are those of its row whether the mirror is on or off, no mirror doubles the draws of a
   frame, and with Reflections off the 37 stages have neither mirror draws, mirror models nor a target
   and upload the same texture bytes; the target is 460,800 bytes at the tests' 640 x 360 and is not
   counted with the textures; seven mirror stages (the wave, 102, 103, a bonus floor, an ice, a space
   and a master floor) create nothing over 520 frames of steering, a resize creates three textures and
   one bind group in its first frame, and the 200 frames after it nothing.
   `tests/pack.rs` holds the pack at 382 files and 144,084,942 bytes. `MB_BUDGET_PRINT=1` prints the tables.
+- `tests/memory.rs`: the memory budget, under an allocator that counts, on `wgpu`'s OpenGL backend (the
+  one the browser uses as WebGL2) with the music off. For stages 1, 21, 76, 89, 90, 92 and 109, with
+  reflections on, the peak of live heap bytes over the load and 480 drawn frames and the bytes of the
+  stage at rest are at most 2 MB above what 0.1.0 needed, measured the same way in a checkout of its
+  tag (the figures are in the test); and no load hands the GPU queue more than about a megabyte, or
+  one texture level, at once. Measured: peaks of 5.5 to 12.5 MB, between 0.76 MB below 0.1.0 (stage
+  89) and 0.29 MB above (stage 21); at rest 0.22 to 1.32 MB above, of which 0.33 MB are the particle
+  pool of the simulation, 0.16 MB the particles' instance and quad buffers, and on the night stage
+  about 1 MB its 370 window objects and 110 frame models. The top of the file says where this differs
+  from wasm memory in the browser.
 - `cargo test -p mb-app --test audio`: the autopilot's floor 1 with a recording audio backend and an offline
   render of its sound.
 
