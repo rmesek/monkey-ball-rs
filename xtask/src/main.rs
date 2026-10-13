@@ -1,7 +1,7 @@
 //! The project's build tool: one entry point on every platform, standard library only.
 //!
 //! ```text
-//! cargo xtask build-web [--single] [--dev]    build the static web site into web/dist/
+//! cargo xtask build-web [--dev]               build the static web site into web/dist/
 //! cargo xtask check                           run the quality gates (AGENTS.md)
 //! ```
 //! `cargo xtask` is an alias for `cargo run --quiet -p xtask --` (`.cargo/config.toml`).
@@ -10,12 +10,10 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 mod bundle;
-mod gzip;
 
 const USAGE: &str = "usage:
-  cargo xtask build-web [--single] [--dev]
+  cargo xtask build-web [--dev]
       build the browser target and assemble the static site in web/dist/
-        --single  also write web/dist/monkey-ball.html: the whole page in one file that opens from disk
         --dev     unoptimised build (quick to compile, slow to run; keeps function names for stack traces)
       needs the wasm-bindgen command at the version of the wasm-bindgen crate in Cargo.lock
   cargo xtask check
@@ -127,10 +125,9 @@ fn check_wasm_bindgen() -> Result<(), String> {
 }
 
 fn build_web(args: impl Iterator<Item = String>) -> Result<(), String> {
-    let (mut single, mut dev) = (false, false);
+    let mut dev = false;
     for arg in args {
         match arg.as_str() {
-            "--single" => single = true,
             "--dev" => dev = true,
             other => return Err(format!("unknown option {other}\n{USAGE}")),
         }
@@ -157,8 +154,8 @@ fn build_web(args: impl Iterator<Item = String>) -> Result<(), String> {
     }
     run(build)?;
 
-    // Glue as a classic script (no ES modules): the same file then works in the page, in the import
-    // worker and inlined in the single file.
+    // Glue as a classic script (no ES modules): the same file then works in the page and in the import
+    // worker.
     let pkg = target_dir.join("web-pkg");
     if pkg.exists() {
         std::fs::remove_dir_all(&pkg).map_err(|e| format!("{}: {e}", pkg.display()))?;
@@ -194,7 +191,6 @@ fn build_web(args: impl Iterator<Item = String>) -> Result<(), String> {
         web: root.join("web"),
         pkg,
         out: out.clone(),
-        single,
     })?;
     println!(
         "built web/dist ({} KiB wasm). Serve it with any static file server, for example:\n  \

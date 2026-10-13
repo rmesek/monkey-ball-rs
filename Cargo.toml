@@ -37,7 +37,3 @@ codegen-units = 1
 # No unwinding in the browser anyway; the panic hook still reports the message before the trap.
 panic = "abort"
 strip = "debuginfo"
-
-# The build tool compresses the wasm module for the single-file page; unoptimised that takes many seconds.
-[profile.dev.package.xtask]
-opt-level = 3

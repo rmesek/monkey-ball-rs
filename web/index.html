@@ -7,17 +7,13 @@
 <meta name="theme-color" content="#10131a">
 <meta name="mobile-web-app-capable" content="yes">
 <!-- Everything this page needs is served next to it; it never talks to another host. -->
-<!--build:csp-->
 <meta http-equiv="Content-Security-Policy"
       content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; worker-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'">
-<!--/build:csp-->
-<!--build:version--><!--/build:version-->
+<!--build:version-->
 <title>Monkey Ball (Rust)</title>
-<!--build:head-->
 <link rel="manifest" href="./manifest.webmanifest">
 <link rel="icon" href="./icon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="./icon-192.png">
-<!--/build:head-->
 <style>
   :root {
     /* Safe-area insets in CSS pixels; crates/mb-web reads these to keep the HUD clear of notches. */
@@ -155,10 +151,8 @@
     </div>
   </div>
 
-<!--build:scripts-->
   <script src="./guard.js"></script>
   <script src="./pkg/mb_web.js"></script>
   <script src="./main.js"></script>
-<!--/build:scripts-->
 </body>
 </html>

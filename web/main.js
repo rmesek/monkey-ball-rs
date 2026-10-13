@@ -1,5 +1,4 @@
-// The page's script. Plain classic script, no bundler, no imports (so the same file also works inlined in
-// the single-file build opened from disk). It
+// The page's script. Plain classic script, no bundler, no imports. It
 //   1. loads the engine (pkg/mb_web.js + .wasm, built from crates/mb-web),
 //   2. finds game data imported earlier in this browser's Origin Private File System, or asks for the disc
 //      image and has a worker (worker.js) copy the game's files out of it,
@@ -76,19 +75,8 @@
 
   // ---- the engine ---------------------------------------------------------------------------------------
 
-  // The single-file build carries the module in the page (base64, optionally gzipped); the hosted build
-  // fetches the file next to the page.
+  // The module is the file next to the page.
   async function compileEngine() {
-    const embedded = $("mb-wasm");
-    if (embedded) {
-      const raw = Uint8Array.from(atob(embedded.textContent.trim()), (c) => c.charCodeAt(0));
-      if (embedded.dataset.encoding !== "gzip") return WebAssembly.compile(raw);
-      if (typeof DecompressionStream !== "function") {
-        throw new Error("this browser is too old for the single-file build (no DecompressionStream)");
-      }
-      const stream = new Blob([raw]).stream().pipeThrough(new DecompressionStream("gzip"));
-      return WebAssembly.compile(await new Response(stream).arrayBuffer());
-    }
     const url = "./pkg/mb_web_bg.wasm" + VERSION_QUERY;
     if (WebAssembly.compileStreaming) {
       try {
@@ -103,23 +91,16 @@
     return WebAssembly.compile(await response.arrayBuffer());
   }
 
-  // The import worker: worker.js next to the page, or (single-file build) the glue and the worker source
-  // carried in the page, started from a Blob.
+  // The import worker: worker.js next to the page.
   function makeWorker() {
-    const source = $("mb-worker");
     try {
-      if (!source) return new Worker("./worker.js" + VERSION_QUERY);
-      const blob = new Blob([$("mb-glue").textContent, "\n", source.textContent], { type: "text/javascript" });
-      const url = URL.createObjectURL(blob);
-      const w = new Worker(url);
-      setTimeout(() => URL.revokeObjectURL(url), 10000);
-      return w;
+      return new Worker("./worker.js" + VERSION_QUERY);
     } catch (e) {
       // A page opened from disk may not start a worker from a file next to it; an embedding page or app
       // may forbid workers with its own policy.
       throw new Error(
         "This page is not allowed to start its import worker here (" + describeError(e) + ")." +
-          (source ? "" : " If the page was opened from disk, use the single-file build (monkey-ball.html) or serve the folder with a static web server."),
+          " If the page was opened from disk, serve the folder with a static web server instead.",
       );
     }
   }
@@ -891,9 +872,9 @@
   // ---- start-up -----------------------------------------------------------------------------------------
 
   // Offline start for the hosted and installed page: a small service worker serves the bundle from a cache.
-  // The page does not depend on it (an app's WebView or the single-file build have none).
+  // The page does not depend on it (an app's WebView has none).
   function registerServiceWorker() {
-    if (!navigator.serviceWorker || !window.isSecureContext || $("mb-wasm")) return;
+    if (!navigator.serviceWorker || !window.isSecureContext) return;
     if (!/^https?:$/.test(location.protocol)) return;
     try {
       navigator.serviceWorker.register("./sw.js").catch((e) => console.info("no service worker:", e && e.message));

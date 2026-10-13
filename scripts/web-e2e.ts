@@ -5,7 +5,7 @@
 // It serves web/dist with `python -m http.server` (the plain static server the bundle is meant for), starts
 // Chrome with a throw-away profile, and drives it over the DevTools protocol: the disc image is set on the
 // page's own <input type=file>, exactly as a user would pick it. No npm packages, nothing downloaded.
-// Needs: the bundle (cargo xtask build-web --single), Chrome, Python 3, and your disc image (MB_DISC, or
+// Needs: the bundle (cargo xtask build-web), Chrome, Python 3, and your disc image (MB_DISC, or
 // "Super Monkey Ball*.rvz|iso|gcm" next to the repository). Missing any of them it says so and exits 0.
 //
 //   --lan   also open the page through this machine's network address (plain http, not a secure context):
@@ -26,7 +26,7 @@ function skip(why: string): never {
 const exists = (p: string) => { try { Deno.statSync(p); return true; } catch { return false; } };
 
 // ---- prerequisites ----------------------------------------------------------------------------------------
-if (!exists(`${dist}/index.html`)) skip("web/dist is not built (run: cargo xtask build-web --single)");
+if (!exists(`${dist}/index.html`)) skip("web/dist is not built (run: cargo xtask build-web)");
 function findDisc(): string | null {
   const env = Deno.env.get("MB_DISC");
   if (env) return exists(env) ? env : null;
@@ -887,18 +887,7 @@ try {
     } else console.log("     --lan: no network address found");
   }
 
-  // ---- 8. the single file, opened from disk -------------------------------------------------------------
-  if (exists(`${dist}/monkey-ball.html`)) {
-    await p.nav(`file:///${dist.replace(/^\//, "")}/monkey-ball.html`);
-    check("single file: opens from disk", await p.wait(pickerReady, 30000), (await p.ev(landingText)) ?? "");
-    await p.pick(discPath);
-    // What a page opened from disk may do differs by browser: Chrome treats it as a secure context (the
-    // import is stored), others do not (the session plays from the file). Both are fine; say which.
-    check("single file: starts after picking the image", await p.wait(started, 120000), `mode ${await p.ev("mbStats.mode")}; ${await p.ev("mbStats.gpu")}; saves ${await p.ev("mbStats.saveMode")}; secure context ${await p.ev("isSecureContext")}`);
-    await playToFloorTwo(p, "single file");
-  } else console.log("     (no web/dist/monkey-ball.html: build with --single to check the single file)");
-
-  // ---- 9. offline: stored data and the service worker, with the server gone ---------------------------
+  // ---- 8. offline: stored data and the service worker, with the server gone ---------------------------
   await p.nav(base + "?gl=1");
   await p.wait(pickerReady, 30000);
   await p.pick(discPath);

@@ -1,5 +1,4 @@
-// The import worker. Classic worker script: the page starts it from this file, or (single-file build) from a
-// Blob that already contains the engine's glue script in front of this code.
+// The import worker. Classic worker script: the page starts it from this file.
 //
 // It receives the user's disc image as a File and reads it with synchronous Blob slices (FileReaderSync),
 // which only workers have; the engine's disc and RVZ readers (the same wasm module the page runs) do the
@@ -12,7 +11,7 @@
 "use strict";
 
 // (The page passes the build's version in this script's URL; the glue is fetched with the same one.)
-if (typeof wasm_bindgen === "undefined") importScripts("./pkg/mb_web.js" + self.location.search);
+importScripts("./pkg/mb_web.js" + self.location.search);
 
 let job = null; // live mode: the open image
 let readFailed = false; // the browser could not read the picked file (it is gone, or access to it has ended)

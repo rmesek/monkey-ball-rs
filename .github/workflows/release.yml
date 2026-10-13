@@ -51,14 +51,15 @@ jobs:
       - run: cargo build -p mb-desktop --release --locked
       # The command must be the version of the crate in Cargo.lock (xtask checks it).
       - run: cargo install wasm-bindgen-cli --locked --version "$(grep -A1 '^name = "wasm-bindgen"$' Cargo.lock | sed -n 's/^version = "\(.*\)"/\1/p')"
-      - run: cargo xtask build-web --single
-      - name: Attach the Linux executable and the single-file page
+      - run: cargo xtask build-web
+      - name: Attach the Linux executable and the web site
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           tar -czf "$RUNNER_TEMP/mb-app-$VERSION-linux-x86_64.tar.gz" -C target/release mb-app
-          cp web/dist/monkey-ball.html "$RUNNER_TEMP/monkey-ball-$VERSION.html"
-          gh release upload "$TAG" "$RUNNER_TEMP/mb-app-$VERSION-linux-x86_64.tar.gz" "$RUNNER_TEMP/monkey-ball-$VERSION.html" --clobber
+          # The static site as it is served: unpack it anywhere under a web server.
+          tar -czf "$RUNNER_TEMP/monkey-ball-web-$VERSION.tar.gz" -C web/dist .
+          gh release upload "$TAG" "$RUNNER_TEMP/mb-app-$VERSION-linux-x86_64.tar.gz" "$RUNNER_TEMP/monkey-ball-web-$VERSION.tar.gz" --clobber
   desktop:
     needs: linux
     strategy:
