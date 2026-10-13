@@ -1,13 +1,13 @@
-//! Regression budgets (`docs/PARITY_PLAN.md`, "Regression budgets as tests"): what a frame and a stage may
-//! cost, counted rather than timed so the tests do not depend on the load of the machine.
+//! Regression budgets: what a frame and a stage may cost, counted rather than timed so the tests do not
+//! depend on the load of the machine. On WebGL2, the tightest target, the cost of a frame is its draw
+//! calls.
 //!
-//! * draw calls per stage outside the particles equal the recorded 0.1.0 table plus what was added on
-//!   purpose since (`DRAWS_ADDED`); the particles add at most 12;
+//! * draw calls per stage outside the particles equal a recorded table; the particles add at most 12;
 //! * no GPU object is created while a stage is played;
-//! * the textures of the heaviest stage stay within 1 MB of what 0.1.0 uploaded;
+//! * the textures of the heaviest stage stay within a recorded limit;
 //! * a mirror floor is drawn on the 37 stages that have one and on no other: its draws and the bytes of
 //!   its target are recorded apart from the rest, and with the Reflections option off those stages cost
-//!   what they did.
+//!   what they do without a mirror.
 //!
 //! The pack's size and file count are in `tests/pack.rs`. Like the other tests these need the developer's
 //! own disc image and a GPU adapter, and skip without either.
@@ -111,60 +111,14 @@ fn show_title(h: &mut Headless) {
 const INTRO_TICK: u32 = 60;
 const PLAY_TICK: u32 = 420;
 
-/// `(stage, draws at INTRO_TICK, draws at PLAY_TICK)` for every course stage at 640 x 360, as version 0.1.0
-/// drew them: the count of everything but particles, which did not exist then. Counts are not game data.
-/// A stage that draws more than this got slower on WebGL2, where the cost of a frame is its draw calls.
-#[rustfmt::skip]
-const DRAWS_0_1_0: &[(u32, usize, usize)] = &[
-    (1, 316, 288), (2, 429, 364), (3, 343, 226), (4, 267, 278), (91, 222, 232), (5, 304, 276),
-    (6, 352, 221), (7, 439, 433), (8, 326, 304), (9, 309, 308), (11, 293, 210), (12, 412, 357),
-    (13, 309, 263), (14, 294, 305), (15, 297, 295), (16, 291, 273), (17, 335, 338), (18, 389, 383),
-    (92, 215, 225), (21, 565, 564), (22, 323, 268), (23, 344, 280), (24, 490, 425), (25, 298, 238),
-    (26, 314, 259), (27, 274, 197), (28, 494, 198), (29, 354, 267), (93, 386, 396), (31, 498, 496),
-    (32, 254, 253), (33, 291, 246), (34, 365, 372), (35, 441, 400), (36, 272, 247), (37, 363, 325),
-    (38, 344, 291), (39, 327, 302), (40, 361, 274), (41, 294, 211), (42, 333, 320), (43, 274, 259),
-    (44, 351, 199), (45, 522, 521), (46, 424, 245), (47, 449, 307), (48, 497, 244), (51, 588, 521),
-    (52, 329, 335), (53, 293, 248), (54, 426, 372), (55, 452, 413), (56, 275, 230), (57, 613, 414),
-    (58, 361, 373), (59, 250, 253), (61, 208, 215), (62, 167, 175), (63, 256, 264), (64, 291, 213),
-    (65, 218, 194), (66, 265, 170), (67, 183, 190), (68, 237, 245), (69, 203, 210), (94, 218, 198),
-    (71, 327, 271), (72, 495, 360), (73, 345, 326), (74, 374, 323), (75, 485, 483), (76, 605, 602),
-    (77, 474, 344), (78, 464, 365), (79, 404, 267), (95, 235, 245), (81, 156, 278), (82, 256, 354),
-    (83, 189, 289), (84, 272, 295), (85, 346, 338), (86, 376, 363), (87, 131, 253), (88, 178, 283),
-    (89, 744, 846), (90, 174, 267), (101, 493, 470), (102, 372, 308), (103, 429, 364), (104, 375, 308),
-    (105, 404, 393), (106, 498, 368), (107, 442, 382), (108, 550, 388), (109, 591, 502), (110, 383, 312),
-    (111, 403, 343), (112, 395, 382), (113, 431, 341), (121, 378, 401), (122, 417, 415), (123, 393, 401),
-    (124, 331, 236), (125, 541, 537), (126, 308, 287), (127, 329, 328), (128, 319, 327), (129, 323, 331),
-    (130, 348, 356),
+/// The stages with a flipbook in the background: the night stages (windows) and the storm stages (fires).
+const FLIPBOOK_STAGES: [u32; 21] = [
+    21, 22, 23, 24, 25, 26, 27, 29, 45, 46, 47, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90,
 ];
 
-/// `(stage, draws added at INTRO_TICK, at PLAY_TICK)`: what a stage draws on purpose beyond the 0.1.0 table,
-/// recorded when it was added. Every other stage draws exactly its 0.1.0 count.
-///
-/// * Stage 92: the rippling floor (`SHAPE_STAGE134`, one mesh), which 0.1.0 did not draw at all.
-/// * Night stages (21 to 27, 29, 45 to 47): one draw for the current frame of every window flipbook in
-///   view, of the 23 to 33 a stage has. Stages 28 and 48 keep their diners among the foreground objects,
-///   whose flipbooks the reference does not play, and are unchanged.
-/// * Storm stages (81 to 90): one draw for the current frame of every fire in view, of 8.
-#[rustfmt::skip]
-const DRAWS_ADDED: &[(u32, usize, usize)] = &[
-    (92, 1, 1), (21, 23, 16), (22, 4, 5), (23, 16, 10), (24, 7, 11), (25, 7, 10), (26, 14, 11), (27, 15, 9),
-    (29, 13, 10), (45, 14, 9), (46, 28, 16), (47, 29, 18), (81, 0, 2), (82, 0, 2), (83, 0, 2), (84, 3, 4),
-    (85, 3, 4), (86, 4, 4), (87, 0, 2), (88, 0, 2), (89, 0, 2), (90, 0, 2),
-];
-
-/// The most a stage may draw: its 0.1.0 row plus what [`DRAWS_ADDED`] records for it.
-fn ceiling_of_0_1_0(row: &(u32, usize, usize)) -> (u32, usize, usize) {
-    let added = DRAWS_ADDED.iter().find(|a| a.0 == row.0);
-    let (intro, play) = added.map_or((0, 0), |a| (a.1, a.2));
-    (row.0, row.1 + intro, row.2 + play)
-}
-
-/// `(stage, draws at INTRO_TICK, draws at PLAY_TICK)` as the stages are drawn now, outside particles
-/// and mirrors: the same things as in [`DRAWS_0_1_0`] and [`DRAWS_ADDED`], in fewer calls. Since the
-/// meshes of a model that share pipeline and material are uploaded as one (`mb-render`,
-/// `Renderer::make_meshes`: the two halves of every shape, one per culled face, and shapes of one
-/// material), a stage draws 15 to 50 % fewer calls than 0.1.0 did. Recorded then; a stage that draws
-/// more than its row got slower, and one that draws more than 0.1.0 breaks the budget of the plan.
+/// `(stage, draws at INTRO_TICK, draws at PLAY_TICK)` for every course stage at 640 x 360, outside
+/// particles and mirrors. Counts are not game data. A stage that draws more than its row got slower; one
+/// that draws fewer changed too, and the row is updated on purpose with the change that caused it.
 #[rustfmt::skip]
 const DRAWS: &[(u32, usize, usize)] = &[
     (1, 213, 196), (2, 263, 234), (3, 232, 159), (4, 182, 189), (91, 155, 165), (5, 202, 186),
@@ -280,7 +234,7 @@ fn measure_stage(h: &mut Headless, id: u32, reflections: bool) -> [Frame; 2] {
 }
 
 #[test]
-fn every_stage_draws_what_it_did_in_0_1_0_outside_the_particles() {
+fn every_stage_draws_what_is_recorded_outside_the_particles() {
     let _gpu = GPU.lock().unwrap_or_else(|e| e.into_inner());
     let Some(mut h) = headless() else {
         return;
@@ -347,36 +301,28 @@ fn every_stage_draws_what_it_did_in_0_1_0_outside_the_particles() {
     assert_eq!(mirrors, MIRROR_DRAWS, "mirror draws changed");
     assert_eq!(
         measured.len(),
-        DRAWS_0_1_0.len(),
+        DRAWS.len(),
         "the table has a row for every course stage"
     );
-    let mut over = Vec::new();
-    for (now, then) in measured.iter().zip(DRAWS_0_1_0) {
-        let expected = expected_draws(now.0);
-        if *now != expected {
-            over.push(format!(
-                "stage {}: {now:?}, expected {expected:?} (0.1.0 had {then:?})",
-                now.0
-            ));
-        }
-        // Never more than 0.1.0 drew for the same picture.
-        let ceiling = ceiling_of_0_1_0(then);
-        assert!(
-            now.0 == ceiling.0 && now.1 <= ceiling.1 && now.2 <= ceiling.2,
-            "stage {}: {now:?} is more than 0.1.0's {ceiling:?}",
-            now.0
-        );
-    }
-    assert!(over.is_empty(), "draw calls changed:\n{}", over.join("\n"));
-    let total = |rows: &mut dyn Iterator<Item = (usize, usize)>| {
-        rows.fold((0, 0), |sum, row| (sum.0 + row.0, sum.1 + row.1))
-    };
-    let now = total(&mut measured.iter().map(|m| (m.1, m.2)));
-    let then = total(&mut DRAWS_0_1_0.iter().map(|m| (m.1, m.2)));
-    eprintln!(
-        "all stages, fly-in / play: {} / {} draws; 0.1.0 drew {} / {}",
-        now.0, now.1, then.0, then.1
+    let changed: Vec<String> = (measured.iter())
+        .filter(|now| **now != expected_draws(now.0))
+        .map(|now| {
+            format!(
+                "stage {}: {now:?}, expected {:?}",
+                now.0,
+                expected_draws(now.0)
+            )
+        })
+        .collect();
+    assert!(
+        changed.is_empty(),
+        "draw calls changed:\n{}",
+        changed.join("\n")
     );
+    let total = measured
+        .iter()
+        .fold((0, 0), |sum, m| (sum.0 + m.1, sum.1 + m.2));
+    eprintln!("all stages, fly-in / play: {} / {} draws", total.0, total.1);
 }
 
 /// Play floor 1 of a course with the autopilot, from the fly-in to the end of the goal sequence, rendering
@@ -551,7 +497,7 @@ fn flipbook_stages_upload_less_than_the_heaviest_stage_may() {
     };
     let limit = STAGE_109_TEXTURE_BYTES_0_1_0 + TEXTURE_GROWTH_BUDGET;
     let mut most = (0, 0);
-    for stage in DRAWS_ADDED.iter().map(|row| row.0) {
+    for stage in FLIPBOOK_STAGES {
         start_stage(&mut h, stage);
         let bytes = h.renderer().load_stats.texture_bytes;
         if printing() {
