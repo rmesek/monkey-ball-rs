@@ -602,12 +602,6 @@ pub const BG_DEPTH_OFFSET: f32 = 400.0;
 /// the window is sent to the very front of that order instead: drawn right after the opaque meshes.
 const UNSORTED_DEPTH_OFFSET: f32 = 1.0e6;
 
-/// The light group of a background object (`LightingGroups.getForBgFlags`: `flags >>> 28`). Group 0 is
-/// the stage's own light.
-pub fn bg_light_group(flags: u32) -> u32 {
-    flags >> 28
-}
-
 /// One plane of a loaded stage's mirror, with the objects that show the reflection in it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SceneMirrorLevel {
@@ -710,10 +704,10 @@ fn place_bg_objects(
             Some(id) => {
                 let obj = r.add_object(id, layer, trs_s16(v3(o.pos), o.rot, v3(o.scale)));
                 r.set_alpha(obj, 1.0 - o.translucency);
-                // `BgObjectInst.prepareToRender`: sorted 400 units behind where it is, and lit by its
-                // light group, which for every group but the first has no specular scale.
+                // `BgObjectInst.prepareToRender`: sorted 400 units behind where it is. (The reference
+                // also takes the world specular from objects in a light group other than the first,
+                // `flags >>> 28`; no background object of the SMB1 disc is in one.)
                 r.set_depth_offset(obj, BG_DEPTH_OFFSET);
-                r.set_world_specular_disabled(obj, bg_light_group(o.flags) != 0);
                 out.push(obj);
                 sources.push(index);
             }

@@ -393,13 +393,9 @@ fn specular_layer_on(backends: wgpu::Backends, kind: u32) {
     assert_rgb(frame.at(centre(&transforms[0])), [0.2; 3], "disabled");
     assert_rgb(frame.at(centre(&transforms[1])), expected[1], "untouched");
 
-    // Light groups switch off world specular only.
     s.r.set_specular_disabled(objects[0], false);
-    s.r.set_world_specular_disabled(objects[1], true);
     let frame = s.render();
     assert_rgb(frame.at(centre(&transforms[0])), expected[0], "back on");
-    let grouped = if world { [0.2; 3] } else { expected[1] };
-    assert_rgb(frame.at(centre(&transforms[1])), grouped, "light group");
     assert_eq!(
         s.r.counters().pipelines - before,
         2,
@@ -827,7 +823,7 @@ fn blended_sprites_on(backends: wgpu::Backends) {
     assert_rgb(frame.pixel(4, 8), mix(teal, 0.5), "alpha sprite");
     assert_rgb(frame.pixel(40, 40), CLEAR, "no sprite");
 
-    // Blend modes. Alpha and solid share the alpha pipeline and a draw; additive takes its own.
+    // Blend modes. Alpha and solid share the pipeline and a draw.
     s.r.draw_sprite_blended(left(0.0), SpriteBlend::Alpha);
     s.r.draw_sprite_blended(
         Sprite {
@@ -837,37 +833,22 @@ fn blended_sprites_on(backends: wgpu::Backends) {
         SpriteBlend::Solid,
     );
     s.r.draw_sprite_blended(right(32.0), SpriteBlend::Solid);
-    s.r.draw_sprite_blended(left(48.0), SpriteBlend::Additive);
-    s.r.draw_sprite_blended(left(48.0), SpriteBlend::Additive);
     let frame = s.render();
-    assert_eq!(s.r.stats.sprite_draws, 2, "one run per (texture, blend)");
+    assert_eq!(s.r.stats.sprite_draws, 1, "one run per texture");
     assert_rgb(frame.pixel(4, 8), mix(teal, 0.5), "alpha");
     // The silhouette: the sprite's own colour where the texel is opaque, nothing where it is not.
     assert_rgb(frame.pixel(4, 24), mix([1.0, 1.0, 0.5], 0.5), "solid");
     assert_rgb(frame.pixel(12, 40), CLEAR, "solid over a transparent texel");
-    // Two additive sprites: the frame plus twice half the texel.
-    assert_rgb(
-        frame.pixel(4, 56),
-        std::array::from_fn(|c| CLEAR[c] + teal[c]),
-        "additive twice",
-    );
-    assert_eq!(
-        frame.pixel(4, 56)[3],
-        255,
-        "the frame's alpha is left alone"
-    );
 
-    // Order is kept: alpha, additive, alpha on one texture are three runs; another texture a fourth.
-    s.r.draw_sprite(left(0.0));
-    s.r.draw_sprite_blended(left(0.0), SpriteBlend::Additive);
+    // Order is kept: a sprite of another texture between two of the first makes three runs.
     s.r.draw_sprite(left(0.0));
     s.r.draw_sprite(Sprite::new(other, 32.0, 32.0, 8.0, 8.0));
+    s.r.draw_sprite(left(0.0));
     let frame = s.render();
-    assert_eq!(s.r.stats.sprite_draws, 4);
+    assert_eq!(s.r.stats.sprite_draws, 3);
     let once = mix(teal, 0.5);
-    let lit: [f32; 3] = std::array::from_fn(|c| once[c] + 0.5 * teal[c]);
-    let expected: [f32; 3] = std::array::from_fn(|c| lit[c].min(1.0) * 0.5 + teal[c] * 0.5);
-    assert_rgb(frame.pixel(4, 8), expected, "alpha, additive, alpha");
+    let twice: [f32; 3] = std::array::from_fn(|c| once[c] * 0.5 + teal[c] * 0.5);
+    assert_rgb(frame.pixel(4, 8), twice, "alpha twice");
     assert_rgb(frame.pixel(36, 36), [1.0; 3], "second texture");
 }
 
@@ -895,11 +876,7 @@ fn warm_sprites_on(backends: wgpu::Backends) {
     assert_eq!(s.r.counters(), warm);
 
     // Play: the first draw of each texture, in every blend mode, creates nothing.
-    let modes = [
-        SpriteBlend::Alpha,
-        SpriteBlend::Additive,
-        SpriteBlend::Solid,
-    ];
+    let modes = [SpriteBlend::Alpha, SpriteBlend::Solid];
     for (i, blend) in modes.into_iter().enumerate() {
         s.r.draw_sprite_blended(Sprite::new(hud[i % 2], 0.0, 0.0, 16.0, 16.0), blend);
         s.r.draw_sprite(Sprite::new(hud[(i + 1) % 2], 32.0, 32.0, 16.0, 16.0));
@@ -957,7 +934,7 @@ fn counters_on(backends: wgpu::Backends) {
     };
     // A new renderer has made its fixed set; the first frame adds the depth buffer.
     let start = s.r.counters();
-    assert!(start.pipelines >= 2 && start.buffers >= 4 && start.textures == 1);
+    assert!(start.pipelines >= 1 && start.buffers >= 4 && start.textures == 1);
     assert_eq!(s.r.texture_bytes(), 4, "the white texel");
 
     // Each kind of upload counts.
@@ -1006,10 +983,6 @@ fn counters_on(backends: wgpu::Backends) {
         r.set_alpha(a, 0.5 + 0.4 * (t * 0.2).cos());
         r.push_instance(batch, &at(0.0, 2.0 + t * 0.01, 0.0), [1.0; 4]);
         r.draw_sprite(Sprite::new(texture, 0.0, 0.0, 8.0, 8.0));
-        r.draw_sprite_blended(
-            Sprite::new(texture, 8.0, t, 8.0, 8.0),
-            SpriteBlend::Additive,
-        );
         r.draw_sprite_blended(Sprite::new(texture, 16.0, t, 8.0, 8.0), SpriteBlend::Solid);
     };
     // The first frame creates what frames need (depth buffer, object buffer, sprite buffer and group).

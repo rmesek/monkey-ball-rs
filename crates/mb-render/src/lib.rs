@@ -34,7 +34,7 @@
 //! r.set_specular_disabled(inner_shell, true);            // disableSpecular
 //! r.set_wave(floor, Some(WaveParams::BONUS_WAVE));       // loading
 //! r.set_wave_time(stage_timer_frames);                   // every frame
-//! r.draw_sprite_blended(banner, SpriteBlend::Additive);
+//! r.draw_sprite_blended(banner, SpriteBlend::Solid);
 //! let before = r.counters();                             // GPU objects created so far
 //! r.reserve_objects(object_count);                       // loading: the first frame creates nothing
 //! ```

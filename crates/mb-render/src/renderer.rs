@@ -199,8 +199,6 @@ struct Object {
     tex_every_layer: bool,
     /// `RenderParams.disableSpecular`.
     specular_disabled: bool,
-    /// World-specular layers add nothing (the reference's background light groups).
-    world_specular_disabled: bool,
     wave: Option<WaveParams>,
     /// `RenderParams.depthOffset`: added to the sort distance of the object's blended meshes.
     depth_offset: f32,
@@ -1333,7 +1331,6 @@ impl Renderer {
             tex_matrix: ObjectExtra::default().tex_mtx,
             tex_every_layer: false,
             specular_disabled: false,
-            world_specular_disabled: false,
             wave: None,
             depth_offset: 0.0,
             dirty: true,
@@ -1457,17 +1454,6 @@ impl Renderer {
         let o = &mut self.objects[object.0];
         if o.specular_disabled != disabled {
             o.specular_disabled = disabled;
-            o.dirty = true;
-        }
-    }
-
-    /// World-specular layers of the object add nothing while view-specular ones stay: what the
-    /// reference does to background objects in a light group (`LightingGroups.getForBgFlags`, a
-    /// specular colour scale of zero for `flags >>> 28 != 0`).
-    pub fn set_world_specular_disabled(&mut self, object: ObjectId, disabled: bool) {
-        let o = &mut self.objects[object.0];
-        if o.world_specular_disabled != disabled {
-            o.world_specular_disabled = disabled;
             o.dirty = true;
         }
     }
@@ -1616,8 +1602,7 @@ impl Renderer {
     }
 
     /// [`Renderer::draw_sprite`] with a blend mode. Sprites draw in the order they are queued;
-    /// consecutive ones with the same texture share a draw call unless one is additive and the other
-    /// not, so a frame without additive sprites costs what it did.
+    /// consecutive ones with the same texture share a draw call, whatever their blend.
     pub fn draw_sprite_blended(&mut self, sprite: Sprite, blend: SpriteBlend) {
         self.sprite_queue.push((sprite, blend));
     }
@@ -1890,7 +1875,7 @@ impl Renderer {
                         bound: model.bound,
                         spec: [
                             !o.specular_disabled as u32 as f32,
-                            !(o.specular_disabled || o.world_specular_disabled) as u32 as f32,
+                            !o.specular_disabled as u32 as f32,
                             o.wave.is_some() as u32 as f32,
                             o.tex_every_layer as u32 as f32,
                         ],
