@@ -1,7 +1,5 @@
 //! Windowless driver: runs real game states on an offscreen target with scripted input. Used by the
-//! integration tests and the scripted play-through (`--autoplay`). Compiled with the `dev` feature only.
-
-use std::path::{Path, PathBuf};
+//! integration tests. Compiled with the `dev` feature only.
 
 use mb_game::{MemoryStorage, Profile, Storage};
 use mb_render::{OffscreenTarget, Renderer};
@@ -11,7 +9,6 @@ use crate::content::Content;
 use crate::game::{Game, GameCtx, GameStack};
 use crate::gpu::request_gpu;
 use crate::input::{Action, Axis, InputState};
-use crate::menu::Menu;
 use crate::ui::{Insets, Layout};
 
 /// One simulation tick, the frame time scripted runs use.
@@ -136,12 +133,6 @@ impl Headless {
         self.renderer.render_to_rgba(&self.target, camera)
     }
 
-    pub fn save_png(&mut self, path: &Path) -> Result<(), String> {
-        let rgba = self.render()?;
-        crate::image::write_image(path, self.size.0, self.size.1, &rgba)
-            .map_err(|e| format!("{}: {e}", path.display()))
-    }
-
     pub fn draws(&self) -> usize {
         self.renderer.stats.draws
     }
@@ -217,149 +208,4 @@ pub fn unlocked_storage() -> Box<dyn Storage> {
     // Writing to memory cannot fail.
     let _ = profile.save(&mut storage);
     Box::new(storage)
-}
-
-pub struct AutoplayOptions {
-    /// Stage id to play in practice mode (it must be part of a course).
-    pub stage: u32,
-    pub size: (u32, u32),
-    pub software: bool,
-    /// Where to write `NN_name.png` screenshots; `None` renders nothing.
-    pub screenshot_dir: Option<PathBuf>,
-    /// Give up after this many frames.
-    pub max_frames: u32,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct AutoplayReport {
-    pub adapter: String,
-    /// Status of the menu screen reached after the stage (`menu: practice clear` on a goal).
-    pub end_status: String,
-    pub frames: u32,
-    /// Simulation ticks of the attempt that reached the goal.
-    pub goal_tick: Option<u32>,
-    pub bananas: i32,
-    pub screenshots: Vec<PathBuf>,
-}
-
-/// Scripted play-through: open the title menu, walk it with key presses to Practice and the requested
-/// stage, play the stage with the waypoint autopilot until it ends, and save screenshots on the way.
-pub fn autoplay(content: &Content, opts: &AutoplayOptions) -> Result<AutoplayReport, String> {
-    use mb_game::Difficulty;
-    use mb_game::course::stage_list;
-
-    let (course, index) = Difficulty::ALL
-        .into_iter()
-        .enumerate()
-        .find_map(|(ci, d)| {
-            stage_list(d)
-                .iter()
-                .position(|e| e.id == opts.stage)
-                .map(|i| (ci, i))
-        })
-        .ok_or_else(|| format!("stage {} is not part of any course", opts.stage))?;
-
-    let mut h = Headless::new(content, opts.size, opts.software)?;
-    let mut shots = Vec::new();
-    let mut shot = |h: &mut Headless, name: &str| -> Result<(), String> {
-        let Some(dir) = &opts.screenshot_dir else {
-            return Ok(());
-        };
-        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-        let path = dir.join(format!("{:02}_{name}.png", shots.len() + 1));
-        h.save_png(&path)?;
-        shots.push(path);
-        Ok(())
-    };
-    let expect = |h: &Headless, what: &str| -> Result<(), String> {
-        if h.status() == what {
-            Ok(())
-        } else {
-            Err(format!("expected {what:?}, at {:?}", h.status()))
-        }
-    };
-
-    h.push(Box::new(Menu::new(unlocked_storage())))?;
-    h.step(FRAME)?;
-    expect(&h, "menu: title")?;
-    shot(&mut h, "title")?;
-    // Title: second row is Practice.
-    h.tap(Action::LookDown)?;
-    h.tap(Action::Confirm)?;
-    expect(&h, "menu: practice")?;
-    for _ in 0..course {
-        h.tap(Action::LookDown)?;
-    }
-    h.tap(Action::Confirm)?;
-    expect(&h, "menu: stage select")?;
-    for _ in 0..index {
-        h.tap(Action::LookDown)?;
-    }
-    h.step(FRAME)?;
-    shot(&mut h, "stage_select")?;
-    h.tap(Action::Confirm)?;
-    if h.top().and_then(|g| g.play_view()).is_none() {
-        return Err(format!("stage did not start, at {:?}", h.status()));
-    }
-
-    let mut pilot = None;
-    let mut frames = 0;
-    let mut goal_tick = None;
-    let mut bananas = 0;
-    let (mut seen_goal_frames, mut last_phase) = (0u32, String::new());
-    while h.pilot(&mut pilot, false) {
-        if !h.step(FRAME)? {
-            return Err("the game quit during autoplay".into());
-        }
-        frames += 1;
-        if frames > opts.max_frames {
-            return Err(format!(
-                "no result after {frames} frames, at {:?}",
-                h.status()
-            ));
-        }
-        let Some(view) = h.top().and_then(|g| g.play_view()) else {
-            break;
-        };
-        let sim = view.sim;
-        bananas = sim.ball.bananas;
-        let phase = format!("{:?}", sim.phase);
-        let name = match () {
-            _ if sim.intro_timer == 200 => Some("intro_flyin"),
-            _ if sim.intro_timer == 75 => Some("ready"),
-            _ if sim.intro_timer == 0 && sim.stage_timer_frames == 20 => Some("go"),
-            _ if sim.stage_timer_frames == 150 && sim.goal_timer == 0 => Some("play"),
-            _ if phase != last_phase && phase == "FallOut" => Some("fall_out"),
-            _ => None,
-        };
-        if sim.goal_timer > 0 {
-            if goal_tick.is_none() {
-                goal_tick = Some(sim.tick);
-            }
-            seen_goal_frames += 1;
-        }
-        let goal_shot = match seen_goal_frames {
-            2 => Some("goal_tape"),
-            38 => Some("goal_flash"),
-            45 => Some("goal"),
-            200 => Some("goal_score"),
-            _ => None,
-        };
-        last_phase = phase;
-        if let Some(name) = name.or(goal_shot) {
-            shot(&mut h, name)?;
-        }
-    }
-    h.step(FRAME)?;
-    shot(&mut h, "result")?;
-    let report = AutoplayReport {
-        adapter: h.adapter().to_string(),
-        end_status: h.status(),
-        frames,
-        goal_tick,
-        bananas,
-        screenshots: shots,
-    };
-    h.shutdown();
-    Ok(report)
 }

@@ -54,7 +54,7 @@ game states --(Sfx, roll, stage music, volumes)--> Audio --flush(), once per fra
 * No device, or a lost one: not an error. The backend stays silent, advances the mixer by wall-clock time
   so queued sounds end and the music is in the right place, and retries every two seconds.
 * Suspend (window minimized or occluded): the stream is paused, so no callbacks run.
-* Telemetry (a `dev` build prints it: `cargo desktop --features dev -- <disc> 1 --exit-after <s>`;
+* Telemetry (a `dev` build prints it: `cargo desktop --features dev -- 1 --exit-after <s>`;
   `--mute` opens no device): device name and
   format, stream opens and errors, callbacks, frames, peak and RMS of the rendered signal, clamped samples,
   messages applied / dropped, callbacks that found the mixer locked, and "late callbacks" (a gap of more

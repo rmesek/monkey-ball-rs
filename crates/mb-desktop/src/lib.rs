@@ -4,8 +4,7 @@
 //!
 //! The executable is called `mb-app`. The first time it asks for the disc image and copies the files the
 //! game uses out of it into one pack file beside the saves; from then on it starts from that pack and the
-//! image is not needed. Options are listed in [`USAGE`]; a build with the `dev` feature adds the developer
-//! ones in [`DEV_USAGE`].
+//! image is not needed. Options are listed in [`USAGE`].
 
 use std::path::{Path, PathBuf};
 
@@ -34,89 +33,12 @@ yet, a file dialog asks for the image. A stage number starts practice on that st
 /// The imported game data, in the save directory.
 const PACK_FILE: &str = "game.pack";
 
-#[cfg(feature = "dev")]
-const DEV_USAGE: &str = "
-developer options (this build has the `dev` feature):
-  --autoplay <stage>       windowless scripted run: menu -> practice -> stage, played by the autopilot;
-                           needs the disc image path; succeeds when the goal is reached
-      --screenshot-dir <dir>  write PNGs of the menu, intro, play and goal there
-      --size WxH              picture size for the run (default 1280x720)
-      --software              use the software adapter
-  --exit-after <seconds>   close the window after that long and print frame pacing and audio output";
-#[cfg(not(feature = "dev"))]
-const DEV_USAGE: &str = "";
-
-/// What the developer options ask for; empty without the `dev` feature.
-#[derive(Default)]
-struct DevArgs {
-    #[cfg(feature = "dev")]
-    autoplay: Option<u32>,
-    #[cfg(feature = "dev")]
-    screenshot_dir: Option<PathBuf>,
-    #[cfg(feature = "dev")]
-    size: Option<(u32, u32)>,
-    #[cfg(feature = "dev")]
-    software: bool,
-    #[cfg(feature = "dev")]
-    exit_after: Option<f32>,
-}
-
-impl DevArgs {
-    /// Take `option` (and its value from `value`) if it is a developer option.
-    #[cfg(feature = "dev")]
-    fn parse(
-        &mut self,
-        option: &str,
-        value: &mut dyn FnMut(&str) -> Result<String, String>,
-    ) -> Result<bool, String> {
-        match option {
-            "--autoplay" => {
-                let v = value("--autoplay")?;
-                self.autoplay = Some(v.parse().map_err(|_| format!("bad stage number {v:?}"))?);
-            }
-            "--screenshot-dir" => {
-                self.screenshot_dir = Some(PathBuf::from(value("--screenshot-dir")?))
-            }
-            "--size" => self.size = Some(parse_size(&value("--size")?)?),
-            "--software" => self.software = true,
-            "--exit-after" => {
-                let v = value("--exit-after")?;
-                self.exit_after = Some(
-                    v.parse::<f32>()
-                        .ok()
-                        .filter(|s| s.is_finite() && *s >= 0.0)
-                        .ok_or_else(|| format!("bad --exit-after {v:?}"))?,
-                );
-            }
-            _ => return Ok(false),
-        }
-        Ok(true)
-    }
-
-    #[cfg(not(feature = "dev"))]
-    fn parse(
-        &mut self,
-        _option: &str,
-        _value: &mut dyn FnMut(&str) -> Result<String, String>,
-    ) -> Result<bool, String> {
-        Ok(false)
-    }
-
-    /// The stage of a scripted run, which never touches the player's saves or the window.
-    fn autoplay(&self) -> Option<u32> {
-        #[cfg(feature = "dev")]
-        return self.autoplay;
-        #[cfg(not(feature = "dev"))]
-        None
-    }
-
-    fn exit_after(&self) -> Option<f32> {
-        #[cfg(feature = "dev")]
-        return self.exit_after;
-        #[cfg(not(feature = "dev"))]
-        None
-    }
-}
+/// The one developer option, of a build with the `dev` feature (the kill test uses it).
+const DEV_USAGE: &str = if cfg!(feature = "dev") {
+    "\n  --exit-after <seconds>   (dev) close the window after that long and print frame pacing and audio output"
+} else {
+    ""
+};
 
 struct Args {
     source: Option<PathBuf>,
@@ -125,7 +47,7 @@ struct Args {
     fullscreen: bool,
     course: Option<Difficulty>,
     mute: bool,
-    dev: DevArgs,
+    exit_after: Option<f32>,
 }
 
 fn parse_args(args: impl Iterator<Item = String>) -> Result<Args, String> {
@@ -137,7 +59,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Args, String> {
         fullscreen: false,
         course: None,
         mute: false,
-        dev: DevArgs::default(),
+        exit_after: None,
     };
     let mut it = args;
     while let Some(a) = it.next() {
@@ -154,11 +76,16 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Args, String> {
             "--pick" => out.pick = true,
             "--fullscreen" => out.fullscreen = true,
             "-h" | "--help" => return Err(String::new()),
-            s if s.starts_with("--") => {
-                if !out.dev.parse(s, &mut value)? {
-                    return Err(format!("unknown option {s}"));
-                }
+            "--exit-after" if cfg!(feature = "dev") => {
+                let v = value("--exit-after")?;
+                out.exit_after = Some(
+                    v.parse::<f32>()
+                        .ok()
+                        .filter(|s| s.is_finite() && *s >= 0.0)
+                        .ok_or_else(|| format!("bad --exit-after {v:?}"))?,
+                );
             }
+            s if s.starts_with("--") => return Err(format!("unknown option {s}")),
             _ => positional.push(a),
         }
     }
@@ -173,27 +100,14 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Args, String> {
     if p.next().is_some() {
         return Err("too many positional arguments".into());
     }
-    for id in [out.stage, out.dev.autoplay()].into_iter().flatten() {
-        if !mb_game::stages::is_playable_stage(id) {
-            return Err(format!(
-                "stage {id} is not part of the game (no course uses it)"
-            ));
-        }
+    if let Some(id) = out.stage
+        && !mb_game::stages::is_playable_stage(id)
+    {
+        return Err(format!(
+            "stage {id} is not part of the game (no course uses it)"
+        ));
     }
     Ok(out)
-}
-
-#[cfg(feature = "dev")]
-fn parse_size(s: &str) -> Result<(u32, u32), String> {
-    let (w, h) = s
-        .split_once(['x', 'X'])
-        .ok_or_else(|| format!("bad size {s:?}, expected WxH"))?;
-    let w: u32 = w.parse().map_err(|_| format!("bad width in {s:?}"))?;
-    let h: u32 = h.parse().map_err(|_| format!("bad height in {s:?}"))?;
-    if w == 0 || h == 0 || w > 8192 || h > 8192 {
-        return Err(format!("size {s:?} out of range"));
-    }
-    Ok((w, h))
 }
 
 /// Where this platform keeps everything: the saves (`profile.a`, `profile.b`: progress and settings) and
@@ -324,44 +238,6 @@ fn resolve_content(args: &Args, dir: Option<&Path>) -> Result<Content, String> {
     Ok(content)
 }
 
-/// The scripted, windowless run of `--autoplay`.
-#[cfg(feature = "dev")]
-fn autoplay(content: &Content, stage: u32, dev: &DevArgs) -> Result<(), String> {
-    use mb_app::headless::{AutoplayOptions, autoplay};
-    let report = autoplay(
-        content,
-        &AutoplayOptions {
-            stage,
-            size: dev.size.unwrap_or((1280, 720)),
-            software: dev.software,
-            screenshot_dir: dev.screenshot_dir.clone(),
-            max_frames: 60 * 150,
-        },
-    )?;
-    println!(
-        "autoplay stage {stage}: {} after {} frames ({}), goal at tick {:?}, {} banana(s), {} screenshot(s)",
-        report.end_status,
-        report.frames,
-        report.adapter,
-        report.goal_tick,
-        report.bananas,
-        report.screenshots.len()
-    );
-    for s in &report.screenshots {
-        println!("  {}", s.display());
-    }
-    if report.goal_tick.is_some() {
-        Ok(())
-    } else {
-        Err("the autopilot did not reach the goal".into())
-    }
-}
-
-#[cfg(not(feature = "dev"))]
-fn autoplay(_content: &Content, _stage: u32, _dev: &DevArgs) -> Result<(), String> {
-    unreachable!("--autoplay is only parsed with the dev feature")
-}
-
 fn run() -> Result<(), String> {
     let args = match parse_args(std::env::args().skip(1)) {
         Ok(a) => a,
@@ -373,16 +249,6 @@ fn run() -> Result<(), String> {
             std::process::exit(if e.is_empty() { 0 } else { 2 });
         }
     };
-    let scripted = args.dev.autoplay();
-    // A scripted run reads the image in place and never touches the player's own data.
-    if let Some(stage) = scripted {
-        let path = args
-            .source
-            .as_ref()
-            .ok_or("--autoplay needs the disc image path")?;
-        let content = open_disc_image(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        return autoplay(&content, stage, &args.dev);
-    }
     let dir = data_dir();
     let storage = open_storage(dir.as_deref());
     let content = resolve_content(&args, dir.as_deref())?;
@@ -399,7 +265,7 @@ fn run() -> Result<(), String> {
         None => menu,
     };
     let options = WindowOptions {
-        exit_after: args.dev.exit_after(),
+        exit_after: args.exit_after,
         fullscreen: args.fullscreen,
         audio: audio.clone(),
     };
@@ -415,7 +281,7 @@ fn run() -> Result<(), String> {
             }
         }
     }
-    if args.dev.exit_after().is_some() {
+    if args.exit_after.is_some() {
         // A timed run reports what it measured.
         println!("{}", stats.summary());
         if let Some(audio) = &audio {

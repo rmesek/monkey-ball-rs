@@ -38,7 +38,7 @@ pub mod backdrop;
 pub mod content;
 pub mod game;
 pub mod gpu;
-// The windowless driver of the integration tests and of `--autoplay`. It reads pixels back by blocking on the
+// The windowless driver of the integration tests. It reads pixels back by blocking on the
 // GPU, which the browser cannot do.
 #[cfg(all(feature = "dev", not(target_arch = "wasm32")))]
 pub mod headless;
@@ -68,14 +68,9 @@ pub use mb_audio;
 /// Re-exported so drivers can name `Storage` implementations without depending on `mb-game` themselves.
 pub use mb_game;
 
-/// The state every platform driver starts in once content is open: the title menu. `storage` is where the
-/// profile (progress, settings) is kept: `mb_game::FileStorage` on desktop, the platform's own elsewhere.
-pub fn initial_game(storage: Box<dyn mb_game::Storage>) -> Box<dyn game::Game> {
-    Box::new(menu::Menu::new(storage))
-}
-
-/// [`initial_game`] with sound: `audio` is the platform's audio system (see [`audio::Audio`]); the shell
-/// keeps a clone to suspend it with the app.
+/// The state a platform driver starts in once content is open: the title menu. `storage` is where the
+/// profile (progress, settings) is kept; `audio` is the platform's audio system (see [`audio::Audio`]), of
+/// which the driver keeps a clone to suspend it with the app.
 pub fn initial_game_with_audio(
     storage: Box<dyn mb_game::Storage>,
     audio: audio::Audio,

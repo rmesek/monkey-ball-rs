@@ -54,7 +54,7 @@ const NOTICE_LINES: usize = 4;
 /// Storage lines on the options screen (they hold paths) are wrapped to this many characters.
 const INFO_WIDTH: usize = 46;
 
-/// Jump straight into a stage or course when the menu opens (developer command line, autoplay).
+/// Jump straight into a stage or course when the menu opens (the desktop's command line).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Autostart {
     /// Practice on this stage id.

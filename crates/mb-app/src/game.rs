@@ -22,7 +22,7 @@ pub struct GameCtx<'a> {
     pub layout: Layout,
 }
 
-/// What automated drivers (autoplay, tests) may look at while a stage is being played.
+/// What a driver or a test may look at while a stage is being played.
 pub struct PlayView<'a> {
     /// What the menus asked for (stage, floor, lives and score at stage start, retry flag).
     pub request: &'a mb_game::PlayRequest,

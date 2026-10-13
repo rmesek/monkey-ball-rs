@@ -13,10 +13,9 @@ name = "mb-app"
 path = "src/main.rs"
 
 [features]
-# The developer options of the command line (`--autoplay`, `--exit-after`), which need the game library's
-# test support. Off in `cargo build` / `cargo run`; on for this crate's own test through the dev-dependency
-# below.
-dev = ["mb-app/dev"]
+# The developer option of the command line (`--exit-after`, which the kill test uses). Off in
+# `cargo build` / `cargo run`; on for this crate's own test through the dev-dependency below.
+dev = []
 
 [dependencies]
 # The game; `winit` switches on its keyboard bindings for winit's key codes.

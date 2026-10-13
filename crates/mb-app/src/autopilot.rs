@@ -1,4 +1,4 @@
-//! A simple closed-loop player for automated runs (`--autoplay`, integration tests): it steers the ball
+//! A simple closed-loop player for the integration tests: it steers the ball
 //! through the bananas of the main anim group and then through the goal by looking at the simulation state.
 //! It grew out of the waypoint controller in `mb-engine`'s parity tests (same velocity-error steering in
 //! the camera frame) and adds a line-up step in front of the goal. It only produces stick values, which
