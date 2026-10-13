@@ -1,6 +1,6 @@
 [package]
 name = "xtask"
-description = "Build tool behind `cargo xtask`: builds the static web site (web/dist) and runs the quality gates. Not part of the game; standard library only."
+description = "Build tool behind `cargo web` and `cargo xtask`: builds and serves the static web site (web/dist) and runs the quality gates. Not part of the game."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,3 +8,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+# wasm-bindgen's post-processing of the wasm module (the JS glue), as a library, so the web build is one
+# cargo command with nothing to install. Pinned to the version of the wasm-bindgen crate in mb-web: the
+# glue is tied to it (a test compares the two in Cargo.lock).
+wasm-bindgen-cli-support = "=0.2.129"

@@ -1,3 +1,8 @@
-# cargo xtask <command>: the project's build tool (xtask/src/main.rs). No scripts, nothing to install.
+# One command per thing, the same in every shell on every platform.
 [alias]
-xtask = "run --quiet -p xtask --"
+# The desktop program:  cargo desktop [options]
+desktop = "run --release -p mb-desktop --"
+# The web site, built and served on http://localhost:8080:  cargo web
+web = "run --quiet --release -p xtask -- web"
+# The build tool (xtask/src/main.rs):  cargo xtask check | build-web
+xtask = "run --quiet --release -p xtask --"

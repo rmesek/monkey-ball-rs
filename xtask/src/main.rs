@@ -1,21 +1,26 @@
-//! The project's build tool: one entry point on every platform, standard library only.
+//! The project's build tool: one entry point on every platform, no shell scripts.
 //!
 //! ```text
-//! cargo xtask build-web [--dev]               build the static web site into web/dist/
-//! cargo xtask check                           run the quality gates (AGENTS.md)
+//! cargo web [--dev] [--port N]          build the static web site and serve it on this machine
+//! cargo xtask build-web [--dev]         build the static web site into web/dist/
+//! cargo xtask check                     run the quality gates (AGENTS.md)
 //! ```
-//! `cargo xtask` is an alias for `cargo run --quiet -p xtask --` (`.cargo/config.toml`).
+//! `cargo web` and `cargo xtask` are aliases in `.cargo/config.toml` (and `cargo desktop` runs the desktop
+//! program).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 mod bundle;
+mod serve;
 
 const USAGE: &str = "usage:
+  cargo web [--dev] [--port N]
+      build the site (as build-web) and serve web/dist on http://localhost:8080 until Ctrl+C
   cargo xtask build-web [--dev]
-      build the browser target and assemble the static site in web/dist/
+      build the browser target and assemble the static site in web/dist/, to be hosted by any static
+      file server (python -m http.server will do)
         --dev     unoptimised build (quick to compile, slow to run; keeps function names for stack traces)
-      needs the wasm-bindgen command at the version of the wasm-bindgen crate in Cargo.lock
   cargo xtask check
       the quality gates: no game data tracked, cargo fmt, clippy (workspace, desktop program as shipped,
       browser build, the game library for Android) and cargo test --workspace --release";
@@ -87,52 +92,8 @@ fn run(mut command: Command) -> Result<(), String> {
     }
 }
 
-/// The version of the `wasm-bindgen` crate the build links, from `Cargo.lock`.
-fn locked_wasm_bindgen(lock: &str) -> Option<&str> {
-    let mut lines = lock.lines().map(str::trim);
-    while let Some(line) = lines.next() {
-        if line == "name = \"wasm-bindgen\"" {
-            return lines
-                .next()?
-                .strip_prefix("version = \"")?
-                .strip_suffix('"');
-        }
-    }
-    None
-}
-
-/// The wasm-bindgen command must be exactly the version of the crate: the glue it writes is tied to it.
-fn check_wasm_bindgen() -> Result<(), String> {
-    let lock = std::fs::read_to_string(root().join("Cargo.lock"))
-        .map_err(|e| format!("Cargo.lock: {e}"))?;
-    let want = locked_wasm_bindgen(&lock).ok_or("wasm-bindgen is not in Cargo.lock")?;
-    let install = format!("cargo install wasm-bindgen-cli --version {want} --locked");
-    let out = Command::new("wasm-bindgen")
-        .arg("--version")
-        .output()
-        .map_err(|_| {
-            format!("the wasm-bindgen command was not found. Install it with: {install}")
-        })?;
-    let text = String::from_utf8_lossy(&out.stdout);
-    let have = text.split_whitespace().nth(1).unwrap_or("");
-    if have == want {
-        Ok(())
-    } else {
-        Err(format!(
-            "the wasm-bindgen command is version {have:?} but the crate is {want}. Run: {install}"
-        ))
-    }
-}
-
-fn build_web(args: impl Iterator<Item = String>) -> Result<(), String> {
-    let mut dev = false;
-    for arg in args {
-        match arg.as_str() {
-            "--dev" => dev = true,
-            other => return Err(format!("unknown option {other}\n{USAGE}")),
-        }
-    }
-    check_wasm_bindgen()?;
+/// Build the site into `web/dist` and return that directory.
+fn build_web(dev: bool) -> Result<PathBuf, String> {
     let root = root();
     let target_dir = std::env::var_os("CARGO_TARGET_DIR")
         .map(PathBuf::from)
@@ -160,20 +121,27 @@ fn build_web(args: impl Iterator<Item = String>) -> Result<(), String> {
     if pkg.exists() {
         std::fs::remove_dir_all(&pkg).map_err(|e| format!("{}: {e}", pkg.display()))?;
     }
-    let mut bindgen = Command::new("wasm-bindgen");
-    bindgen.args(["--target", "no-modules", "--no-typescript"]);
-    if !dev {
-        // Drops the function-name section (about a fifth of the module; a panic still reports its message
-        // and source line).
-        bindgen.args(["--remove-name-section", "--remove-producers-section"]);
-    }
-    bindgen.arg("--out-dir").arg(&pkg).arg(
-        target_dir
-            .join("wasm32-unknown-unknown")
-            .join(if dev { "debug" } else { "web" })
-            .join("mb_web.wasm"),
-    );
-    run(bindgen)?;
+    // wasm-bindgen's own post-processing, linked into this tool at the version of the crate the game
+    // links (both are pinned), so there is no command to install and none to get out of step.
+    let mut bindgen = wasm_bindgen_cli_support::Bindgen::new();
+    bindgen
+        .input_path(
+            target_dir
+                .join("wasm32-unknown-unknown")
+                .join(if dev { "debug" } else { "web" })
+                .join("mb_web.wasm"),
+        )
+        .no_modules(true)
+        .map_err(|e| format!("wasm-bindgen: {e:#}"))?
+        .typescript(false)
+        // Without the function-name section (about a fifth of the module; a panic still reports its
+        // message and source line).
+        .remove_name_section(!dev)
+        .remove_producers_section(!dev);
+    println!("> wasm-bindgen (no-modules) -> {}", pkg.display());
+    bindgen
+        .generate(&pkg)
+        .map_err(|e| format!("wasm-bindgen: {e:#}"))?;
 
     // The size budget holds for the build that ships; an unoptimised module is several times the size.
     let wasm = pkg.join("mb_web_bg.wasm");
@@ -192,12 +160,25 @@ fn build_web(args: impl Iterator<Item = String>) -> Result<(), String> {
         pkg,
         out: out.clone(),
     })?;
-    println!(
-        "built web/dist ({} KiB wasm). Serve it with any static file server, for example:\n  \
-         cd web/dist\n  python -m http.server 8080",
-        size / 1024
-    );
-    Ok(())
+    println!("built web/dist ({} KiB wasm)", size / 1024);
+    Ok(out)
+}
+
+/// `--dev` and `--port N` of the web commands.
+fn web_options(args: impl Iterator<Item = String>, port: bool) -> Result<(bool, u16), String> {
+    let (mut dev, mut number) = (false, 8080);
+    let mut args = args;
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--dev" => dev = true,
+            "--port" if port => {
+                number = (args.next().and_then(|v| v.parse().ok()))
+                    .ok_or(format!("--port needs a number\n{USAGE}"))?
+            }
+            other => return Err(format!("unknown option {other}\n{USAGE}")),
+        }
+    }
+    Ok((dev, number))
 }
 
 /// Tracked files that look like game data (by extension).
@@ -284,7 +265,13 @@ fn check() -> Result<(), String> {
 fn main() {
     let mut args = std::env::args().skip(1);
     let result = match args.next().as_deref() {
-        Some("build-web") => build_web(args),
+        Some("build-web") => web_options(args, false).and_then(|(dev, _)| {
+            build_web(dev)?;
+            println!("host it with any static file server: python -m http.server -d web/dist 8080");
+            Ok(())
+        }),
+        Some("web") => web_options(args, true)
+            .and_then(|(dev, port)| build_web(dev).and_then(|dist| serve::run(&dist, port))),
         Some("check") if args.next().is_none() => check(),
         _ => {
             eprintln!("{USAGE}");
@@ -301,18 +288,32 @@ fn main() {
 mod tests {
     use super::*;
 
+    /// The versions of `name` in `Cargo.lock`.
+    fn locked_versions<'a>(lock: &'a str, name: &str) -> Vec<&'a str> {
+        let wanted = format!("name = \"{name}\"");
+        let mut lines = lock.lines().map(str::trim);
+        let mut found = Vec::new();
+        while let Some(line) = lines.next() {
+            if line == wanted
+                && let Some(v) = lines.next().and_then(|l| l.strip_prefix("version = \""))
+            {
+                found.push(v.trim_end_matches('"'));
+            }
+        }
+        found
+    }
+
     #[test]
-    fn reads_the_wasm_bindgen_version_from_the_lock_file() {
+    fn the_bindgen_in_this_tool_is_the_version_the_game_links() {
         let lock = "[[package]]\nname = \"wasm-bindgen-futures\"\nversion = \"0.4.1\"\n\n\
                     [[package]]\r\nname = \"wasm-bindgen\"\r\nversion = \"0.2.129\"\r\nsource = \"x\"\n";
-        assert_eq!(locked_wasm_bindgen(lock), Some("0.2.129"));
-        assert_eq!(
-            locked_wasm_bindgen("name = \"other\"\nversion = \"1\"\n"),
-            None
-        );
-        // The real lock file has it.
+        assert_eq!(locked_versions(lock, "wasm-bindgen"), ["0.2.129"]);
+        assert!(locked_versions(lock, "other").is_empty());
+        // The glue this tool writes is tied to the crate's version: one of each, and the same.
         let real = std::fs::read_to_string(root().join("Cargo.lock")).unwrap();
-        assert!(locked_wasm_bindgen(&real).is_some());
+        let game = locked_versions(&real, "wasm-bindgen");
+        assert_eq!(game.len(), 1);
+        assert_eq!(locked_versions(&real, "wasm-bindgen-cli-support"), game);
     }
 
     #[test]

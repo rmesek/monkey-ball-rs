@@ -289,20 +289,6 @@
     return lines;
   }
 
-  async function describeStorage() {
-    const note = $("storage-note");
-    try {
-      const { quota = 0, usage = 0 } = await navigator.storage.estimate();
-      const persisted = navigator.storage.persisted ? await navigator.storage.persisted() : false;
-      note.textContent =
-        `Storage used by this page: ${(usage / MB).toFixed(0)} MB` +
-        (quota ? ` of ${(quota / MB).toFixed(0)} MB available` : "") +
-        (persisted ? " (kept until you remove it)." : " (the browser may clear it when the device runs low).");
-    } catch (e) {
-      note.textContent = "";
-    }
-  }
-
   // ---- starting the game ----------------------------------------------------------------------------------
 
   async function startGame(data, mode) {
@@ -923,11 +909,8 @@
     pick.disabled = false;
     if (!window.isSecureContext || !(navigator.storage && navigator.storage.getDirectory)) {
       $("step-keep").textContent =
-        "The game reads what it needs straight from the file while you play. This page cannot keep data on " +
-        "the device (it was opened from a file or over plain http, or the browser has no private storage), " +
-        "so it asks for the file again next time.";
-    } else {
-      describeStorage();
+        "Choose your own disc image of Super Monkey Ball (GameCube): an RVZ, ISO or GCM file. " +
+        "This page cannot keep data here, so it reads from the file while you play and asks for it again next time.";
     }
   }
 

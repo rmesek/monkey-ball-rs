@@ -47,9 +47,6 @@
   h1 { font-size: 1.6rem; line-height: 1.2; margin: 0 0 .25em; }
   p { margin: .6em 0; color: var(--muted); }
   p strong { color: var(--text); font-weight: 600; }
-  ol { margin: .8em 0; padding-left: 1.4em; color: var(--muted); }
-  ol li { margin: .3em 0; }
-  ol strong { color: var(--text); font-weight: 600; }
 
   #drop {
     margin: 20px 0 12px; padding: 24px 16px; text-align: center;
@@ -98,21 +95,10 @@
 <body>
   <main id="landing">
     <div class="card">
-      <h1>Monkey Ball, Rust port</h1>
-      <p>This page contains only the engine. To play you need <strong>your own game file</strong>: a disc
-         image of <strong>Super Monkey Ball</strong> for the Nintendo GameCube (2001).</p>
-      <ol id="steps">
-        <li><strong>Choose the game file.</strong> Accepted: an RVZ image (uncompressed or Zstandard) or a
-            plain ISO / GCM image, of the USA disc (id GMBE8P, the tested one), the European disc (GMBP8P) or
-            the Japanese disc (GMBJ8P). A typical file is
-            <code>Super&nbsp;Monkey&nbsp;Ball&nbsp;(USA).rvz</code>, about 475 MB.</li>
-        <li id="step-keep">The page copies the files the game uses (about 145 MB) out of it into this
-            browser's private storage on this device. That takes a few seconds and happens once; the big
-            file itself is not kept.</li>
-        <li><strong>Play.</strong> From then on the game starts without asking for the file again. The game
-            data and your saves stay on this device until you remove them (Options in the game, or the
-            button below).</li>
-      </ol>
+      <h1>Monkey Ball</h1>
+      <p id="step-keep">Choose your own disc image of <strong>Super Monkey Ball</strong> (GameCube): an
+         RVZ, ISO or GCM file. It is read on this device and never uploaded; the game's files are copied
+         into this browser once.</p>
 
       <div id="drop">
         <div class="row">
@@ -127,9 +113,6 @@
         <p id="status" role="status" aria-live="polite">Loading the engine...</p>
       </div>
 
-      <p><strong>The file is read on this device and never uploaded.</strong> This page makes no network
-         requests; once it has loaded it works offline.</p>
-      <p id="storage-note" class="small"></p>
       <div class="row" style="justify-content:flex-start">
         <button id="remove" type="button" class="quiet" hidden>Remove imported game data</button>
       </div>

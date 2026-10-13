@@ -49,8 +49,6 @@ jobs:
       - run: cargo xtask check
       # The desktop program as shipped; reuses the dependencies the release-mode tests just built.
       - run: cargo build -p mb-desktop --release --locked
-      # The command must be the version of the crate in Cargo.lock (xtask checks it).
-      - run: cargo install wasm-bindgen-cli --locked --version "$(grep -A1 '^name = "wasm-bindgen"$' Cargo.lock | sed -n 's/^version = "\(.*\)"/\1/p')"
       - run: cargo xtask build-web
       - name: Attach the Linux executable and the web site
         env:
