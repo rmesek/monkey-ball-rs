@@ -3,6 +3,7 @@ name = "mb-desktop"
 description = "The desktop program (Windows, Linux, macOS): the window and its event loop, native gamepads, the file dialog, the command line"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 

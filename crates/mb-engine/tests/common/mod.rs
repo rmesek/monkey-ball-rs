@@ -7,7 +7,7 @@ use mb_assets::disc::DiscPack;
 use mb_assets::lzss;
 use mb_assets::pack::PackProvider;
 use mb_engine::tables::Tables;
-use mb_stage::{parse_stagedef_smb1, Stage};
+use mb_stage::{Stage, parse_stagedef_smb1};
 use std::path::PathBuf;
 use std::sync::OnceLock;
 

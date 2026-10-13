@@ -17,7 +17,7 @@
 use crate::gpu_types::MaterialUniform;
 use glam::{Mat4, Vec3};
 use mb_gma::{
-    material_flags, tev_layer_flags, BlendFactor, CullMode, Material, TevLayer, WrapMode,
+    BlendFactor, CullMode, Material, TevLayer, WrapMode, material_flags, tev_layer_flags,
 };
 
 /// Kind of a texture layer, in the order the shader expects.

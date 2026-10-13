@@ -3,6 +3,7 @@ name = "mb-assets"
 description = "GameCube disc image and RVZ readers, LZSS, and the on-device game pack format (no GPU or OS-specific code)"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 

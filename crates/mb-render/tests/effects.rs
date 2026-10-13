@@ -3,7 +3,7 @@
 //! beyond `downlevel_webgl2_defaults` fails here; `the_gl_backend_draws_the_same` repeats the scene on
 //! the GL backend (the browser's WebGL2 path) where the machine has one.
 
-use mb_gma::{material_flags, CullMode, Rgba8};
+use mb_gma::{CullMode, Rgba8, material_flags};
 use mb_render::glam::{Mat4, Vec3};
 use mb_render::material::{SamplerKey, WrapKey};
 use mb_render::{
@@ -288,9 +288,7 @@ fn hundreds_of_instances_of_several_models_cost_one_draw_per_model() {
         pushed += s.r.push_instance(small_batch, &m, [1.0, 1.0, 0.0, 1.0]) as usize;
         if i == 100 || i == 200 {
             let x = if i == 100 { -2.0 } else { 2.0 };
-            assert!(s
-                .r
-                .push_instance(big_batch, &at(x, 0.0, 0.0), [0.0, 1.0, 1.0, 1.0]));
+            assert!(s.r.push_instance(big_batch, &at(x, 0.0, 0.0), [0.0, 1.0, 1.0, 1.0]));
         }
     }
     assert_eq!(pushed, 300);

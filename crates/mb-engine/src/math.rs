@@ -107,11 +107,7 @@ pub fn sin_s16(angle: i32) -> f64 {
         index = 0x4000 - index;
     }
     let result = tables().sin[index as usize] as f64;
-    if a & 0x8000 != 0 {
-        -result
-    } else {
-        result
-    }
+    if a & 0x8000 != 0 { -result } else { result }
 }
 
 pub fn cos_s16(angle: i32) -> f64 {

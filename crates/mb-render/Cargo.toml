@@ -3,6 +3,7 @@ name = "mb-render"
 description = "Renderer: GX-material emulation on wgpu (no windowing)"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 

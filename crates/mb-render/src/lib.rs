@@ -75,10 +75,10 @@ pub use glam;
 pub use lighting::Lighting;
 pub use material::SamplerKey;
 pub use mirror::{Distortion, Mirror};
-pub use offscreen::{rgba_to_ppm, OffscreenTarget};
+pub use offscreen::{OffscreenTarget, rgba_to_ppm};
 pub use renderer::{
-    FrameStats, GpuCounters, GpuTexture, Layer, LoadStats, ModelId, ObjectId, Renderer, TextureId,
-    TextureSet, DEPTH_FORMAT,
+    DEPTH_FORMAT, FrameStats, GpuCounters, GpuTexture, Layer, LoadStats, ModelId, ObjectId,
+    Renderer, TextureId, TextureSet,
 };
 pub use sprite::{Sprite, SpriteBlend};
 pub use wave::WaveParams;

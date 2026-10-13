@@ -22,7 +22,7 @@ use common::find_disc;
 use std::sync::Mutex;
 
 use mb_app::content::{course_stage_ids, open_disc_image};
-use mb_app::headless::{Headless, FRAME};
+use mb_app::headless::{FRAME, Headless};
 use mb_app::input::Axis;
 use mb_app::menu::{Autostart, Menu};
 use mb_engine::Phase;

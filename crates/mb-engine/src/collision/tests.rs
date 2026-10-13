@@ -159,12 +159,14 @@ fn raycast_finds_the_floor_below() {
         .expect("hit");
     assert!(hit.pos.y.abs() < 1e-9);
     assert_eq!(hit.normal, Vec3::new(0.0, 1.0, 0.0));
-    assert!(c
-        .raycast_stage_down(&Vec3::new(3.9, 5.0, -3.9), &g, &groups)
-        .is_none());
-    assert!(c
-        .raycast_stage_down(&Vec3::new(1.0, -1.0, -1.0), &g, &groups)
-        .is_none());
+    assert!(
+        c.raycast_stage_down(&Vec3::new(3.9, 5.0, -3.9), &g, &groups)
+            .is_none()
+    );
+    assert!(
+        c.raycast_stage_down(&Vec3::new(1.0, -1.0, -1.0), &g, &groups)
+            .is_none()
+    );
 }
 
 #[test]

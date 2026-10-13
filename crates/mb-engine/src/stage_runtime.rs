@@ -726,15 +726,15 @@ impl StageRuntime {
                 None
             };
             let mut fly_target_local = None;
-            if state == BANANA_STATE_FLY {
-                if let Some(w) = fly_target_world {
-                    fly_target_local = Some(if group_id != 0 {
-                        self.stack.from_mtx(&self.anim_groups[group_id].transform);
-                        self.stack.rigid_inv_tf_point(&w)
-                    } else {
-                        w
-                    });
-                }
+            if state == BANANA_STATE_FLY
+                && let Some(w) = fly_target_world
+            {
+                fly_target_local = Some(if group_id != 0 {
+                    self.stack.from_mtx(&self.anim_groups[group_id].transform);
+                    self.stack.rigid_inv_tf_point(&w)
+                } else {
+                    w
+                });
             }
             update_banana(&mut self.bananas[bi], ball_local, fly_target_local);
         }
@@ -822,18 +822,18 @@ impl StageRuntime {
         }
         update_goal_bag_transform(bag, &mut self.stack);
         // The reference spawns the confetti whether or not visuals are suppressed.
-        if let Some(spawned) = self.confetti_spawned_goals.get_mut(goal_id) {
-            if !*spawned {
-                *spawned = true;
-                effects::spawn_goal_bag_confetti(
-                    &mut self.confetti,
-                    bag,
-                    &self.anim_groups[bag.anim_group_id],
-                    &ball.vel,
-                    &mut self.visual_stack,
-                    &mut self.visual_rng,
-                );
-            }
+        if let Some(spawned) = self.confetti_spawned_goals.get_mut(goal_id)
+            && !*spawned
+        {
+            *spawned = true;
+            effects::spawn_goal_bag_confetti(
+                &mut self.confetti,
+                bag,
+                &self.anim_groups[bag.anim_group_id],
+                &ball.vel,
+                &mut self.visual_stack,
+                &mut self.visual_rng,
+            );
         }
     }
 

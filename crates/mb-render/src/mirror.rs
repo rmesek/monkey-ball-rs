@@ -293,11 +293,7 @@ pub(crate) fn window_planes(clip: &Mat4, window: [f32; 4]) -> [Vec4; 6] {
     ]
     .map(|p| {
         let len = p.truncate().length();
-        if len > 0.0 {
-            p / len
-        } else {
-            p
-        }
+        if len > 0.0 { p / len } else { p }
     })
 }
 

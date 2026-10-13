@@ -25,10 +25,10 @@ pub mod world;
 
 pub use ball::{Ball, BallAudio, GoalHit};
 pub use camera::GameplayCamera;
-pub use determinism::{QuantizedInput, BUTTON_PRIMARY_ACTION};
+pub use determinism::{BUTTON_PRIMARY_ACTION, QuantizedInput};
 pub use effects::{BallEffect, BallEffectKind, ConfettiParticle};
 pub use hash::{hash_sim_state, hash_sim_state_visual};
 pub use sim::{Outcome, Phase, Sim, SimConfig, SimEvent};
 pub use stage_runtime::StageRuntime;
-pub use tables::{install_tables, Tables};
+pub use tables::{Tables, install_tables};
 pub use world::World;

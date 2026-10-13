@@ -28,16 +28,16 @@ mod web {
 
     use crate::shell::{self, Platform};
     use js_sys::{Array, Function, Uint8Array};
-    use mb_app::content::{boot_files, Content, DeferredSource, Fetch};
+    use mb_app::content::{Content, DeferredSource, Fetch, boot_files};
     use mb_app::host;
     use mb_app::import::Importer;
     use mb_app::input::{Action, Axis, InputState};
     use mb_app::tilt::TiltSteering;
     use mb_app::ui::Insets;
     use mb_assets::disc::{DiscStream, ImageKind, SNIFF_LEN};
-    use mb_assets::gamepack::{Crc32, Header, PackIndex, HEADER_LEN};
-    use wasm_bindgen::prelude::*;
+    use mb_assets::gamepack::{Crc32, HEADER_LEN, Header, PackIndex};
     use wasm_bindgen::JsCast;
+    use wasm_bindgen::prelude::*;
     use wasm_bindgen_futures::JsFuture;
     use winit::platform::web::WindowAttributesExtWebSys;
     use winit::window::{Window, WindowAttributes};
@@ -212,14 +212,14 @@ mod web {
     /// Call `globalThis[name](..args)` if the page (or worker) defines it.
     fn call_page(name: &str, args: &[JsValue]) {
         let global = js_sys::global();
-        if let Ok(f) = js_sys::Reflect::get(&global, &JsValue::from_str(name)) {
-            if let Some(f) = f.dyn_ref::<Function>() {
-                let list = Array::new();
-                for a in args {
-                    list.push(a);
-                }
-                let _ = f.apply(&JsValue::NULL, &list);
+        if let Ok(f) = js_sys::Reflect::get(&global, &JsValue::from_str(name))
+            && let Some(f) = f.dyn_ref::<Function>()
+        {
+            let list = Array::new();
+            for a in args {
+                list.push(a);
             }
+            let _ = f.apply(&JsValue::NULL, &list);
         }
     }
 
@@ -1032,10 +1032,10 @@ mod web {
         }
 
         fn insets_tick(&mut self) -> Insets {
-            if self.frames.is_multiple_of(120) {
-                if let Some(i) = Self::read_insets(self.css_ratio) {
-                    self.insets = i;
-                }
+            if self.frames.is_multiple_of(120)
+                && let Some(i) = Self::read_insets(self.css_ratio)
+            {
+                self.insets = i;
             }
             self.insets
         }

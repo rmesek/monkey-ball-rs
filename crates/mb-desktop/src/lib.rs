@@ -12,7 +12,7 @@ pub mod app;
 
 use app::WindowOptions;
 use mb_app::audio::Audio;
-use mb_app::content::{open_disc_image, Content, LAST_DISC_KEY};
+use mb_app::content::{Content, LAST_DISC_KEY, open_disc_image};
 use mb_app::menu::{Autostart, Menu};
 use mb_game::{Difficulty, FileStorage, MemoryStorage, SlotStorage, Storage};
 
@@ -289,7 +289,7 @@ fn remember(storage: &mut dyn Storage, path: &Path) {
 /// The scripted, windowless run of `--autoplay`.
 #[cfg(feature = "dev")]
 fn autoplay(content: &Content, stage: u32, dev: &DevArgs) -> Result<(), String> {
-    use mb_app::headless::{autoplay, AutoplayOptions};
+    use mb_app::headless::{AutoplayOptions, autoplay};
     let report = autoplay(
         content,
         &AutoplayOptions {

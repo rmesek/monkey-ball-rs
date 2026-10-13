@@ -2,7 +2,7 @@
 //! defaults quickly with the bad bytes kept, and every sequence of stage outcomes ends in a state the menu
 //! can leave.
 
-use mb_game::progress::{LoadError, Profile, BACKUP_KEY, PROFILE_KEY};
+use mb_game::progress::{BACKUP_KEY, LoadError, PROFILE_KEY, Profile};
 use mb_game::{
     CourseRun, Difficulty, GoalType, MemoryStorage, Progress, Rules, StageOutcome, Step, Storage,
 };

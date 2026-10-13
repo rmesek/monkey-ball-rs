@@ -3,6 +3,7 @@ name = "mb-audio"
 description = "Audio decoders (ADP music, MusyX sound effects) and PCM mixer"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 

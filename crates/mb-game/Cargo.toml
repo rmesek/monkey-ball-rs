@@ -3,6 +3,7 @@ name = "mb-game"
 description = "Course progression, lives, scores, unlocks, settings and local persistence (std only, offline)"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 

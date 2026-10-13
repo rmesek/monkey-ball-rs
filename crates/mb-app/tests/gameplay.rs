@@ -15,14 +15,14 @@ use std::rc::Rc;
 use std::sync::Mutex;
 
 use mb_app::autopilot::Autopilot;
-use mb_app::content::{open_disc_image, Content};
-use mb_app::headless::{Headless, FRAME};
+use mb_app::content::{Content, open_disc_image};
+use mb_app::headless::{FRAME, Headless};
 use mb_app::input::{Action, Axis};
 use mb_app::menu::Menu;
 use mb_engine::Phase;
 use mb_game::{Difficulty, MemoryStorage, Profile, Storage};
-use mb_render::glam::Vec3;
 use mb_render::Camera;
+use mb_render::glam::Vec3;
 
 /// One GPU device at a time: the tests are independent but there is no point in fighting over the adapter.
 static GPU: Mutex<()> = Mutex::new(());
@@ -894,7 +894,7 @@ fn a_green_goal_announces_the_floor_it_jumps_to() {
 /// names, a new one every other tick, by switching objects that exist since the load.
 #[test]
 fn night_windows_flip_through_their_frames_with_the_stage_timer() {
-    use mb_app::backdrop::{night_window_frame, FlipbookKind, NIGHT_WINDOW_LISTS};
+    use mb_app::backdrop::{FlipbookKind, NIGHT_WINDOW_LISTS, night_window_frame};
     let _gpu = GPU.lock().unwrap_or_else(|e| e.into_inner());
     let storage = SharedStorage::unlocked();
     let Some(mut h) = start(&storage) else {
@@ -971,7 +971,7 @@ fn night_windows_flip_through_their_frames_with_the_stage_timer() {
 /// offset ahead, standing where the stagedef puts them and turned about Y to the camera.
 #[test]
 fn storm_fires_flip_and_face_the_camera() {
-    use mb_app::backdrop::{camera_rot_y, storm_fire_frame, FlipbookKind, STORM_FIRE_FRAMES};
+    use mb_app::backdrop::{FlipbookKind, STORM_FIRE_FRAMES, camera_rot_y, storm_fire_frame};
     use mb_render::glam::Mat4;
     let _gpu = GPU.lock().unwrap_or_else(|e| e.into_inner());
     let storage = SharedStorage::unlocked();
@@ -1296,7 +1296,7 @@ struct MirrorModel {
 /// The mirror models of `stage` in the order of the scene's mirror surfaces (level by level), read
 /// from the stage's files; for stage 92, the floor of the wave.
 fn mirror_models(content: &Content, stage: u32) -> Vec<MirrorModel> {
-    use mb_app::mirror::{stage_mirror, StageMirror};
+    use mb_app::mirror::{StageMirror, stage_mirror};
     use mb_app::stage_scene::StageAssets;
     let assets = StageAssets::load(content, stage, None).unwrap();
     match stage_mirror(&assets) {

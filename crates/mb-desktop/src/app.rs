@@ -19,8 +19,8 @@ use winit::window::{Fullscreen, Window, WindowId};
 
 use mb_app::content::Content;
 use mb_app::game::{Game, GameCtx, GameStack};
-use mb_app::gpu::{pick_surface_format, request_gpu, Gpu};
-use mb_app::input::{action_for_key, Action, Axis, InputState};
+use mb_app::gpu::{Gpu, pick_surface_format, request_gpu};
+use mb_app::input::{Action, Axis, InputState, action_for_key};
 use mb_app::ui::{Insets, Layout, TouchControls, TouchPhase};
 
 /// Pixels scrolled per mouse-wheel notch.
@@ -411,12 +411,13 @@ impl ApplicationHandler for App {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(size) => {
-                if let Some(st) = self.state.as_mut() {
-                    if size.width > 0 && size.height > 0 {
-                        st.config.width = size.width;
-                        st.config.height = size.height;
-                        st.surface.configure(&st.gpu.device, &st.config);
-                    }
+                if let Some(st) = self.state.as_mut()
+                    && size.width > 0
+                    && size.height > 0
+                {
+                    st.config.width = size.width;
+                    st.config.height = size.height;
+                    st.surface.configure(&st.gpu.device, &st.config);
                 }
             }
             WindowEvent::Occluded(occluded) => self.occluded = occluded,

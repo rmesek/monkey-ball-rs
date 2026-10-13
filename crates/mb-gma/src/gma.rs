@@ -2,9 +2,9 @@
 
 use std::collections::HashMap;
 
-use crate::gx::{self, attr, CullMode};
-use crate::reader::{Budget, Reader};
 use crate::Error;
+use crate::gx::{self, CullMode, attr};
+use crate::reader::{Budget, Reader};
 use std::mem::size_of;
 
 const SHAPE_BASE_SIZE: usize = 0x60;
@@ -580,7 +580,7 @@ mod tests {
         let mut v = Vec::new();
         put32(&mut v, 2); // count
         put32(&mut v, 8 + 16 + 16); // gcmf base (names padded to 16)
-                                    // entry 0: invalid, entry 1: valid
+        // entry 0: invalid, entry 1: valid
         put32(&mut v, 0xffff_ffff);
         put32(&mut v, 0);
         put32(&mut v, 0);

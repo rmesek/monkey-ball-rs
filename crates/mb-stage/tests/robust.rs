@@ -4,7 +4,7 @@
 
 mod common;
 use common::*;
-use mb_stage::{parse_stagedef_smb1, Stage, StageError};
+use mb_stage::{Stage, StageError, parse_stagedef_smb1};
 
 #[global_allocator]
 static ALLOC: CountingAlloc = CountingAlloc;

@@ -3,6 +3,7 @@ name = "mb-web"
 description = "The browser target (wasm32): disc import, on-device game data and saves, Web Audio, the page's hooks for the browser driver"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 

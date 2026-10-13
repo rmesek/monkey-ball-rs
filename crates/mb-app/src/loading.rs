@@ -16,15 +16,15 @@ use mb_game::{Course, PlayRequest};
 use mb_render::Camera;
 
 use crate::audio::Audio;
-use crate::content::{stage_bg, Prepare, StageFiles, Wanted};
+use crate::content::{Prepare, StageFiles, Wanted, stage_bg};
 use crate::game::{Game, GameCtx, Transition};
 use crate::input::Action;
 use crate::play::PlayState;
 use crate::play_scene::PlayScene;
 use crate::stage_scene::{AssetCache, LoadTimings, StageAssets};
-use crate::text::{rgb, Align, FontId, Painter, UiAssets, WHITE};
+use crate::text::{Align, FontId, Painter, UiAssets, WHITE, rgb};
 use crate::ui::Rect;
-use crate::widgets::{back_button_rect, draw_back_button, fit_scale, Tap};
+use crate::widgets::{Tap, back_button_rect, draw_back_button, fit_scale};
 
 /// How a stage load that did not reach the stage ended.
 #[derive(Clone, Debug, PartialEq, Eq)]

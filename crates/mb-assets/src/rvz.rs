@@ -188,7 +188,7 @@ impl<S: DiscStream> RvzReader<S> {
             other => {
                 return Err(invalid(format!(
                     "RVZ compression method {other} is not supported (only none and Zstandard)"
-                )))
+                )));
             }
         };
         let chunk_size = u64::from(be32(&disc, 0x0C));
@@ -315,7 +315,7 @@ impl<S: DiscStream> RvzReader<S> {
                 (true, false) => {
                     return Err(invalid(format!(
                         "RVZ group {index} is compressed in an uncompressed image"
-                    )))
+                    )));
                 }
                 (false, _) => stored,
             };
@@ -712,16 +712,20 @@ mod tests {
         assert!(err(&|f| f[d + 0xC8] = 0x7F).contains("outside the file"));
         // A group whose stored size does not match the chunk.
         let short = build_rvz(0x8000, chunk, false, &raw, &[(pattern(100, 1), false, 0)]);
-        assert!(read_all(short)
-            .unwrap_err()
-            .to_string()
-            .contains("expected 32768"));
+        assert!(
+            read_all(short)
+                .unwrap_err()
+                .to_string()
+                .contains("expected 32768")
+        );
         // More data than groups.
         let missing = build_rvz(0x10000, chunk, false, &[(0x80, 0xFF80, 0, 2)], &groups);
-        assert!(read_all(missing)
-            .unwrap_err()
-            .to_string()
-            .contains("missing groups"));
+        assert!(
+            read_all(missing)
+                .unwrap_err()
+                .to_string()
+                .contains("missing groups")
+        );
         assert!(read_all(vec![0u8; 16]).is_err());
     }
 
@@ -857,9 +861,11 @@ mod tests {
                 (Vec::new(), false, 0),
             ],
         );
-        assert!(read_all(file)
-            .unwrap_err()
-            .to_string()
-            .contains("larger than its chunk"));
+        assert!(
+            read_all(file)
+                .unwrap_err()
+                .to_string()
+                .contains("larger than its chunk")
+        );
     }
 }

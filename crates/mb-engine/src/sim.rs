@@ -5,17 +5,17 @@
 //! Not modelled: result replays (dropped by decision), audio triggers and course progression (other crates).
 //! A finished sequence is reported through [`Phase::Finished`] instead of loading the next stage.
 
-use crate::ball::{check_ball_entered_goal, Ball, GoalHit, PhysicsCtx};
+use crate::ball::{Ball, GoalHit, PhysicsCtx, check_ball_entered_goal};
 use crate::camera::GameplayCamera;
-use crate::collision::{intersects_moving_spheres, PhysBall};
+use crate::collision::{PhysBall, intersects_moving_spheres};
 use crate::constants::*;
-use crate::determinism::{QuantizedInput, BUTTON_PRIMARY_ACTION};
+use crate::determinism::{BUTTON_PRIMARY_ACTION, QuantizedInput};
 use crate::geom::StageGeom;
 use crate::hash::{hash_sim_state, hash_sim_state_visual};
 use crate::math::*;
 use crate::stage_runtime::{
-    BoundSphere, CameraRef, StageRuntime, BANANA_HOLD_FRAMES, BANANA_STATE_HOLDING,
-    GOAL_TAPE_ANCHOR_Y,
+    BANANA_HOLD_FRAMES, BANANA_STATE_HOLDING, BoundSphere, CameraRef, GOAL_TAPE_ANCHOR_Y,
+    StageRuntime,
 };
 use crate::world::World;
 use mb_stage::{GoalType, Stage};
@@ -680,15 +680,14 @@ impl Sim {
             && ball_is_somewhere
             && self.ball.flags & ball_flags::INVISIBLE == 0
             && self.ball.state == ball_states::PLAY
-        {
-            if let Some(hit) = check_ball_entered_goal(
+            && let Some(hit) = check_ball_entered_goal(
                 &mut self.ball,
                 &self.geom,
                 &self.runtime,
                 &mut self.ctx.collider,
-            ) {
-                self.begin_goal_sequence(hit);
-            }
+            )
+        {
+            self.begin_goal_sequence(hit);
         }
 
         if ringout_active {

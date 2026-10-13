@@ -14,7 +14,7 @@ use std::rc::Rc;
 
 use glam::{Mat4, Vec3};
 use mb_engine::determinism::quantize_input;
-use mb_engine::{Outcome, Phase, Sim, SimConfig, BUTTON_PRIMARY_ACTION};
+use mb_engine::{BUTTON_PRIMARY_ACTION, Outcome, Phase, Sim, SimConfig};
 use mb_game::course::{AdvanceInfo, INFO_GOAL};
 use mb_game::progress::ControlMode;
 use mb_game::{Course, GoalType, PlayMode, PlayRequest, PlayResult, StageOutcome};
@@ -24,12 +24,12 @@ use crate::audio::{Audio, Sfx, StageSounds};
 use crate::game::{Game, GameCtx, PlayView, Transition};
 use crate::hud::{Hud, HudFrame};
 use crate::input::{Action, InputState};
-use crate::play_scene::{lerp_s16, PlayScene};
+use crate::play_scene::{PlayScene, lerp_s16};
 use crate::stage_scene::S16_TO_RADIANS;
-use crate::text::{rgb, Align, FontId, Painter, UiAssets};
+use crate::text::{Align, FontId, Painter, UiAssets, rgb};
 use crate::ui::{Layout, Rect};
 use crate::widgets::{
-    back_button_rect, draw_back_button, draw_list, fit_scale, ListLayout, ListState, Row, Tap,
+    ListLayout, ListState, Row, Tap, back_button_rect, draw_back_button, draw_list, fit_scale,
 };
 
 /// Seconds per simulation tick.

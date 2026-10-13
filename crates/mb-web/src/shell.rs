@@ -33,8 +33,8 @@ use winit::window::{Window, WindowAttributes, WindowId};
 
 use mb_app::content::Content;
 use mb_app::game::{Game, GameCtx, GameStack};
-use mb_app::gpu::{pick_surface_format, required_limits, Gpu};
-use mb_app::input::{action_for_key, Action, InputState};
+use mb_app::gpu::{Gpu, pick_surface_format, required_limits};
+use mb_app::input::{Action, InputState, action_for_key};
 use mb_app::perf::FrameSample;
 use mb_app::ui::{Insets, Layout, TouchControls, TouchPhase};
 
@@ -306,10 +306,10 @@ impl<P: Platform> Shell<P> {
         let lost = self.device_lost.clone();
         gpu.device.set_device_lost_callback(move |reason, message| {
             // `Destroyed` is our own teardown.
-            if reason != wgpu::DeviceLostReason::Destroyed {
-                if let Ok(mut slot) = lost.lock() {
-                    *slot = Some(message);
-                }
+            if reason != wgpu::DeviceLostReason::Destroyed
+                && let Ok(mut slot) = lost.lock()
+            {
+                *slot = Some(message);
             }
         });
         self.platform.on_ready(&gpu.describe());
@@ -586,10 +586,11 @@ impl<P: Platform> ApplicationHandler for Shell<P> {
             WindowEvent::RedrawRequested => {
                 self.frame(event_loop);
                 // The next frame, at the display's pace. A hidden window gets none until it is shown again.
-                if !self.hidden && !self.failed {
-                    if let Some(w) = &self.window {
-                        w.request_redraw();
-                    }
+                if !self.hidden
+                    && !self.failed
+                    && let Some(w) = &self.window
+                {
+                    w.request_redraw();
                 }
             }
             _ => {}

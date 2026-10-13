@@ -14,7 +14,7 @@
 
 mod common;
 
-use mb_engine::determinism::{QuantizedInput, BUTTON_PRIMARY_ACTION};
+use mb_engine::determinism::{BUTTON_PRIMARY_ACTION, QuantizedInput};
 use mb_engine::{Outcome, Phase, Sim, SimConfig};
 
 /// FNV-1a over 32-bit words.

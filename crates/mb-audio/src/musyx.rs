@@ -16,7 +16,7 @@
 
 use crate::dsp::{decode_dsp_adpcm, dsp_byte_len};
 use crate::mixer::Sound;
-use crate::{be_u16, be_u32, AudioError, Result};
+use crate::{AudioError, Result, be_u16, be_u32};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 

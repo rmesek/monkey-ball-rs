@@ -13,7 +13,7 @@ use mb_engine::effects::{CONFETTI_PER_GOAL, MAX_BALL_EFFECTS};
 use mb_engine::math::Vec3 as V3;
 use mb_engine::{Outcome, Phase, Sim, SimConfig};
 use mb_stage::*;
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 
 fn v(x: f32, y: f32, z: f32) -> Vec3 {
     Vec3 { x, y, z }

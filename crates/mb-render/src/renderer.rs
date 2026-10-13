@@ -14,7 +14,7 @@ use wgpu::util::DeviceExt;
 
 use crate::camera::Camera;
 use crate::effects::{
-    BlendMode, DrawOrder, InstanceBatchId, InstanceStyle, Quad, Shadow, DRAW_ORDERS,
+    BlendMode, DRAW_ORDERS, DrawOrder, InstanceBatchId, InstanceStyle, Quad, Shadow,
 };
 use crate::gpu_types::{
     InstanceRaw, MaterialUniform, ObjectExtra, ObjectSlot, ObjectUniform, SceneUniform, Vertex,
@@ -22,11 +22,11 @@ use crate::gpu_types::{
 use crate::instances::InstanceStore;
 use crate::lighting::Lighting;
 use crate::material::{
-    material_uniform_layers, naomi_material_uniform, naomi_pipeline_key, naomi_sampler_key,
-    opaque_at_full_alpha, pipeline_key, sampler_key, LayerInfo, LayerKind, PipelineKey, SamplerKey,
-    WrapKey,
+    LayerInfo, LayerKind, PipelineKey, SamplerKey, WrapKey, material_uniform_layers,
+    naomi_material_uniform, naomi_pipeline_key, naomi_sampler_key, opaque_at_full_alpha,
+    pipeline_key, sampler_key,
 };
-use crate::mirror::{self, Mirror, MirrorGpu, MirrorTarget, MirrorUniform, Plane, CLIP_LIFT};
+use crate::mirror::{self, CLIP_LIFT, Mirror, MirrorGpu, MirrorTarget, MirrorUniform, Plane};
 // Only the readback path (`render_to_rgba`) names the type, and that path does not exist on wasm32.
 #[cfg(not(target_arch = "wasm32"))]
 use crate::offscreen::OffscreenTarget;
@@ -459,11 +459,7 @@ fn frustum_planes(clip: &Mat4) -> [Vec4; 6] {
     let (r0, r1, r2, r3) = (clip.row(0), clip.row(1), clip.row(2), clip.row(3));
     [r3 + r0, r3 - r0, r3 + r1, r3 - r1, r2, r3 - r2].map(|p| {
         let len = p.truncate().length();
-        if len > 0.0 {
-            p / len
-        } else {
-            p
-        }
+        if len > 0.0 { p / len } else { p }
     })
 }
 

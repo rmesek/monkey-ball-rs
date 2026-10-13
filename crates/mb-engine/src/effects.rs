@@ -8,7 +8,7 @@
 
 use crate::ball::Ball;
 use crate::collision::{Collider, RayHit};
-use crate::constants::{ball_states, COLI_OCCURRED};
+use crate::constants::{COLI_OCCURRED, ball_states};
 use crate::geom::StageGeom;
 use crate::math::*;
 use crate::objects::{AnimGroupState, GoalBagState};
@@ -446,13 +446,12 @@ fn update_effect_ground(
             ground
                 .collider
                 .raycast_stage_down(&effect.pos, ground.geom, ground.groups)
+            && effect.pos.y - threshold < hit.pos.y
         {
-            if effect.pos.y - threshold < hit.pos.y {
-                effect.has_ground = true;
-                effect.ground_pos = hit.pos;
-                effect.ground_normal = hit.normal;
-                effect.ground_vel = hit.surface_vel;
-            }
+            effect.has_ground = true;
+            effect.ground_pos = hit.pos;
+            effect.ground_normal = hit.normal;
+            effect.ground_vel = hit.surface_vel;
         }
     }
     if !effect.has_ground {
@@ -782,13 +781,12 @@ pub(crate) fn update_confetti(
                 ground
                     .collider
                     .raycast_stage_down(&frag.pos, ground.geom, ground.groups)
+                && hit.pos.y > frag.pos.y - CONFETTI_GROUND_CHECK
             {
-                if hit.pos.y > frag.pos.y - CONFETTI_GROUND_CHECK {
-                    frag.on_ground = true;
-                    frag.ground_pos = hit.pos;
-                    frag.ground_normal = hit.normal;
-                    frag.ground_vel = hit.surface_vel;
-                }
+                frag.on_ground = true;
+                frag.ground_pos = hit.pos;
+                frag.ground_normal = hit.normal;
+                frag.ground_vel = hit.surface_vel;
             }
         }
 

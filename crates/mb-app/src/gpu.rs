@@ -90,7 +90,7 @@ pub fn request_gpu(
                     adapter,
                     device,
                     queue,
-                })
+                });
             }
             Err(e) => last_err = format!("{e}"),
         }

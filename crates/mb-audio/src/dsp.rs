@@ -103,7 +103,7 @@ mod tests {
         let mut coefs = [0i16; 16];
         coefs[2] = 1024; // idx 1: c0 = 0.5 * h1
         coefs[3] = 1024; // c1 = 0.5 * h2
-                         // header 0x13: idx 1, scale 8. nibble 4 -> 32.
+        // header 0x13: idx 1, scale 8. nibble 4 -> 32.
         let frame = [0x13, 0x40, 0x00, 0, 0, 0, 0, 0];
         let out = decode_dsp_adpcm(&frame, &coefs, 3, 100, -20).unwrap();
         // s0 = (4*8*2048 + 1024 + 1024*100 + 1024*-20) >> 11 = (65536+1024+81920) >> 11 = 148480>>11 = 72

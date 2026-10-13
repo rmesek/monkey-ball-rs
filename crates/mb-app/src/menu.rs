@@ -20,7 +20,7 @@ use glam::Vec3;
 use mb_game::course::stage_list;
 use mb_game::progress::ControlMode;
 use mb_game::run::{Floor, Step};
-use mb_game::stages::{bg_name, DEFAULT_STAGE_TIME};
+use mb_game::stages::{DEFAULT_STAGE_TIME, bg_name};
 use mb_game::{
     CourseRun, Difficulty, PlayMode, PlayReport, PlayRequest, PlayResult, Profile, Storage,
 };
@@ -33,11 +33,11 @@ use crate::input::Action;
 use crate::loading::{LoadOutcome, StageLoad, StageShared};
 use crate::play::PlayState;
 use crate::play_scene::PlayScene;
-use crate::text::{rgb, Align, Color, FontId, Painter, UiAssets, WHITE};
+use crate::text::{Align, Color, FontId, Painter, UiAssets, WHITE, rgb};
 use crate::ui::Rect;
 use crate::widgets::{
-    back_button_rect, draw_back_button, draw_list, draw_rail, fit_scale, fit_scale_lines,
-    ListLayout, ListState, Row, Tap,
+    ListLayout, ListState, Row, Tap, back_button_rect, draw_back_button, draw_list, draw_rail,
+    fit_scale, fit_scale_lines,
 };
 
 const BACKGROUND: [f64; 4] = [0.02, 0.07, 0.24, 1.0];
@@ -584,12 +584,13 @@ impl Menu {
             _ => None,
         };
         let same_stage = |s: &PlayScene| s.stage_id() == request.stage_id;
-        if request.retry && self.parked.as_ref().is_some_and(same_stage) {
-            if let Some(scene) = self.parked.take() {
-                let park = Some(self.shared.park.clone());
-                let play = PlayState::new(request, ui, self.audio.clone(), scene, park);
-                return Transition::Push(Box::new(play.with_course(course)));
-            }
+        if request.retry
+            && self.parked.as_ref().is_some_and(same_stage)
+            && let Some(scene) = self.parked.take()
+        {
+            let park = Some(self.shared.park.clone());
+            let play = PlayState::new(request, ui, self.audio.clone(), scene, park);
+            return Transition::Push(Box::new(play.with_course(course)));
         }
         let load = StageLoad::new(request, ui, self.audio.clone(), self.shared.clone());
         Transition::Push(Box::new(load.with_course(course)))
@@ -875,12 +876,11 @@ impl Menu {
                 }
             }
             Screen::GameOver { .. } => {
-                if index == 0 {
-                    if let Some(Active::Run(run)) = &mut self.active {
-                        if let Some(Step::Retry(floor)) = run.continue_run() {
-                            return self.start_floor(&floor);
-                        }
-                    }
+                if index == 0
+                    && let Some(Active::Run(run)) = &mut self.active
+                    && let Some(Step::Retry(floor)) = run.continue_run()
+                {
+                    return self.start_floor(&floor);
                 }
                 self.active = None;
                 self.go(Screen::Title, 0);
@@ -1293,9 +1293,11 @@ mod tests {
         m.activate(5);
         assert_eq!(m.rows()[6].label, "TILT RANGE");
         m.activate(9);
-        assert!(host::drain()
-            .iter()
-            .all(|c| !matches!(c, host::Command::RemoveGameData)));
+        assert!(
+            host::drain()
+                .iter()
+                .all(|c| !matches!(c, host::Command::RemoveGameData))
+        );
         m.activate(9);
         assert!(host::drain().contains(&host::Command::RemoveGameData));
         m.storage

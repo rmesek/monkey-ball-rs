@@ -486,9 +486,11 @@ mod tests {
         );
         assert!(!sw.contains("dev"));
         // Line ends are normalised, so the hash in the policy is over what the browser parses.
-        assert!(!fs::read_to_string(out.join("main.js"))
-            .unwrap()
-            .contains('\r'));
+        assert!(
+            !fs::read_to_string(out.join("main.js"))
+                .unwrap()
+                .contains('\r')
+        );
         let single = fs::read_to_string(out.join(SINGLE_FILE)).unwrap();
         let main_block = "\n// main.js\nlet a = 1;\n\n";
         assert!(single.contains(&format!("<script>{main_block}</script>")));

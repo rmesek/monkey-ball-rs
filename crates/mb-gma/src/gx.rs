@@ -1,8 +1,8 @@
 //! GX constants and display-list decoding (port of `gx.ts` / `gx_displaylist.ts` and the noclip VtxLoader
 //! behaviour used for GMA shapes).
 
-use crate::reader::Reader;
 use crate::Error;
+use crate::reader::Reader;
 
 /// Vertex attribute indices (bit positions in a material's `vtx_attrs`).
 pub mod attr {

@@ -10,9 +10,9 @@
 //! [`MixStats`] is the honest telemetry of what was rendered: callbacks, frames, peak and RMS of the final
 //! signal, clipped samples, messages lost to a full queue.
 
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering::Relaxed};
-use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TrySendError};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering::Relaxed};
+use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 
 use crate::mixer::{Bus, Mixer, PlayParams, Sound, VoiceId};
 

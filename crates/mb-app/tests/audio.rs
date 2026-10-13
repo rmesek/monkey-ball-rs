@@ -18,11 +18,11 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use mb_app::audio::{Audio, AudioBackend, BackendReport, Bus, Command, MixBackend, Recorded};
-use mb_app::content::{open_disc_image, Content};
-use mb_app::headless::{Headless, FRAME};
+use mb_app::content::{Content, open_disc_image};
+use mb_app::headless::{FRAME, Headless};
 use mb_app::input::Action;
 use mb_app::menu::Menu;
-use mb_audio::driver::{mix_channel, MixDriver, MixMsg};
+use mb_audio::driver::{MixDriver, MixMsg, mix_channel};
 use mb_audio::mixer::Sound;
 use mb_audio::wav::wav_bytes_f32;
 use mb_game::MemoryStorage;

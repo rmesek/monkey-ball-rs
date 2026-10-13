@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use mb_audio::driver::{mix_channel, MixDriver};
+use mb_audio::driver::{MixDriver, mix_channel};
 use mb_audio::mixer::Sound;
 
 use crate::audio::{AudioBackend, BackendReport, Command, MixBackend};

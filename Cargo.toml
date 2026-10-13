@@ -1,5 +1,5 @@
 [workspace]
-resolver = "2"
+resolver = "3"
 members = [
     # Files and formats (std only).
     "crates/mb-assets", "crates/mb-stage", "crates/mb-tpl", "crates/mb-gma", "crates/mb-audio",
@@ -14,7 +14,9 @@ members = [
 
 [workspace.package]
 version = "0.2.0"
-edition = "2021"
+edition = "2024"
+# The oldest toolchain the code is built with; edition 2024 needs 1.85.
+rust-version = "1.88"
 license = "MIT OR Apache-2.0"
 publish = false
 

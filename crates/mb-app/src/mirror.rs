@@ -16,7 +16,7 @@ use mb_stage::Stage;
 
 use crate::anim::world_from_group;
 use crate::backdrop::{BONUS_WAVE_MODEL_NAME, BONUS_WAVE_STAGE_ID};
-use crate::stage_scene::{naomi_model, StageAssets};
+use crate::stage_scene::{StageAssets, naomi_model};
 
 /// `StageId.St102_Hitter` and `StageId.St103_Av_Logo`: flat mirrors whatever the stagedef names.
 pub const HITTER_STAGE_ID: u32 = 102;

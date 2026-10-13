@@ -10,7 +10,7 @@
 //! a 24-bit name offset, then (file) data offset and length, or (directory) parent index and the index one
 //! past its last entry; the string table follows the entries.
 
-use crate::pack::{disc_path, PackProvider};
+use crate::pack::{PackProvider, disc_path};
 use crate::rvz::RvzReader;
 use std::collections::HashMap;
 use std::io::{self, Read};
@@ -22,8 +22,7 @@ pub const SMB1_IDS: [(&str, &str); 3] =
     [("GMBE8P", "USA"), ("GMBP8P", "Europe"), ("GMBJ8P", "Japan")];
 
 /// What the reader accepts, as told to the user.
-pub const SUPPORTED: &str =
-    "Supported: RVZ (uncompressed or Zstandard) and ISO/GCM images of Super Monkey Ball (USA/EUR/JPN).";
+pub const SUPPORTED: &str = "Supported: RVZ (uncompressed or Zstandard) and ISO/GCM images of Super Monkey Ball (USA/EUR/JPN).";
 
 /// Pack path under which the game executable is served (it lives outside the disc's file table).
 pub const MAIN_DOL_PATH: &str = "sys/main.dol";
@@ -710,10 +709,12 @@ pub(crate) mod tests {
         assert_eq!(ImageKind::sniff(b"GMBE8P\0\0"), ImageKind::Unknown);
         let mut wii = vec![0u8; SNIFF_LEN];
         wii[0x18..0x1C].copy_from_slice(&WII_MAGIC);
-        assert!(ImageKind::sniff(&wii)
-            .check_supported()
-            .unwrap_err()
-            .contains("Wii"));
+        assert!(
+            ImageKind::sniff(&wii)
+                .check_supported()
+                .unwrap_err()
+                .contains("Wii")
+        );
     }
 
     /// Hostile and damaged images: an error, never a panic or an allocation sized by the file's claims.

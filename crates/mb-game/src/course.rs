@@ -5,7 +5,7 @@
 //! `stageTimeOverrides` only exist for SMB2 / pack courses and are not used here.
 
 use crate::scripts;
-use crate::stages::{stage_id_from_name, stage_label_from_name, DEFAULT_STAGE_TIME};
+use crate::stages::{DEFAULT_STAGE_TIME, stage_id_from_name, stage_label_from_name};
 
 /// `INFO_FLAGS` bits that the scripts look at.
 pub const INFO_GOAL: u32 = 1 << 0;

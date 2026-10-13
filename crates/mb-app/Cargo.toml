@@ -3,6 +3,7 @@ name = "mb-app"
 description = "The game as a library, the same on every platform: states (menus, loading, play, HUD), scene assembly, the input, host and content seams. No window, no event loop: the platform drivers (mb-desktop, mb-web) are built on it"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 

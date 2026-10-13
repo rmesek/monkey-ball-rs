@@ -557,10 +557,11 @@ impl<'a> Reader<'a> {
     fn start_positions(&self, off: Option<usize>, fallout: Option<usize>) -> Res<Vec<StartPos>> {
         let Some(o) = off else { return Ok(Vec::new()) };
         let mut count = 1;
-        if let Some(f) = fallout {
-            if f > o && f - o >= START_POS_SIZE {
-                count = ((f - o) / START_POS_SIZE).max(1);
-            }
+        if let Some(f) = fallout
+            && f > o
+            && f - o >= START_POS_SIZE
+        {
+            count = ((f - o) / START_POS_SIZE).max(1);
         }
         self.charge(count.saturating_mul(size_of::<StartPos>()))?;
         (0..count)

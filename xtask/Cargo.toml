@@ -3,6 +3,7 @@ name = "xtask"
 description = "Build tool behind `cargo xtask`: builds the static web site (web/dist) and runs the quality gates. Not part of the game; standard library only."
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 

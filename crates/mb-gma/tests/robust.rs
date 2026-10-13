@@ -4,7 +4,7 @@
 
 mod common;
 use common::*;
-use mb_gma::{attr, decode_display_list, parse_gma, parse_naomi_obj, Error};
+use mb_gma::{Error, attr, decode_display_list, parse_gma, parse_naomi_obj};
 
 #[global_allocator]
 static ALLOC: CountingAlloc = CountingAlloc;
@@ -21,10 +21,11 @@ fn gma_all(bytes: &[u8]) -> Result<usize, Error> {
     let mut tris = 0;
     for m in gma.iter() {
         for mesh in m.meshes()? {
-            assert!(mesh
-                .indices
-                .iter()
-                .all(|&i| (i as usize) < mesh.vertices.len()));
+            assert!(
+                mesh.indices
+                    .iter()
+                    .all(|&i| (i as usize) < mesh.vertices.len())
+            );
             tris += mesh.triangle_count();
         }
         let _ = m.shapes.iter().map(|s| m.shape_tev_layers(s).count());
@@ -37,10 +38,11 @@ fn nl_all(bytes: &[u8]) -> Result<usize, Error> {
     let mut tris = 0;
     for m in &obj.models {
         for mesh in &m.meshes {
-            assert!(mesh
-                .indices
-                .iter()
-                .all(|&i| (i as usize) < mesh.vertices.len()));
+            assert!(
+                mesh.indices
+                    .iter()
+                    .all(|&i| (i as usize) < mesh.vertices.len())
+            );
             tris += mesh.triangle_count();
         }
     }

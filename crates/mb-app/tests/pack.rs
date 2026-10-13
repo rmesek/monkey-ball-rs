@@ -13,10 +13,10 @@ use std::rc::Rc;
 use std::sync::{Mutex, OnceLock};
 
 use mb_app::content::{
-    all_files, boot_files, course_stage_ids, Content, DeferredPack, Prepare, StageFiles, Wanted,
+    Content, DeferredPack, Prepare, StageFiles, Wanted, all_files, boot_files, course_stage_ids,
 };
-use mb_app::headless::{Headless, FRAME};
-use mb_app::import::{import_to_vec, Importer};
+use mb_app::headless::{FRAME, Headless};
+use mb_app::import::{Importer, import_to_vec};
 use mb_app::input::Action;
 use mb_app::menu::Menu;
 use mb_app::stage_scene::{AssetCache, LoadTimings, StageAssets};

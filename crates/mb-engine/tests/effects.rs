@@ -254,11 +254,7 @@ fn a_hard_landing_throws_a_flash_stars_and_sparks() {
         let rolling = {
             let s = sim.ball.vel;
             let speed = (s.x * s.x + s.y * s.y + s.z * s.z).sqrt() * 5.0;
-            if speed > 1.5 {
-                speed as usize
-            } else {
-                0
-            }
+            if speed > 1.5 { speed as usize } else { 0 }
         };
         let sparks = count(&sim, BallEffectKind::Coli);
         assert!(

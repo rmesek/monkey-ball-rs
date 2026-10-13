@@ -12,7 +12,7 @@ use std::fmt::Write as _;
 
 use mb_game::{Difficulty, GoalType};
 
-use crate::text::{rgb, with_alpha, Align, Color, FontId, Painter, WHITE};
+use crate::text::{Align, Color, FontId, Painter, WHITE, rgb, with_alpha};
 use crate::ui::{Layout, Rect};
 
 const HURRY_UP_FRAMES: i32 = 11 * 60;
@@ -1464,10 +1464,11 @@ mod tests {
         for _ in 0..60 {
             hud.tick(&f);
             most = most.max(hud.warp_trails.len());
-            assert!(hud
-                .warp_trails
-                .iter()
-                .all(|t| t.life > 0 && t.opacity > 0.0));
+            assert!(
+                hud.warp_trails
+                    .iter()
+                    .all(|t| t.life > 0 && t.opacity > 0.0)
+            );
         }
         assert_eq!(most, 8);
         // They end with the banner.

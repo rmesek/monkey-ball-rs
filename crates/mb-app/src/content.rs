@@ -19,11 +19,11 @@ use std::path::Path;
 use std::rc::Rc;
 
 use mb_assets::disc::{DiscStream, MAIN_DOL_PATH};
-use mb_assets::pack::{disc_path, PackProvider};
-use mb_game::course::stage_list;
+use mb_assets::pack::{PackProvider, disc_path};
 use mb_game::Difficulty;
+use mb_game::course::stage_list;
 
-use crate::stage_info::{bg_by_name, bg_for_stage_or_nearest, BgInfo};
+use crate::stage_info::{BgInfo, bg_by_name, bg_for_stage_or_nearest};
 
 /// Storage key under which the desktop program remembers the path of the disc image (the image itself is
 /// read in place and never copied).
@@ -282,10 +282,10 @@ impl Content {
     /// [`Content::read`] for a file that is read exactly once (a music stream): prepared content hands over
     /// its copy instead of cloning it, so the file is in memory once, not twice.
     pub fn read_once(&self, path: &str) -> io::Result<Vec<u8>> {
-        if let Backing::Deferred(d) = &self.backing {
-            if let Some(bytes) = d.ready.borrow_mut().remove(&disc_path(path)) {
-                return Ok(bytes);
-            }
+        if let Backing::Deferred(d) = &self.backing
+            && let Some(bytes) = d.ready.borrow_mut().remove(&disc_path(path))
+        {
+            return Ok(bytes);
         }
         self.read(path)
     }
@@ -703,9 +703,10 @@ mod tests {
         assert!(!s1.naomi && s1.wanted().len() == 3 + 2 + 4 + 1);
         let s10 = StageFiles::for_stage(10);
         assert!(s10.naomi);
-        assert!(s10
-            .wanted()
-            .contains(&Wanted::file("test/st010/st010_p.lz")));
+        assert!(
+            s10.wanted()
+                .contains(&Wanted::file("test/st010/st010_p.lz"))
+        );
 
         let ids = course_stage_ids();
         assert!(ids.len() > 100 && ids.contains(&1) && ids.contains(&92));

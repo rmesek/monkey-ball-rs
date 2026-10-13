@@ -115,15 +115,17 @@ fn every_gma_parses_with_sane_geometry() {
             {
                 let v = &mesh.vertices;
                 let n = v.len();
-                assert!([
-                    v.normals.len(),
-                    v.colors.len(),
-                    v.uv0.len(),
-                    v.uv1.len(),
-                    v.uv2.len()
-                ]
-                .iter()
-                .all(|&l| l == n));
+                assert!(
+                    [
+                        v.normals.len(),
+                        v.colors.len(),
+                        v.uv0.len(),
+                        v.uv1.len(),
+                        v.uv2.len()
+                    ]
+                    .iter()
+                    .all(|&l| l == n)
+                );
                 assert_eq!(mesh.indices.len() % 3, 0);
                 assert!(
                     mesh.indices.iter().all(|&i| (i as usize) < n),
@@ -148,7 +150,10 @@ fn every_gma_parses_with_sane_geometry() {
             }
         }
     }
-    eprintln!("{} gma files, {models} models, {tris} triangles, {nan_normals}/{total_vertices} NaN normals", gmas.len());
+    eprintln!(
+        "{} gma files, {models} models, {tris} triangles, {nan_normals}/{total_vertices} NaN normals",
+        gmas.len()
+    );
     // The original data contains a few NaN normals (degenerate faces); positions must always be finite.
     assert!(nan_normals * 100 < total_vertices);
     assert!(models > 500 && tris > 100_000);

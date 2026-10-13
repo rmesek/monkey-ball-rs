@@ -245,8 +245,8 @@ pub struct AutoplayReport {
 /// Scripted play-through: open the title menu, walk it with key presses to Practice and the requested
 /// stage, play the stage with the waypoint autopilot until it ends, and save screenshots on the way.
 pub fn autoplay(content: &Content, opts: &AutoplayOptions) -> Result<AutoplayReport, String> {
-    use mb_game::course::stage_list;
     use mb_game::Difficulty;
+    use mb_game::course::stage_list;
 
     let (course, index) = Difficulty::ALL
         .into_iter()

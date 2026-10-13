@@ -3,7 +3,7 @@
 mod common;
 
 use mb_engine::math::{atan2_s16, cos_s16, sin_s16};
-use mb_engine::tables::{Tables, ATAN_LEN, SIN_LEN};
+use mb_engine::tables::{ATAN_LEN, SIN_LEN, Tables};
 
 #[test]
 fn real_tables_load_and_look_like_trig() {

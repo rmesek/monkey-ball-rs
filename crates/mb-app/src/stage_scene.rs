@@ -14,13 +14,13 @@ use mb_stage::{S16Vec, Stage};
 use web_time::Instant;
 
 use crate::anim::world_from_group;
-use crate::backdrop::{self, Flipbook, FlipbookKind, BONUS_WAVE_MODEL_NAME, BONUS_WAVE_STAGE_ID};
+use crate::backdrop::{self, BONUS_WAVE_MODEL_NAME, BONUS_WAVE_STAGE_ID, Flipbook, FlipbookKind};
 use crate::content::{
-    common_files, stage_bg, Content, StageFiles, Wanted, COMMON_GMA, COMMON_NL_OBJ, COMMON_NL_TPL,
-    COMMON_TPL,
+    COMMON_GMA, COMMON_NL_OBJ, COMMON_NL_TPL, COMMON_TPL, Content, StageFiles, Wanted,
+    common_files, stage_bg,
 };
 use crate::mirror::{
-    stage_mirror, MirrorKind, MirrorPlane, StageMirror, BG_FLAG_NOT_IN_MIRROR, MODEL_FLAG_IN_MIRROR,
+    BG_FLAG_NOT_IN_MIRROR, MODEL_FLAG_IN_MIRROR, MirrorKind, MirrorPlane, StageMirror, stage_mirror,
 };
 use crate::stage_info::BgInfo;
 
@@ -854,12 +854,12 @@ impl StageScene {
         }
         // `World.bonusWaveModel`: resolved by name and drawn in stage space, tilting with the stage.
         let mut wave_floor = None;
-        if a.id == BONUS_WAVE_STAGE_ID {
-            if let Some(model) = loader.bonus_wave(r) {
-                let floor = r.add_object(model, Layer::World, Mat4::IDENTITY);
-                wave_objects.push(floor);
-                wave_floor = Some(floor);
-            }
+        if a.id == BONUS_WAVE_STAGE_ID
+            && let Some(model) = loader.bonus_wave(r)
+        {
+            let floor = r.add_object(model, Layer::World, Mat4::IDENTITY);
+            wave_objects.push(floor);
+            wave_floor = Some(floor);
         }
 
         // The mirror floor (`Render.ts`, `World.prepareToRenderMirrors`), now that every object exists.

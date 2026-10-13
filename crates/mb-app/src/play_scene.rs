@@ -20,10 +20,10 @@
 //!   with mirrors at two heights the one the camera is above is chosen.
 
 use glam::{Mat4, Quat, Vec3};
+use mb_engine::Sim;
 use mb_engine::constants::ball_flags;
 use mb_engine::math::Mtx;
 use mb_engine::stage_runtime::BoundSphere;
-use mb_engine::Sim;
 use mb_render::{Camera, Layer, ModelId, ObjectId, Renderer, Shadow, WaveParams};
 use web_time::Instant;
 
@@ -31,7 +31,7 @@ use crate::anim::{interpolate, loop_wrap};
 use crate::backdrop::{self, Clouds};
 use crate::particles::{self, ParticleFrame, Particles, TICK_MS};
 use crate::stage_scene::{
-    ItemKind, LazyTextures, LoadTimings, StageAssets, StageScene, S16_TO_RADIANS,
+    ItemKind, LazyTextures, LoadTimings, S16_TO_RADIANS, StageAssets, StageScene,
 };
 
 /// `STAGE_TILT_SCALE`: how much of the simulated tilt is shown.

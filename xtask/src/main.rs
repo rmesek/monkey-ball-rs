@@ -223,13 +223,12 @@ fn check() -> Result<(), String> {
         .arg("ls-files")
         .current_dir(root())
         .output()
+        && out.status.success()
     {
-        if out.status.success() {
-            let listing = String::from_utf8_lossy(&out.stdout);
-            let bad = tracked_game_data(&listing);
-            if !bad.is_empty() {
-                return Err(format!("game data must not be tracked: {}", bad.join(", ")));
-            }
+        let listing = String::from_utf8_lossy(&out.stdout);
+        let bad = tracked_game_data(&listing);
+        if !bad.is_empty() {
+            return Err(format!("game data must not be tracked: {}", bad.join(", ")));
         }
     }
     let gates: [&[&str]; 6] = [

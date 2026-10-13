@@ -13,7 +13,7 @@ mod common;
 use common::find_disc;
 
 use mb_app::content::{course_stage_ids, open_disc_image};
-use mb_app::mirror::{group_poses, stage_mirror, MirrorPlane, NoMirror, StageMirror};
+use mb_app::mirror::{MirrorPlane, NoMirror, StageMirror, group_poses, stage_mirror};
 use mb_app::stage_scene::StageAssets;
 use mb_render::glam::{Mat4, Vec3};
 

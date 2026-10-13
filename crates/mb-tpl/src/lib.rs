@@ -303,10 +303,10 @@ struct Dst<'a> {
 impl Dst<'_> {
     #[inline]
     fn put(&mut self, idx: isize, v: u8) {
-        if idx >= 0 {
-            if let Some(p) = self.buf.get_mut(idx as usize) {
-                *p = v;
-            }
+        if idx >= 0
+            && let Some(p) = self.buf.get_mut(idx as usize)
+        {
+            *p = v;
         }
     }
     #[inline]

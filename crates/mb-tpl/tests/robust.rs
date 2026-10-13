@@ -4,7 +4,7 @@
 
 mod common;
 use common::*;
-use mb_tpl::{parse, TplError, MAX_DIMENSION};
+use mb_tpl::{MAX_DIMENSION, TplError, parse};
 
 #[global_allocator]
 static ALLOC: CountingAlloc = CountingAlloc;

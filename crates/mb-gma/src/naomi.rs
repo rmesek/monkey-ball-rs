@@ -6,9 +6,9 @@
 
 use std::collections::HashMap;
 
+use crate::Error;
 use crate::gx::{CullMode, Primitive, Vertices};
 use crate::reader::{Budget, Reader};
-use crate::Error;
 use std::mem::size_of;
 
 /// Decoded bytes allowed per input byte (see [`Budget`]). The largest ratio on the retail disc is 3.5.

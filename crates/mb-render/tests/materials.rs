@@ -6,7 +6,7 @@
 //! Geometry and textures are built here; expected colours come from the CPU twins of the shader maths in
 //! `mb_render::material` and `mb_render::wave`, which unit tests tie to the reference's matrices.
 
-use mb_gma::{material_flags, tev_layer_flags, CullMode, Rgba8};
+use mb_gma::{CullMode, Rgba8, material_flags, tev_layer_flags};
 use mb_render::glam::{Mat4, Vec3};
 use mb_render::material::{model_dir_view, specular_uv, view_specular_rows, world_specular_rows};
 use mb_render::{

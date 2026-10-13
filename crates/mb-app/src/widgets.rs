@@ -13,7 +13,7 @@
 //! Pure layout and input maths plus draw helpers; no state beyond [`ListState`] and [`Tap`].
 
 use crate::input::{Action, InputState};
-use crate::text::{with_alpha, Align, Color, FontId, Painter, WHITE};
+use crate::text::{Align, Color, FontId, Painter, WHITE, with_alpha};
 use crate::ui::{Layout, Rect};
 
 /// Pointer travel (in density-independent pixels) after which a press is a drag, not a tap.
@@ -298,21 +298,23 @@ impl ListState {
             // A mouse selects what it hovers over (only when it actually moved, so it does not fight the
             // keys); a finger selects what it presses.
             let moved = self.last_pointer != Some(pos) && !input.touch_active();
-            if (moved || input.pointer_pressed()) && !dragging && self.rail_hold.is_none() {
-                if let Some(i) = l.item_at(pos, self.scroll).filter(|i| enabled(*i)) {
-                    self.selected = i;
-                }
+            if (moved || input.pointer_pressed())
+                && !dragging
+                && self.rail_hold.is_none()
+                && let Some(i) = l.item_at(pos, self.scroll).filter(|i| enabled(*i))
+            {
+                self.selected = i;
             }
-            if input.pointer_released() {
-                if let Some(press) = self.press.take() {
-                    let hit = l.item_at(pos, self.scroll);
-                    // Movement decides, not time: a slow, deliberate press is still a tap.
-                    if !press.dragged && hit.is_some() && hit == press.item {
-                        activated = hit.filter(|i| enabled(*i));
-                    }
-                    if !press.dragged {
-                        self.velocity = 0.0;
-                    }
+            if input.pointer_released()
+                && let Some(press) = self.press.take()
+            {
+                let hit = l.item_at(pos, self.scroll);
+                // Movement decides, not time: a slow, deliberate press is still a tap.
+                if !press.dragged && hit.is_some() && hit == press.item {
+                    activated = hit.filter(|i| enabled(*i));
+                }
+                if !press.dragged {
+                    self.velocity = 0.0;
                 }
             }
         }

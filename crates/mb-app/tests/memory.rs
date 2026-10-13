@@ -35,7 +35,7 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use mb_app::content::open_disc_image;
-use mb_app::headless::{Headless, FRAME};
+use mb_app::headless::{FRAME, Headless};
 use mb_app::menu::{Autostart, Menu};
 
 /// Live bytes and their high-water mark.

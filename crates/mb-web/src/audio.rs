@@ -29,11 +29,11 @@ use std::sync::Arc;
 
 use mb_app::audio::{Audio, AudioBackend, BackendReport, Bus, Command, MASTER_GAIN};
 use mb_app::mb_audio::adp::{
-    adp_frame_count, AdpDecoder, ADP_FRAME_BYTES, ADP_FRAME_SAMPLES, ADP_SAMPLE_RATE,
+    ADP_FRAME_BYTES, ADP_FRAME_SAMPLES, ADP_SAMPLE_RATE, AdpDecoder, adp_frame_count,
 };
 use mb_app::mb_audio::mixer::Sound;
-use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
+use wasm_bindgen::prelude::*;
 use web_sys::{
     AnalyserNode, AudioBuffer, AudioBufferSourceNode, AudioContext, AudioContextState, AudioNode,
     AudioScheduledSourceNode, GainNode,
@@ -573,12 +573,12 @@ pub fn audio_debug_json() -> String {
     };
     let ctx = &shared.ctx;
     let mut analyser = shared.analyser.borrow_mut();
-    if analyser.is_none() {
-        if let Ok(a) = ctx.create_analyser() {
-            a.set_fft_size(ANALYSER_SIZE);
-            if connect(&shared.master, &a).is_ok() {
-                *analyser = Some(a);
-            }
+    if analyser.is_none()
+        && let Ok(a) = ctx.create_analyser()
+    {
+        a.set_fft_size(ANALYSER_SIZE);
+        if connect(&shared.master, &a).is_ok() {
+            *analyser = Some(a);
         }
     }
     let (mut peak, mut energy) = (0f32, 0f64);

@@ -3,10 +3,10 @@
 
 use mb_assets::disc::DiscPack;
 use mb_assets::pack::PackProvider;
-use mb_audio::adp::{decode_adp, ADP_FRAME_BYTES};
+use mb_audio::adp::{ADP_FRAME_BYTES, decode_adp};
 use mb_audio::mixer::{Mixer, Sound};
+use mb_audio::music::{MUSIC_BACKGROUNDS, stage_music};
 use mb_audio::music::{catalog, decode_pcm_s16be};
-use mb_audio::music::{stage_music, MUSIC_BACKGROUNDS};
 use mb_audio::musyx::load_library;
 use mb_audio::sound_table::SoundTable;
 use std::path::PathBuf;
