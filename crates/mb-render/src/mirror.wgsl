@@ -11,9 +11,8 @@ struct Scene {
     light_color: vec4<f32>,
     ambient: vec4<f32>,
     spec_scale: vec4<f32>,
-    fog_color: vec4<f32>,
-    // x: fog start, y: fog end, z: fog enabled, w: target is sRGB (convert output to linear)
-    fog_params: vec4<f32>,
+    // w: target is sRGB (convert output to linear)
+    target_info: vec4<f32>,
     // Projected shadow of the ball (the reference's shadow program, see `effects.rs`): world before the tilt
     // -> shadow space, colour and peak opacity, and x: radius, y: z of the caster in shadow space,
     // z: fade per unit behind the caster, w: enabled.

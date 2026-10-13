@@ -77,8 +77,8 @@ pub use material::SamplerKey;
 pub use mirror::{Distortion, Mirror};
 pub use offscreen::{rgba_to_ppm, OffscreenTarget};
 pub use renderer::{
-    Fog, FrameStats, GpuCounters, GpuTexture, Layer, LoadStats, ModelId, ObjectId, Renderer,
-    TextureId, TextureSet, DEPTH_FORMAT,
+    FrameStats, GpuCounters, GpuTexture, Layer, LoadStats, ModelId, ObjectId, Renderer, TextureId,
+    TextureSet, DEPTH_FORMAT,
 };
 pub use sprite::{Sprite, SpriteBlend};
 pub use wave::WaveParams;

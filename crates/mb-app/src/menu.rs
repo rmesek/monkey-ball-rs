@@ -1093,7 +1093,6 @@ impl Game for Menu {
     fn update(&mut self, ctx: &mut GameCtx) -> Transition {
         ctx.input.request_virtual_controls(false);
         ctx.renderer.clear_color = BACKGROUND;
-        ctx.renderer.fog = None;
 
         // The scene of a stage that ended this frame: a retry of that stage plays on it.
         self.parked = self.shared.park.borrow_mut().take();

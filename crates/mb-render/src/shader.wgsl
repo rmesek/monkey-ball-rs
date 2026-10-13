@@ -16,9 +16,8 @@ struct Scene {
     light_color: vec4<f32>,
     ambient: vec4<f32>,
     spec_scale: vec4<f32>,
-    fog_color: vec4<f32>,
-    // x: fog start, y: fog end, z: fog enabled, w: target is sRGB (convert output to linear)
-    fog_params: vec4<f32>,
+    // w: target is sRGB (convert output to linear)
+    target_info: vec4<f32>,
     // Projected shadow of the ball (the reference's shadow program, see `effects.rs`): world before the tilt
     // -> shadow space, colour and peak opacity, and x: radius, y: z of the caster in shadow space,
     // z: fade per unit behind the caster, w: enabled.
@@ -95,7 +94,6 @@ struct VsOut {
     @location(1) uv0: vec2<f32>,
     @location(2) uv1: vec2<f32>,
     @location(3) uv2: vec2<f32>,
-    @location(4) view_depth: f32,
     @location(5) shadow_pos: vec3<f32>,
     // x: z of the unit normal in shadow space, y: the vertex has a normal, z: the shadow applies here
     @location(6) shadow_n: vec3<f32>,
@@ -197,7 +195,6 @@ fn shade(in: VsIn, model: mat4x4<f32>, n_model: vec3<f32>, world_in: vec4<f32>, 
     }
     let view_pos = scene.view * world;
     out.clip = scene.proj * view_pos;
-    out.view_depth = -view_pos.z;
 
     let nl = length(n);
     if (nl > 1e-6) {
@@ -403,12 +400,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         discard;
     }
     c = clamp(c, vec3<f32>(0.0), vec3<f32>(1.0));
-    if (scene.fog_params.z > 0.5) {
-        let f = clamp((in.view_depth - scene.fog_params.x) / max(scene.fog_params.y - scene.fog_params.x, 1e-4), 0.0, 1.0);
-        c = mix(c, scene.fog_color.rgb, f);
-    }
     // The reference draws the receivers a second time with its shadow program, blended over the finished
-    // (fogged) frame; the same maths here costs no draw.
+    // frame; the same maths here costs no draw.
     if (in.shadow_n.z > 0.5) {
         let inside = shadow_uv.x >= 0.0 && shadow_uv.x <= 1.0 && shadow_uv.y >= 0.0 && shadow_uv.y <= 1.0;
         // Faces turned away from the light take no shadow; vertices without a normal are not tested.
@@ -423,7 +416,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
             }
         }
     }
-    if (scene.fog_params.w > 0.5) {
+    if (scene.target_info.w > 0.5) {
         c = srgb_to_linear(c);
     }
     return vec4<f32>(c, a);

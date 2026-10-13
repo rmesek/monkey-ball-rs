@@ -101,13 +101,6 @@ pub enum Layer {
     World,
 }
 
-#[derive(Clone, Copy, Debug)]
-pub struct Fog {
-    pub color: [f32; 3],
-    pub start: f32,
-    pub end: f32,
-}
-
 pub struct GpuTexture {
     pub texture: wgpu::Texture,
     pub view: wgpu::TextureView,
@@ -421,7 +414,6 @@ pub struct Renderer {
     drawn: Option<([f64; 4], (u32, u32))>,
     pub lighting: Lighting,
     pub clear_color: [f64; 4],
-    pub fog: Option<Fog>,
     pub stats: FrameStats,
     pub load_stats: LoadStats,
 }
@@ -707,7 +699,6 @@ impl Renderer {
             drawn: None,
             lighting: Lighting::default(),
             clear_color: [0.0, 0.0, 0.0, 1.0],
-            fog: None,
             stats: FrameStats::default(),
             load_stats: LoadStats::default(),
         };
@@ -1763,7 +1754,7 @@ impl Renderer {
     }
 
     /// Queue one world-space quad for the next frame: depth tested, not written to depth, both faces,
-    /// vertex colour times texel, no lighting and no fog. Consecutive quads with the same texture, blend
+    /// vertex colour times texel, no lighting. Consecutive quads with the same texture, blend
     /// mode and order share one draw call, so push them grouped. The queue is per frame, like sprites.
     /// False when the quad buffer is full or the texture does not exist; the quad is then not drawn.
     pub fn push_quad(
@@ -1839,13 +1830,6 @@ impl Renderer {
         };
         let dir = self.lighting.direction_to_light();
         let l = &self.lighting;
-        let (fog_color, fog_params) = match self.fog {
-            Some(f) if !bg => (
-                [f.color[0], f.color[1], f.color[2], 1.0],
-                [f.start, f.end, 1.0],
-            ),
-            _ => ([0.0; 4], [0.0, 1.0, 0.0]),
-        };
         // The backdrop never tilts.
         let tilt = if bg { Mat4::IDENTITY } else { self.tilt };
         // The shadow belongs to the world layer. The radius stays non-zero: the shader divides by it.
@@ -1868,13 +1852,7 @@ impl Renderer {
                 l.specular_scale[2],
                 1.0,
             ],
-            fog_color,
-            fog_params: [
-                fog_params[0],
-                fog_params[1],
-                fog_params[2],
-                self.target_format.is_srgb() as u32 as f32,
-            ],
+            target_info: [0.0, 0.0, 0.0, self.target_format.is_srgb() as u32 as f32],
             shadow_from_world: shadow_from_world.to_cols_array_2d(),
             shadow_color,
             shadow_info,

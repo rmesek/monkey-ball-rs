@@ -45,8 +45,8 @@ pub struct SceneUniform {
     pub light_color: [f32; 4],
     pub ambient: [f32; 4],
     pub spec_scale: [f32; 4],
-    pub fog_color: [f32; 4],
-    pub fog_params: [f32; 4],
+    /// w: the target is sRGB (the shaders then convert their output to linear).
+    pub target_info: [f32; 4],
     /// World (before the stage tilt) -> the space of the projected shadow: the light looks down -Z at the caster.
     pub shadow_from_world: [[f32; 4]; 4],
     pub shadow_color: [f32; 4],
@@ -191,7 +191,7 @@ mod tests {
     #[test]
     fn layouts_match_wgsl() {
         // WGSL uniform structs: mat4 = 64, vec4 = 16.
-        assert_eq!(size_of::<SceneUniform>(), 64 * 4 + 16 * 8);
+        assert_eq!(size_of::<SceneUniform>(), 64 * 4 + 16 * 7);
         assert_eq!(size_of::<ObjectUniform>(), 64 * 2 + 32);
         assert_eq!(size_of::<MaterialUniform>(), 16 * 6);
         assert_eq!(size_of::<Vertex>(), 12 + 12 + 4 + 8 * 3);

@@ -1,5 +1,5 @@
 // World-space textured quads (streaks, sparkles): the reference's streak program. Vertex colour times
-// texel, no lighting and no fog.
+// texel, no lighting.
 
 // Must stay the `Scene` of shader.wgsl: both read the same uniform buffer.
 struct Scene {
@@ -10,9 +10,8 @@ struct Scene {
     light_color: vec4<f32>,
     ambient: vec4<f32>,
     spec_scale: vec4<f32>,
-    fog_color: vec4<f32>,
     // w: target is sRGB (convert output to linear)
-    fog_params: vec4<f32>,
+    target_info: vec4<f32>,
     shadow_from_world: mat4x4<f32>,
     shadow_color: vec4<f32>,
     shadow_info: vec4<f32>,
@@ -52,7 +51,7 @@ fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     var c = in.color * textureSample(tex, samp, in.uv);
-    if (scene.fog_params.w > 0.5) {
+    if (scene.target_info.w > 0.5) {
         c = vec4<f32>(srgb_to_linear(c.rgb), c.a);
     }
     return c;

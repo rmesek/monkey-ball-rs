@@ -159,7 +159,6 @@ impl Game for StageLoad {
             self.wanted.extend(self.files.music_wanted());
         }
         ctx.renderer.clear_color = BACKGROUND.map(f64::from);
-        ctx.renderer.fog = None;
         Ok(())
     }
 
