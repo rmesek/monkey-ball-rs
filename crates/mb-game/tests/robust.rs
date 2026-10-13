@@ -147,14 +147,13 @@ fn signed_nonsense_is_tolerated_or_reset() {
     let huge = "9".repeat(400);
     for body in [
         format!("setting music_volume {huge}\n"),
-        format!("setting joystick_size {huge}\nsetting input_falloff 4294967295\n"),
+        format!("setting tilt_range_deg {huge}\nsetting input_falloff 4294967295\n"),
         "setting music_volume -5\nsetting tilt_range_deg 0\nsetting unlock_all 2\n".to_string(),
         "setting\nsetting x\nsetting control_mode sideways\n\n\n   \n".to_string(),
     ] {
         let (p, warning) = load(&signed(&body));
         assert!(warning.is_none(), "{body:?}");
         assert!(p.settings.music_volume <= 100);
-        assert!((50..=200).contains(&p.settings.joystick_size));
         assert!((100..=200).contains(&p.settings.input_falloff));
         assert!((10..=25).contains(&p.settings.tilt_range_deg));
     }

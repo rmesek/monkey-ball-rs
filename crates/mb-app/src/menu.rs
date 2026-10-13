@@ -146,13 +146,11 @@ enum OptionRow {
     StickCurve,
     Music,
     Sound,
-    Announcer,
     Controls,
     TiltRange,
     Fullscreen,
     Reflections,
     RemoveData,
-    ForgetImage,
     EraseSaves,
     Back,
 }
@@ -265,7 +263,6 @@ impl Menu {
             OptionRow::StickCurve,
             OptionRow::Music,
             OptionRow::Sound,
-            OptionRow::Announcer,
         ];
         if caps.tilt {
             rows.push(OptionRow::Controls);
@@ -279,9 +276,6 @@ impl Menu {
         rows.push(OptionRow::Reflections);
         if caps.remove_data {
             rows.push(OptionRow::RemoveData);
-        }
-        if caps.forget_image {
-            rows.push(OptionRow::ForgetImage);
         }
         rows.push(OptionRow::EraseSaves);
         rows.push(OptionRow::Back);
@@ -302,8 +296,12 @@ impl Menu {
 
     fn apply_volumes(&self) {
         let s = &self.profile.settings;
-        self.audio
-            .set_volumes(s.music_volume, s.sfx_volume, s.announcer_volume);
+        // Two categories: the announcer is a sound like the others. The dial is not the gain: 80, the
+        // default, is the level at which music and effects mix without clipping (half gain for music,
+        // three tenths for sound, the reference's own defaults), and 100 is a quarter louder.
+        let gain = |dial: u8, full: u32| (u32::from(dial.min(100)) * full / 1000) as u8;
+        let (music, sound) = (gain(s.music_volume, 625), gain(s.sfx_volume, 375));
+        self.audio.set_volumes(music, sound, sound);
     }
 
     pub fn with_autostart(mut self, autostart: Option<Autostart>) -> Self {
@@ -509,9 +507,6 @@ impl Menu {
                         OptionRow::Sound => {
                             row_with("SOUND VOLUME", volume_label(s.sfx_volume), true)
                         }
-                        OptionRow::Announcer => {
-                            row_with("ANNOUNCER VOLUME", volume_label(s.announcer_volume), true)
-                        }
                         OptionRow::Controls => row_with(
                             "CONTROLS",
                             match s.control_mode {
@@ -531,7 +526,6 @@ impl Menu {
                         }
                         r if self.confirm == Some(r) => row("TAP AGAIN TO CONFIRM"),
                         OptionRow::RemoveData => row("REMOVE GAME DATA"),
-                        OptionRow::ForgetImage => row("FORGET GAME IMAGE"),
                         OptionRow::EraseSaves => row("ERASE SAVE DATA"),
                         OptionRow::Back => row("BACK"),
                     })
@@ -782,10 +776,7 @@ impl Menu {
             Screen::Options => {
                 let chosen = self.option_rows().get(index).copied();
                 let confirmed = self.confirm.take();
-                if let Some(
-                    r @ (OptionRow::RemoveData | OptionRow::ForgetImage | OptionRow::EraseSaves),
-                ) = chosen
-                {
+                if let Some(r @ (OptionRow::RemoveData | OptionRow::EraseSaves)) = chosen {
                     // Deleting wants a second tap on the same row.
                     if confirmed != Some(r) {
                         self.confirm = Some(r);
@@ -793,17 +784,6 @@ impl Menu {
                     }
                     match r {
                         OptionRow::RemoveData => host::post(host::Command::RemoveGameData),
-                        OptionRow::ForgetImage => {
-                            self.notice =
-                                Some(match self.storage.remove(crate::content::LAST_DISC_KEY) {
-                                    Ok(()) => {
-                                        "THE GAME IMAGE WILL BE ASKED FOR AT THE NEXT START".into()
-                                    }
-                                    Err(e) => {
-                                        format!("COULD NOT FORGET THE IMAGE: {e}").to_uppercase()
-                                    }
-                                });
-                        }
                         _ => {
                             let erased = (self.storage.remove(mb_game::progress::PROFILE_KEY))
                                 .and(self.storage.remove(mb_game::progress::BACKUP_KEY));
@@ -830,9 +810,6 @@ impl Menu {
                     }
                     Some(OptionRow::Music) => s.music_volume = next_volume(s.music_volume),
                     Some(OptionRow::Sound) => s.sfx_volume = next_volume(s.sfx_volume),
-                    Some(OptionRow::Announcer) => {
-                        s.announcer_volume = next_volume(s.announcer_volume)
-                    }
                     Some(OptionRow::Controls) => {
                         s.control_mode = match s.control_mode {
                             ControlMode::Stick => ControlMode::Tilt,
@@ -853,12 +830,7 @@ impl Menu {
                     // Read when a stage is built (`loading.rs`); no stage is loaded while the options
                     // are open, so the next one played has it.
                     Some(OptionRow::Reflections) => s.reflections = !s.reflections,
-                    Some(
-                        OptionRow::Back
-                        | OptionRow::RemoveData
-                        | OptionRow::ForgetImage
-                        | OptionRow::EraseSaves,
-                    )
+                    Some(OptionRow::Back | OptionRow::RemoveData | OptionRow::EraseSaves)
                     | None => {
                         self.go(Screen::Title, 2);
                         return Transition::None;
@@ -869,10 +841,8 @@ impl Menu {
                 // Applied at once; a sample of the changed category lets the level be heard.
                 self.apply_volumes();
                 self.apply_controls();
-                match chosen {
-                    Some(OptionRow::Sound) => self.audio.play(Sfx::Banana),
-                    Some(OptionRow::Announcer) => self.audio.play(Sfx::Ready),
-                    _ => {}
+                if chosen == Some(OptionRow::Sound) {
+                    self.audio.play(Sfx::Banana);
                 }
             }
             Screen::GameOver { .. } => {
@@ -1229,36 +1199,32 @@ mod tests {
         assert_eq!(m.profile.settings.input_falloff, 125);
         let (saved, _) = Profile::load(m.storage.as_mut());
         assert!(saved.settings.unlock_all && saved.settings.input_falloff == 125);
-        // Volumes step by ten and wrap to off; the defaults are the reference's 50 / 30 / 30.
+        // Volumes step by ten and wrap to off; both start at 80.
         m.activate(2);
-        m.activate(3);
-        for _ in 0..8 {
-            m.activate(4);
+        for _ in 0..3 {
+            m.activate(3);
         }
         let s = &m.profile.settings;
-        assert_eq!(
-            (s.music_volume, s.sfx_volume, s.announcer_volume),
-            (60, 40, 0)
-        );
+        assert_eq!((s.music_volume, s.sfx_volume), (90, 0));
         let (saved, _) = Profile::load(m.storage.as_mut());
-        assert_eq!(saved.settings.announcer_volume, 0);
+        assert_eq!(saved.settings.sfx_volume, 0);
         assert_eq!(volume_label(0), "OFF");
         assert_eq!(next_volume(95), 100);
         // "Erase save data" asks first: one tap arms it, moving on disarms it, two taps do it.
         let labels = |m: &Menu| -> Vec<String> { m.rows().into_iter().map(|r| r.label).collect() };
-        assert_eq!(labels(&m)[5..], ["REFLECTIONS", "ERASE SAVE DATA", "BACK"]);
-        m.activate(6);
-        assert_eq!(labels(&m)[6], "TAP AGAIN TO CONFIRM");
+        assert_eq!(labels(&m)[4..], ["REFLECTIONS", "ERASE SAVE DATA", "BACK"]);
+        m.activate(5);
+        assert_eq!(labels(&m)[5], "TAP AGAIN TO CONFIRM");
         assert!(m.profile.settings.unlock_all, "nothing erased yet");
         m.activate(2);
-        assert_eq!(labels(&m)[6], "ERASE SAVE DATA");
-        m.activate(6);
-        m.activate(6);
+        assert_eq!(labels(&m)[5], "ERASE SAVE DATA");
+        m.activate(5);
+        m.activate(5);
         assert_eq!(m.profile, Profile::default());
         assert_eq!(m.notice.as_deref(), Some("SAVE DATA ERASED"));
         let (saved, warning) = Profile::load(m.storage.as_mut());
         assert_eq!((saved, warning), (Profile::default(), None));
-        m.activate(7);
+        m.activate(6);
         assert_eq!(m.screen_name(), "title");
     }
 
@@ -1272,41 +1238,32 @@ mod tests {
             remove_data: true,
             fullscreen: true,
             tilt: true,
-            forget_image: true,
         });
         host::set_info(vec!["Game data: 137 MB in this browser".into()]);
         let labels: Vec<String> = m.rows().into_iter().map(|r| r.label).collect();
         assert_eq!(
-            labels[5..],
+            labels[4..],
             [
                 "CONTROLS",
                 "FULLSCREEN",
                 "REFLECTIONS",
                 "REMOVE GAME DATA",
-                "FORGET GAME IMAGE",
                 "ERASE SAVE DATA",
                 "BACK"
             ]
         );
         assert_eq!(m.info()[0].0, "GAME DATA: 137 MB IN THIS BROWSER");
-        // Tilt adds its range row; removing data and forgetting the image want a second tap.
-        m.activate(5);
-        assert_eq!(m.rows()[6].label, "TILT RANGE");
-        m.activate(9);
+        // Tilt adds its range row; removing the data wants a second tap.
+        m.activate(4);
+        assert_eq!(m.rows()[5].label, "TILT RANGE");
+        m.activate(8);
         assert!(
             host::drain()
                 .iter()
                 .all(|c| !matches!(c, host::Command::RemoveGameData))
         );
-        m.activate(9);
+        m.activate(8);
         assert!(host::drain().contains(&host::Command::RemoveGameData));
-        m.storage
-            .write(crate::content::LAST_DISC_KEY, b"C:/x.rvz")
-            .unwrap();
-        m.activate(10);
-        m.activate(10);
-        assert_eq!(m.storage.read(crate::content::LAST_DISC_KEY).unwrap(), None);
-        assert!(m.notice.as_deref().unwrap().contains("NEXT START"));
         host::set_caps(host::Caps::default());
         host::set_info(Vec::new());
     }
@@ -1322,7 +1279,7 @@ mod tests {
             rows.iter().position(|r| *r == OptionRow::Reflections)
         };
         let at = index(&m).expect("the row is there on every platform");
-        assert_eq!(at, 5, "after the sound rows, before the storage rows");
+        assert_eq!(at, 4, "after the sound rows, before the storage rows");
         let detail = |m: &Menu| m.rows()[at].detail.clone();
         assert_eq!(m.rows()[at].label, "REFLECTIONS");
         assert_eq!(detail(&m).as_deref(), Some("ON"));
@@ -1356,8 +1313,8 @@ mod tests {
             ..host::Caps::default()
         });
         let rows = again.option_rows();
-        assert_eq!(rows[5], OptionRow::Controls);
-        assert_eq!(index(&again), Some(7));
+        assert_eq!(rows[4], OptionRow::Controls);
+        assert_eq!(index(&again), Some(6));
         host::set_caps(host::Caps::default());
     }
 

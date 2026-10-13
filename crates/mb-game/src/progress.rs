@@ -47,17 +47,14 @@ impl ControlMode {
     }
 }
 
-/// User settings. Volumes are 0..=100, `joystick_size` is a percentage (50..=200), `tilt_range_deg` is the
+/// User settings. Volumes are 0..=100 (the announcer is a sound), `tilt_range_deg` is the
 /// device tilt that gives full deflection (10..=25, like the reference's gyro sensitivity; smaller = more
 /// sensitive), `input_falloff` is 100..=200 (= 1.0..2.0).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Settings {
     pub music_volume: u8,
     pub sfx_volume: u8,
-    pub announcer_volume: u8,
     pub control_mode: ControlMode,
-    pub joystick_size: u16,
-    pub left_handed: bool,
     pub tilt_range_deg: u8,
     pub input_falloff: u16,
     /// Every course and stage selectable from the start (the web reference behaves like this).
@@ -70,13 +67,9 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            // Defaults of the reference's settings sliders.
-            music_volume: 50,
-            sfx_volume: 30,
-            announcer_volume: 30,
+            music_volume: 80,
+            sfx_volume: 80,
             control_mode: ControlMode::Stick,
-            joystick_size: 100,
-            left_handed: false,
             tilt_range_deg: 25,
             input_falloff: 100,
             unlock_all: false,
@@ -89,8 +82,6 @@ impl Settings {
     pub fn clamp(&mut self) {
         self.music_volume = self.music_volume.min(100);
         self.sfx_volume = self.sfx_volume.min(100);
-        self.announcer_volume = self.announcer_volume.min(100);
-        self.joystick_size = self.joystick_size.clamp(50, 200);
         self.tilt_range_deg = self.tilt_range_deg.clamp(10, 25);
         self.input_falloff = self.input_falloff.clamp(100, 200);
     }
@@ -100,11 +91,8 @@ impl Settings {
         match (key, num) {
             ("music_volume", Some(n)) => self.music_volume = n.min(255) as u8,
             ("sfx_volume", Some(n)) => self.sfx_volume = n.min(255) as u8,
-            ("announcer_volume", Some(n)) => self.announcer_volume = n.min(255) as u8,
-            ("joystick_size", Some(n)) => self.joystick_size = n.min(u16::MAX as u32) as u16,
             ("tilt_range_deg", Some(n)) => self.tilt_range_deg = n.min(255) as u8,
             ("input_falloff", Some(n)) => self.input_falloff = n.min(u16::MAX as u32) as u16,
-            ("left_handed", Some(n)) => self.left_handed = n != 0,
             ("unlock_all", Some(n)) => self.unlock_all = n != 0,
             ("reflections", Some(n)) => self.reflections = n != 0,
             ("control_mode", _) => {
@@ -112,6 +100,8 @@ impl Settings {
                     self.control_mode = m;
                 }
             }
+            // Anything else is skipped: a setting of a newer version, or one that is gone
+            // (`announcer_volume`, `joystick_size`, `left_handed` of saves up to 0.2.0).
             _ => {}
         }
     }
@@ -122,10 +112,7 @@ impl Settings {
         };
         line("music_volume", self.music_volume.to_string());
         line("sfx_volume", self.sfx_volume.to_string());
-        line("announcer_volume", self.announcer_volume.to_string());
         line("control_mode", self.control_mode.key().to_string());
-        line("joystick_size", self.joystick_size.to_string());
-        line("left_handed", (self.left_handed as u8).to_string());
         line("tilt_range_deg", self.tilt_range_deg.to_string());
         line("input_falloff", self.input_falloff.to_string());
         line("unlock_all", (self.unlock_all as u8).to_string());
@@ -424,7 +411,6 @@ mod tests {
         let mut p = Profile::default();
         p.settings.music_volume = 80;
         p.settings.control_mode = ControlMode::Tilt;
-        p.settings.left_handed = true;
         p.settings.tilt_range_deg = 12;
         p.progress.mark_reached(Difficulty::Beginner, 1);
         p.progress.mark_reached(Difficulty::Beginner, 91);
@@ -451,8 +437,8 @@ mod tests {
         setting tilt_range_deg 12\nsetting input_falloff 150\nsetting unlock_all 1\n\
         course beginner 1 1 123456 1,2,91\nstage 1 1500 1\ncrc af96de2f\n";
 
-    /// A 0.1.0 save loads, and the setting it has never heard of is on. What is written now is that file
-    /// plus one `setting` line, which 0.1.0 skips like any setting it does not know.
+    /// A 0.1.0 save loads: the setting it has never heard of is on, and the three it has that are gone
+    /// since (the announcer's volume, two that were never read) are skipped.
     #[test]
     fn a_save_from_0_1_0_loads_with_reflections_on() {
         let p = Profile::decode(SAVE_0_1_0.as_bytes()).expect("a 0.1.0 save");
@@ -460,9 +446,8 @@ mod tests {
         let mut expect = Profile {
             settings: Settings {
                 music_volume: 80,
-                announcer_volume: 0,
+                sfx_volume: 30,
                 control_mode: ControlMode::Tilt,
-                left_handed: true,
                 tilt_range_deg: 12,
                 input_falloff: 150,
                 unlock_all: true,
@@ -490,12 +475,22 @@ mod tests {
         let mut slots = crate::storage::SlotStorage::new(plain);
         assert_eq!(Profile::load(&mut slots), (expect, None));
 
-        // The format and its version are unchanged: without the new line the file is the 0.1.0 one.
+        // The format and its version are unchanged: what is written now is the 0.1.0 file without the
+        // three settings that are gone and with the one that came.
         let now = String::from_utf8(p.encode()).unwrap();
+        let body = |text: &str| text[..text.rfind("crc ").unwrap()].to_string();
+        let mut old = body(SAVE_0_1_0);
+        for gone in [
+            "setting announcer_volume 0\n",
+            "setting joystick_size 100\n",
+            "setting left_handed 1\n",
+        ] {
+            assert_eq!(old.matches(gone).count(), 1);
+            old = old.replace(gone, "");
+        }
         let line = "setting reflections 1\n";
         assert_eq!(now.matches(line).count(), 1);
-        let body = |text: &str| text[..text.rfind("crc ").unwrap()].to_string();
-        assert_eq!(body(&now.replace(line, "")), body(SAVE_0_1_0));
+        assert_eq!(body(&now.replace(line, "")), old);
         assert!(now.starts_with("MBSAVE 1\n"));
 
         // Off is saved and survives; any number but zero is on; a value that is no number leaves the
@@ -555,14 +550,14 @@ mod tests {
     #[test]
     fn unknown_records_and_out_of_range_values_are_tolerated() {
         let mut body = String::from(
-            "MBSAVE 1\nsetting music_volume 250\nsetting future_thing 7\nsetting joystick_size 5\n\
+            "MBSAVE 1\nsetting music_volume 250\nsetting future_thing 7\nsetting tilt_range_deg 5\n\
              course nightmare 1 1 5 -\nmystery a b c\n",
         );
         let crc = fnv1a(body.as_bytes());
         body.push_str(&format!("crc {crc:08x}\n"));
         let p = Profile::decode(body.as_bytes()).unwrap();
         assert_eq!(p.settings.music_volume, 100);
-        assert_eq!(p.settings.joystick_size, 50);
+        assert_eq!(p.settings.tilt_range_deg, 10);
         assert_eq!(p.progress, Progress::default());
     }
 

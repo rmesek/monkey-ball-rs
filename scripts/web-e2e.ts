@@ -252,8 +252,8 @@ async function practice(p: Page, url: string, id: StageId) {
 const inPlay = async (p: Page) => / Playing /.test(await p.waitStatus((x) => / Playing /.test(x), 20000));
 
 // Options -> the row at `row`, by keys, on a page loaded without touch or tilt: "Unlock all stages" is row 0,
-// "Reflections" row 6 (after the stick curve, the three volumes and Fullscreen).
-const UNLOCK_ROW = 0, REFLECTIONS_ROW = 6;
+// "Reflections" row 5 (after the stick curve, the two volumes and Fullscreen).
+const UNLOCK_ROW = 0, REFLECTIONS_ROW = 5;
 async function chooseOption(p: Page, url: string, row: number) {
   await title(p, url);
   await press(p, "ArrowDown", 2); await press(p, "Enter");

@@ -1769,7 +1769,7 @@ fn the_reflections_option_toggles_saves_and_survives_a_restart() {
         return;
     };
     assert!(storage.profile().settings.reflections, "on by default");
-    // Title -> Options; the row is the sixth (unlock, stick curve, three volumes, reflections).
+    // Title -> Options; the row is the fifth (unlock, stick curve, two volumes, reflections).
     let open_options = |h: &mut Headless| {
         h.tap(Action::LookDown).unwrap();
         h.tap(Action::LookDown).unwrap();
@@ -1777,7 +1777,7 @@ fn the_reflections_option_toggles_saves_and_survives_a_restart() {
         assert_eq!(h.status(), "menu: options");
     };
     open_options(&mut h);
-    for _ in 0..5 {
+    for _ in 0..4 {
         h.tap(Action::LookDown).unwrap();
     }
     h.tap(Action::Confirm).unwrap();
@@ -1814,10 +1814,10 @@ fn the_reflections_option_toggles_saves_and_survives_a_restart() {
     h.step(FRAME).unwrap();
     open_options(&mut h);
     let layout = h.layout();
-    let rows = mb_app::widgets::ListLayout::column(&layout, 8, 0.24);
-    assert!(rows.is_visible(5, 0.0) && rows.max_scroll() == 0.0);
+    let rows = mb_app::widgets::ListLayout::column(&layout, 7, 0.24);
+    assert!(rows.is_visible(4, 0.0) && rows.max_scroll() == 0.0);
     assert!(rows.item_h >= layout.min_tap(), "a full tap target");
-    let spot = rows.item_rect(5, 0.0).center();
+    let spot = rows.item_rect(4, 0.0).center();
     let mut touches = mb_app::ui::TouchControls::new();
     let (began, ended) = (
         mb_app::ui::TouchPhase::Started,

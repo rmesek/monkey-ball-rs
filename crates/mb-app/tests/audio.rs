@@ -328,7 +328,8 @@ fn requests_follow_the_game() {
     // course?" question (whose confirm is cut by the quit).
     assert!(plays(&log, MENU_CONFIRM).len() >= 2);
     assert_eq!(plays(&log, MENU_MOVE).len(), 3);
-    // The category volumes go out once (the defaults: 50 / 30 / 30), before anything plays; no suspend.
+    // The category volumes go out once (the defaults, 80 on both dials: gains of 0.5 and 0.3), before
+    // anything plays; no suspend.
     let volumes: Vec<&Recorded> = log
         .iter()
         .filter(|r| matches!(r, Recorded::Command(Command::BusVolume { .. })))
