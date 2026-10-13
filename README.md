@@ -35,8 +35,8 @@ The first time, the game asks for the disc image and copies the files it uses (a
 storage: the program's data folder on the desktop, the site's private storage in the browser. After that it
 starts without the image.
 
-`cargo web` leaves the site in `web/dist/` as plain files. Any static file server can host that folder
-(`python -m http.server -d web/dist 8080`); `cargo xtask build-web` builds it without serving.
+`cargo web` leaves the site in `target/site/` as plain files. Any static file server can host that folder
+(`python -m http.server -d target/site 8080`); `cargo xtask build-web` builds it without serving.
 
 ## Controls
 
@@ -55,7 +55,7 @@ Holding the action speeds up the camera's fly-in over a new stage and cuts the w
 | | Desktop | Browser |
 |---|---|---|
 | Game data | `game.pack` in the data folder | the site's private storage |
-| Saves | a few small files in the same folder | next to the game data |
+| Saves and settings | `profile.a`, `profile.b` in the same folder (progress and settings are one save) | next to the game data |
 | Folder | `%APPDATA%\monkey-ball-rs`, `~/Library/Application Support/monkey-ball-rs`, or `~/.local/share/monkey-ball-rs`; `MB_SAVE_DIR` overrides | the browser's storage for the site |
 | Removing it | Options -> Remove game data, Erase save data; or delete the folder | the same options; or clear the site's data |
 

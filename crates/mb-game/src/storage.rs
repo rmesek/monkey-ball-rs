@@ -64,7 +64,8 @@ impl Storage for MemoryStorage {
     }
 }
 
-/// One file per key inside a directory. Writes go to a temp file first and are renamed into place, so a
+/// One file per key inside a directory. Which directory is the platform's decision: this crate knows no
+/// operating system's conventions. Writes go to a temp file first and are renamed into place, so a
 /// crash mid-write never leaves a half-written save.
 #[derive(Debug, Clone)]
 pub struct FileStorage {
@@ -78,29 +79,6 @@ impl FileStorage {
 
     pub fn dir(&self) -> &Path {
         &self.dir
-    }
-
-    /// Per-user data directory: `MB_SAVE_DIR`, else `%APPDATA%\monkey-ball-rs`,
-    /// `~/Library/Application Support/monkey-ball-rs` or `$XDG_DATA_HOME|~/.local/share/monkey-ball-rs`.
-    pub fn default_dir() -> Option<PathBuf> {
-        let var = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty());
-        if let Some(d) = var("MB_SAVE_DIR") {
-            return Some(PathBuf::from(d));
-        }
-        if cfg!(windows) {
-            return var("APPDATA").map(|d| PathBuf::from(d).join("monkey-ball-rs"));
-        }
-        if cfg!(target_os = "macos") {
-            return var("HOME").map(|d| {
-                PathBuf::from(d)
-                    .join("Library/Application Support")
-                    .join("monkey-ball-rs")
-            });
-        }
-        var("XDG_DATA_HOME")
-            .map(PathBuf::from)
-            .or_else(|| var("HOME").map(|h| PathBuf::from(h).join(".local/share")))
-            .map(|d| d.join("monkey-ball-rs"))
     }
 
     fn path(&self, key: &str) -> io::Result<PathBuf> {

@@ -2,7 +2,7 @@
 //
 //   deno run -A scripts/web-e2e.ts [--keep] [--lan]
 //
-// It serves web/dist with `python -m http.server` (the plain static server the bundle is meant for), starts
+// It serves target/site with `python -m http.server` (the plain static server the bundle is meant for), starts
 // Chrome with a throw-away profile, and drives it over the DevTools protocol: the disc image is set on the
 // page's own <input type=file>, exactly as a user would pick it. No npm packages, nothing downloaded.
 // Needs: the bundle (cargo xtask build-web), Chrome, Python 3, and your disc image (MB_DISC, or
@@ -13,7 +13,7 @@
 //   --keep  leave the browser open at the end.
 
 const root = new URL("..", import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1");
-const dist = `${root}web/dist`;
+const dist = `${root}target/site`;
 const flags = new Set(Deno.args);
 const HTTP = 8791 + Math.floor(Math.random() * 100);
 const CDP = 9400 + Math.floor(Math.random() * 100);
@@ -26,7 +26,7 @@ function skip(why: string): never {
 const exists = (p: string) => { try { Deno.statSync(p); return true; } catch { return false; } };
 
 // ---- prerequisites ----------------------------------------------------------------------------------------
-if (!exists(`${dist}/index.html`)) skip("web/dist is not built (run: cargo xtask build-web)");
+if (!exists(`${dist}/index.html`)) skip("target/site is not built (run: cargo xtask build-web)");
 function findDisc(): string | null {
   const env = Deno.env.get("MB_DISC");
   if (env) return exists(env) ? env : null;

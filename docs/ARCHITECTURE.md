@@ -87,7 +87,7 @@ Nothing is started. What exists and what is missing:
 
 | | In a WebView | Native (Vulkan, GLES as fallback) |
 |---|---|---|
-| What it is | the built `web/dist` shown by a small host app | a new crate `mb-android` beside `mb-desktop` |
+| What it is | the built `target/site` shown by a small host app | a new crate `mb-android` beside `mb-desktop` |
 | Rust changes | none | the driver only |
 | Game data | the page's import, as in a browser | `import_to_file` into the app's files directory, from a file descriptor the document picker hands over (`content::open_disc_stream` reads one) |
 | Saves | page storage | `FileStorage::new(<files directory>)` |

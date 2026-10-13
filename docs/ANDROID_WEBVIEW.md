@@ -1,6 +1,6 @@
 # Putting the site inside an Android app (WebView)
 
-The static site built into `web/dist/` is the whole game for the browser. An Android app can show the same
+The static site built into `target/site/` is the whole game for the browser. An Android app can show the same
 files in a `WebView`. This note is for whoever writes that app. Nothing in this repository builds an APK,
 and **nothing here was run on Android**: there is no Android SDK or device on the machine this was written
 on. (A native Android build of the Rust crates, without a web view, is a later target of the project and
@@ -11,7 +11,7 @@ a different thing; `docs/ARCHITECTURE.md` says what it needs and compares the tw
 
 ## What goes into the APK
 
-Copy the contents of `web/dist/` unchanged into the app's assets, in a folder of its own, for example
+Copy the contents of `target/site/` unchanged into the app's assets, in a folder of its own, for example
 `app/src/main/assets/site/`. Every reference in the site is relative, so the folder name is free
 **[checked]**: the browser test serves the bundle from `/assets/site/` and verifies that no request leaves
 that folder).

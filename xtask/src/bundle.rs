@@ -1,4 +1,4 @@
-//! The last step of `cargo xtask build-web`: assemble the static web bundle in `web/dist/` from the page
+//! The last step of `cargo xtask build-web`: assemble the static web bundle in `target/site/` from the page
 //! sources in `web/` and the wasm-bindgen output. Standard library only.
 //!
 //! The bundle is `index.html`, `guard.js`, `main.js`, `worker.js`, `sw.js` (with a version and the precache

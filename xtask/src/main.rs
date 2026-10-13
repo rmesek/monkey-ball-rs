@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! cargo web [--dev] [--port N]          build the static web site and serve it on this machine
-//! cargo xtask build-web [--dev]         build the static web site into web/dist/
+//! cargo xtask build-web [--dev]         build the static web site into target/site/
 //! cargo xtask check                     run the quality gates (AGENTS.md)
 //! ```
 //! `cargo web` and `cargo xtask` are aliases in `.cargo/config.toml` (and `cargo desktop` runs the desktop
@@ -16,9 +16,9 @@ mod serve;
 
 const USAGE: &str = "usage:
   cargo web [--dev] [--port N]
-      build the site (as build-web) and serve web/dist on http://localhost:8080 until Ctrl+C
+      build the site (as build-web) and serve it on http://localhost:8080 until Ctrl+C
   cargo xtask build-web [--dev]
-      build the browser target and assemble the static site in web/dist/, to be hosted by any static
+      build the browser target and assemble the static site in target/site/, to be hosted by any static
       file server (python -m http.server will do)
         --dev     unoptimised build (quick to compile, slow to run; keeps function names for stack traces)
   cargo xtask check
@@ -52,7 +52,7 @@ fn wasm_size_report(size: u64, budget: u64) -> Result<String, String> {
     let growth = size as i64 - WASM_BYTES_0_1_0 as i64;
     if size > budget {
         return Err(format!(
-            "pkg/mb_web_bg.wasm is {size} bytes, {} over its budget of {budget} ({growth:+} against the              {WASM_BYTES_0_1_0} of 0.1.0). Find what grew, or raise WASM_BUDGET_BYTES in xtask/src/main.rs              on purpose (its comment says how). web/dist was left as it was.",
+            "pkg/mb_web_bg.wasm is {size} bytes, {} over its budget of {budget} ({growth:+} against the              {WASM_BYTES_0_1_0} of 0.1.0). Find what grew, or raise WASM_BUDGET_BYTES in xtask/src/main.rs              on purpose (its comment says how). The built site was left as it was.",
             size - budget
         ));
     }
@@ -91,7 +91,8 @@ fn run(mut command: Command) -> Result<(), String> {
     }
 }
 
-/// Build the site into `web/dist` and return that directory.
+/// Build the site and return its directory: `site` in cargo's target directory. It is build output
+/// like the rest of what is there (`cargo clean` removes it); the sources of the page are `web/`.
 fn build_web(dev: bool) -> Result<PathBuf, String> {
     let root = root();
     let target_dir = std::env::var_os("CARGO_TARGET_DIR")
@@ -153,13 +154,13 @@ fn build_web(dev: bool) -> Result<PathBuf, String> {
         println!("{}", wasm_size_report(size, WASM_BUDGET_BYTES)?);
     }
 
-    let out = root.join("web").join("dist");
+    let out = target_dir.join("site");
     bundle::run(bundle::Options {
         web: root.join("web"),
         pkg,
         out: out.clone(),
     })?;
-    println!("built web/dist ({} KiB wasm)", size / 1024);
+    println!("built {} ({} KiB wasm)", out.display(), size / 1024);
     Ok(out)
 }
 
@@ -266,7 +267,7 @@ fn main() {
     let result = match args.next().as_deref() {
         Some("build-web") => web_options(args, false).and_then(|(dev, _)| {
             build_web(dev)?;
-            println!("host it with any static file server: python -m http.server -d web/dist 8080");
+            println!("host that folder with any static file server: python -m http.server -d target/site 8080");
             Ok(())
         }),
         Some("web") => web_options(args, true)

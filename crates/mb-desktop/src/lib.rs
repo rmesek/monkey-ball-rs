@@ -196,9 +196,29 @@ fn parse_size(s: &str) -> Result<(u32, u32), String> {
     Ok((w, h))
 }
 
-/// The per-user data directory (saves and the game pack), if there is one.
+/// Where this platform keeps everything: the saves (`profile.a`, `profile.b`: progress and settings) and
+/// the imported game data ([`PACK_FILE`]). `MB_SAVE_DIR` if set, else the per-user data directory of the
+/// operating system: `%APPDATA%\monkey-ball-rs`, `~/Library/Application Support/monkey-ball-rs`, or
+/// `$XDG_DATA_HOME/monkey-ball-rs` (`~/.local/share/monkey-ball-rs`). This function is the only place the
+/// desktop's location is decided; the game is handed a `Storage` and a `Content` and never asks where.
 fn data_dir() -> Option<PathBuf> {
-    let dir = FileStorage::default_dir();
+    let var = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty());
+    let dir = if let Some(d) = var("MB_SAVE_DIR") {
+        Some(PathBuf::from(d))
+    } else if cfg!(windows) {
+        var("APPDATA").map(|d| PathBuf::from(d).join("monkey-ball-rs"))
+    } else if cfg!(target_os = "macos") {
+        var("HOME").map(|d| {
+            PathBuf::from(d)
+                .join("Library/Application Support")
+                .join("monkey-ball-rs")
+        })
+    } else {
+        var("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .or_else(|| var("HOME").map(|h| PathBuf::from(h).join(".local/share")))
+            .map(|d| d.join("monkey-ball-rs"))
+    };
     if dir.is_none() {
         eprintln!("no data directory found: nothing will be kept between runs");
     }

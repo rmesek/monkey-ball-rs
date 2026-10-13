@@ -21,6 +21,3 @@ Cargo.lock.bak
 .idea/
 .vscode/
 *.log
-
-# The built site (cargo xtask build-web)
-web/dist/

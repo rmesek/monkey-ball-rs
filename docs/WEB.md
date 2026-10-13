@@ -16,7 +16,7 @@ Needs Rust and nothing else: the `wasm32-unknown-unknown` target comes with the 
 the version of the `wasm-bindgen` crate (both pinned; a test compares them).
 
 `cargo web` builds the site and serves it on `http://localhost:8080` (`--port N` for another port).
-`cargo xtask build-web` only builds it, into `web/dist/` (git-ignored):
+`cargo xtask build-web` only builds it, into `target/site/` (git-ignored):
 
 ```
 cargo xtask build-web [--dev]
@@ -42,7 +42,7 @@ not used (not required; not installed on the build machine). The module is built
 feature set for `wasm32-unknown-unknown` (see "Browser requirements").
 
 **Size budget.** Every visitor downloads and compiles the module, so it may not grow by accident: the build
-prints its size and fails, before `web/dist` is touched, when the optimised module is larger than
+prints its size and fails, before `target/site` is touched, when the optimised module is larger than
 `WASM_BUDGET_BYTES` in `xtask/src/main.rs` (4 127 298 bytes). The comment on the constant says how to raise it on purpose. `--dev` builds are not
 held to it.
 
@@ -57,7 +57,7 @@ held to it.
 Any static server works. The reference one is Python's:
 
 ```
-cd web/dist
+cd target/site
 python -m http.server 8080
 ```
 
@@ -450,7 +450,7 @@ pause screen is not drawn again at all. Not done, because the gain could not be 
 deno run -A scripts/web-e2e.ts [--lan]
 ```
 
-serves `web/dist` with `python -m http.server`, starts the installed Chrome with a throw-away profile and
+serves `target/site` with `python -m http.server`, starts the installed Chrome with a throw-away profile and
 drives it over the DevTools protocol, setting the real disc image on the page's real file input. It needs the
 bundle, Chrome, Python and the image (`MB_DISC`, or `Super Monkey Ball*.rvz` next to the repository) and says
 what is missing otherwise. 93 checks (96 with `--lan`; 83 where Chrome gives the page no WebGPU), about
