@@ -150,6 +150,7 @@ enum OptionRow {
     Controls,
     TiltRange,
     Fullscreen,
+    Reflections,
     RemoveData,
     ForgetImage,
     EraseSaves,
@@ -275,6 +276,7 @@ impl Menu {
         if caps.fullscreen {
             rows.push(OptionRow::Fullscreen);
         }
+        rows.push(OptionRow::Reflections);
         if caps.remove_data {
             rows.push(OptionRow::RemoveData);
         }
@@ -523,6 +525,9 @@ impl Menu {
                         }
                         OptionRow::Fullscreen => {
                             row_with("FULLSCREEN", on_off(host::is_fullscreen()), true)
+                        }
+                        OptionRow::Reflections => {
+                            row_with("REFLECTIONS", on_off(s.reflections), true)
                         }
                         r if self.confirm == Some(r) => row("TAP AGAIN TO CONFIRM"),
                         OptionRow::RemoveData => row("REMOVE GAME DATA"),
@@ -844,6 +849,9 @@ impl Menu {
                         host::post(host::Command::SetFullscreen(!host::is_fullscreen()));
                         return Transition::None;
                     }
+                    // Read when a stage is built (`loading.rs`); no stage is loaded while the options
+                    // are open, so the next one played has it.
+                    Some(OptionRow::Reflections) => s.reflections = !s.reflections,
                     Some(
                         OptionRow::Back
                         | OptionRow::RemoveData
@@ -1237,19 +1245,19 @@ mod tests {
         assert_eq!(next_volume(95), 100);
         // "Erase save data" asks first: one tap arms it, moving on disarms it, two taps do it.
         let labels = |m: &Menu| -> Vec<String> { m.rows().into_iter().map(|r| r.label).collect() };
-        assert_eq!(labels(&m)[5..], ["ERASE SAVE DATA", "BACK"]);
-        m.activate(5);
-        assert_eq!(labels(&m)[5], "TAP AGAIN TO CONFIRM");
+        assert_eq!(labels(&m)[5..], ["REFLECTIONS", "ERASE SAVE DATA", "BACK"]);
+        m.activate(6);
+        assert_eq!(labels(&m)[6], "TAP AGAIN TO CONFIRM");
         assert!(m.profile.settings.unlock_all, "nothing erased yet");
         m.activate(2);
-        assert_eq!(labels(&m)[5], "ERASE SAVE DATA");
-        m.activate(5);
-        m.activate(5);
+        assert_eq!(labels(&m)[6], "ERASE SAVE DATA");
+        m.activate(6);
+        m.activate(6);
         assert_eq!(m.profile, Profile::default());
         assert_eq!(m.notice.as_deref(), Some("SAVE DATA ERASED"));
         let (saved, warning) = Profile::load(m.storage.as_mut());
         assert_eq!((saved, warning), (Profile::default(), None));
-        m.activate(6);
+        m.activate(7);
         assert_eq!(m.screen_name(), "title");
     }
 
@@ -1272,6 +1280,7 @@ mod tests {
             [
                 "CONTROLS",
                 "FULLSCREEN",
+                "REFLECTIONS",
                 "REMOVE GAME DATA",
                 "FORGET GAME IMAGE",
                 "ERASE SAVE DATA",
@@ -1282,21 +1291,71 @@ mod tests {
         // Tilt adds its range row; removing data and forgetting the image want a second tap.
         m.activate(5);
         assert_eq!(m.rows()[6].label, "TILT RANGE");
-        m.activate(8);
+        m.activate(9);
         assert!(host::drain()
             .iter()
             .all(|c| !matches!(c, host::Command::RemoveGameData)));
-        m.activate(8);
+        m.activate(9);
         assert!(host::drain().contains(&host::Command::RemoveGameData));
         m.storage
             .write(crate::content::LAST_DISC_KEY, b"C:/x.rvz")
             .unwrap();
-        m.activate(9);
-        m.activate(9);
+        m.activate(10);
+        m.activate(10);
         assert_eq!(m.storage.read(crate::content::LAST_DISC_KEY).unwrap(), None);
         assert!(m.notice.as_deref().unwrap().contains("NEXT START"));
         host::set_caps(host::Caps::default());
         host::set_info(Vec::new());
+    }
+
+    /// Reflections are on until the row is chosen, and the choice is saved with the profile, reaches
+    /// the next stage's request and is still there when the menu is started again on the same save.
+    #[test]
+    fn the_reflections_row_toggles_saves_and_reaches_the_next_stage() {
+        let mut m = menu();
+        m.go(Screen::Options, 0);
+        let index = |m: &Menu| {
+            let rows = m.option_rows();
+            rows.iter().position(|r| *r == OptionRow::Reflections)
+        };
+        let at = index(&m).expect("the row is there on every platform");
+        assert_eq!(at, 5, "after the sound rows, before the storage rows");
+        let detail = |m: &Menu| m.rows()[at].detail.clone();
+        assert_eq!(m.rows()[at].label, "REFLECTIONS");
+        assert_eq!(detail(&m).as_deref(), Some("ON"));
+        assert!(m.rows()[at].enabled && m.profile.settings.reflections);
+
+        assert!(matches!(m.activate(at), Transition::None));
+        assert_eq!(detail(&m).as_deref(), Some("OFF"));
+        assert_eq!(m.screen_name(), "options");
+        let (saved, warning) = Profile::load(m.storage.as_mut());
+        assert!(!saved.settings.reflections && warning.is_none());
+        // What a stage started now is told.
+        let floor = CourseRun::new(Difficulty::Beginner).floor();
+        let request = floor.request(&m.profile.settings, &m.report);
+        assert!(!request.settings.reflections);
+
+        // A new menu on the same save (a restart) reads it back off, and the row turns it on again.
+        let mut again = Menu::new(std::mem::replace(
+            &mut m.storage,
+            Box::new(MemoryStorage::new()),
+        ));
+        again.profile = Profile::load(again.storage.as_mut()).0;
+        again.go(Screen::Options, 0);
+        assert_eq!(detail(&again).as_deref(), Some("OFF"));
+        again.activate(at);
+        assert_eq!(detail(&again).as_deref(), Some("ON"));
+        assert!(Profile::load(again.storage.as_mut()).0.settings.reflections);
+        // The platform rows come before it, so the row a browser test counts down to stays where it is.
+        host::set_caps(host::Caps {
+            tilt: true,
+            fullscreen: true,
+            ..host::Caps::default()
+        });
+        let rows = again.option_rows();
+        assert_eq!(rows[5], OptionRow::Controls);
+        assert_eq!(index(&again), Some(7));
+        host::set_caps(host::Caps::default());
     }
 
     /// The flow without a renderer: results are applied to the run exactly as when a stage pops.

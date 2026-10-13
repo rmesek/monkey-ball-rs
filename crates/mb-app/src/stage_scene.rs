@@ -9,7 +9,7 @@ use std::io;
 use std::rc::Rc;
 
 use glam::{Mat4, Vec3};
-use mb_render::{Layer, ModelId, ObjectId, Renderer, TextureId, TextureSet};
+use mb_render::{Layer, Mirror, ModelId, ObjectId, Renderer, TextureId, TextureSet};
 use mb_stage::{S16Vec, Stage};
 use web_time::Instant;
 
@@ -18,6 +18,9 @@ use crate::backdrop::{self, Flipbook, FlipbookKind, BONUS_WAVE_MODEL_NAME, BONUS
 use crate::content::{
     common_files, stage_bg, Content, StageFiles, Wanted, COMMON_GMA, COMMON_NL_OBJ, COMMON_NL_TPL,
     COMMON_TPL,
+};
+use crate::mirror::{
+    stage_mirror, MirrorKind, MirrorPlane, StageMirror, BG_FLAG_NOT_IN_MIRROR, MODEL_FLAG_IN_MIRROR,
 };
 use crate::stage_info::BgInfo;
 
@@ -346,6 +349,8 @@ pub struct StageScene {
     /// The objects the bonus wave ripples (stage 92): the floor model of the stage's NaomiLib archive,
     /// which no anim group names, and any anim-group model of that name.
     pub wave_objects: Vec<ObjectId>,
+    /// The mirror floor of the stage, when it has one and reflections are on.
+    pub mirror: Option<SceneMirror>,
     /// The `common.tpl` textures uploaded so far, for states that add more `common.gma` models (ball,
     /// goal bag).
     pub common_set: LazyTextures,
@@ -370,6 +375,8 @@ pub enum Motion {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ItemKind {
     Model,
+    /// A mirror model of the group (`AnimGroup.mirrorModels`): it shows the reflection and nothing else.
+    Mirror,
     /// Index over all goals in anim-group order.
     Goal(usize),
     /// Index within the item's anim group.
@@ -448,6 +455,24 @@ impl LazyTextures {
     }
 }
 
+/// NaomiLib lookup like the reference's `resolveStageModel`: exact name, `NAME_MAP`, then the longest
+/// name that starts with `name`.
+pub(crate) fn naomi_model<'a>(n: &'a NaomiStage, name: &str) -> Option<&'a mb_gma::NlModel> {
+    let names = &n.obj.names;
+    let idx = names
+        .get(name)
+        .or_else(|| names.get(&format!("{name}_MAP")))
+        .or_else(|| {
+            names
+                .iter()
+                .filter(|(k, _)| k.starts_with(name))
+                .max_by_key(|(k, _)| k.len())
+                .map(|(_, v)| v)
+        })
+        .copied()?;
+    n.obj.model(idx)
+}
+
 struct ModelLoader<'a> {
     assets: &'a StageAssets,
     stage_set: LazyTextures,
@@ -498,19 +523,7 @@ impl<'a> ModelLoader<'a> {
     /// The model of the stage's NaomiLib archive that `name` resolves to (`resolveStageModel`).
     fn naomi_model(&self, name: &str) -> Option<(&'a NaomiStage, &'a mb_gma::NlModel)> {
         let n = self.assets.naomi.as_ref()?;
-        let names = &n.obj.names;
-        let idx = names
-            .get(name)
-            .or_else(|| names.get(&format!("{name}_MAP")))
-            .or_else(|| {
-                names
-                    .iter()
-                    .filter(|(k, _)| k.starts_with(name))
-                    .max_by_key(|(k, _)| k.len())
-                    .map(|(_, v)| v)
-            })
-            .copied()?;
-        Some((n, n.obj.model(idx)?))
+        Some((n, naomi_model(n, name)?))
     }
 
     /// The bonus wave's floor as the reference draws it (`World.bonusWaveModel`): the NaomiLib model
@@ -565,6 +578,15 @@ impl<'a> ModelLoader<'a> {
         None
     }
 
+    /// A mirror model (`getModel(name, GmaSrc.StageAndBg)`): its geometry without its textures, since
+    /// it is only ever drawn with the reflection.
+    fn mirror_model(&mut self, r: &mut Renderer, name: &str) -> Option<ModelId> {
+        let a = self.assets;
+        let stage = a.stage_gma.as_ref().and_then(|(gma, _)| gma.model(name));
+        let model = stage.or_else(|| a.backdrop.gma.model(name))?;
+        r.upload_model(model, &[]).ok()
+    }
+
     /// Stage GMA, then background GMA, then the stage NaomiLib archive.
     fn resolve(&mut self, r: &mut Renderer, name: &str) -> Option<ModelId> {
         self.get(r, Src::Stage, name)
@@ -584,6 +606,34 @@ const UNSORTED_DEPTH_OFFSET: f32 = 1.0e6;
 /// the stage's own light.
 pub fn bg_light_group(flags: u32) -> u32 {
     flags >> 28
+}
+
+/// One plane of a loaded stage's mirror, with the objects that show the reflection in it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SceneMirrorLevel {
+    pub plane: MirrorPlane,
+    /// The mirror models of the anim groups and of the stage (`mirrorModelNames`) that lie in the
+    /// plane, or the bonus wave's floor.
+    pub surfaces: Vec<ObjectId>,
+}
+
+/// The mirror floor of a loaded stage (`Renderer::set_mirror` was called for it): what
+/// [`crate::mirror::stage_mirror`] decided, as renderer objects.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SceneMirror {
+    pub kind: MirrorKind,
+    /// The planes the mirror can be in, highest first; one on every stage of the disc but 110.
+    pub levels: Vec<SceneMirrorLevel>,
+    /// The objects taken out of the reflection: anim-group models without [`MODEL_FLAG_IN_MIRROR`],
+    /// background and foreground objects with [`BG_FLAG_NOT_IN_MIRROR`].
+    pub left_out: Vec<ObjectId>,
+}
+
+impl SceneMirror {
+    /// Every object that can show the reflection, level by level.
+    pub fn surfaces(&self) -> impl Iterator<Item = ObjectId> + '_ {
+        self.levels.iter().flat_map(|l| l.surfaces.iter().copied())
+    }
 }
 
 /// The flipbooks of the created background objects (`bg_sources` indexes `list`): windows for the night
@@ -674,7 +724,9 @@ fn place_bg_objects(
 }
 
 impl StageScene {
-    pub fn build(r: &mut Renderer, a: &StageAssets) -> Self {
+    /// `reflections` is the player's option: without it a stage with a mirror floor is built and drawn
+    /// like any other, and nothing of the mirror exists.
+    pub fn build(r: &mut Renderer, a: &StageAssets, reflections: bool) -> Self {
         let texture_base = r.texture_count();
         r.lighting = a.bg.lighting();
         r.clear_color = a.bg.clear_color.map(|c| c as f64);
@@ -714,6 +766,7 @@ impl StageScene {
         };
         let (mut goal_index, mut banana_index) = (0, 0);
         let mut wave_objects = Vec::new();
+        let mut left_out = Vec::new();
         for (gi, g) in a.stagedef.anim_groups.iter().enumerate() {
             for m in &g.models {
                 match loader.resolve(r, &m.name) {
@@ -723,6 +776,9 @@ impl StageScene {
                         // `AnimGroup`: a group that names the wave's model gets the wave too.
                         if a.id == BONUS_WAVE_STAGE_ID && m.name == BONUS_WAVE_MODEL_NAME {
                             wave_objects.extend(object);
+                        }
+                        if m.flags & MODEL_FLAG_IN_MIRROR == 0 {
+                            left_out.extend(object);
                         }
                     }
                     None if m.name.starts_with("null") => {}
@@ -797,11 +853,85 @@ impl StageScene {
             }
         }
         // `World.bonusWaveModel`: resolved by name and drawn in stage space, tilting with the stage.
+        let mut wave_floor = None;
         if a.id == BONUS_WAVE_STAGE_ID {
             if let Some(model) = loader.bonus_wave(r) {
-                wave_objects.push(r.add_object(model, Layer::World, Mat4::IDENTITY));
+                let floor = r.add_object(model, Layer::World, Mat4::IDENTITY);
+                wave_objects.push(floor);
+                wave_floor = Some(floor);
             }
         }
+
+        // The mirror floor (`Render.ts`, `World.prepareToRenderMirrors`), now that every object exists.
+        // Without reflections nothing of it is made: no mirror, no mirror model.
+        let decided = if reflections {
+            stage_mirror(a)
+        } else {
+            StageMirror::None(crate::mirror::NoMirror::NotNamed)
+        };
+        let levels = match (&decided, wave_floor) {
+            // The floor of the wave is drawn as ever, with the reflection over it. The reference bends
+            // the reflection by a texture (`gb_grad`); that is left out (`docs/GAMEPLAY.md`).
+            (StageMirror::Wavy(plane), Some(floor)) => {
+                r.set_mirror(Some(Mirror {
+                    plane: plane.at(|_| Mat4::IDENTITY),
+                    alpha: Mirror::WAVY_ALPHA,
+                    distortion: None,
+                }));
+                r.set_mirror_surface(floor, true);
+                vec![SceneMirrorLevel {
+                    plane: *plane,
+                    surfaces: vec![floor],
+                }]
+            }
+            // `AnimGroup.mirrorModels` and the stage's own list: from the stage archive, then the
+            // background's (`GmaSrc.StageAndBg`), each posed with its anim group. The reference draws
+            // them with the mirror program only, never with their own material.
+            (StageMirror::Flat { entries, plan, .. }, _) => {
+                let mut levels = Vec::new();
+                for level in &plan.levels {
+                    let mut surfaces = Vec::new();
+                    for entry in level.surfaces.iter().filter_map(|i| entries.get(*i)) {
+                        let model = loader.mirror_model(r, &entry.name);
+                        let (local, kind) = (Mat4::IDENTITY, ItemKind::Mirror);
+                        surfaces.extend(add(r, model, entry.group, local, Motion::Static, kind));
+                    }
+                    if !surfaces.is_empty() {
+                        levels.push(SceneMirrorLevel {
+                            plane: level.plane,
+                            surfaces,
+                        });
+                    }
+                }
+                if let Some(first) = levels.first() {
+                    r.set_mirror(Some(Mirror::flat(first.plane.at(|_| Mat4::IDENTITY))));
+                }
+                for object in levels.iter().flat_map(|l| l.surfaces.iter()) {
+                    r.set_mirror_surface_only(*object, true);
+                }
+                levels
+            }
+            _ => Vec::new(),
+        };
+        let mirror = decided.kind().filter(|_| !levels.is_empty()).map(|kind| {
+            let flagged = |objects: &[ObjectId], sources: &[usize], list: &[mb_stage::BgObject]| {
+                let out = |(_, source): &(&ObjectId, &usize)| {
+                    (list.get(**source)).is_some_and(|o| o.flags & BG_FLAG_NOT_IN_MIRROR != 0)
+                };
+                let hidden = objects.iter().zip(sources).filter(out);
+                hidden.map(|(object, _)| *object).collect::<Vec<_>>()
+            };
+            left_out.extend(flagged(&bg_objects, &bg_sources, &a.stagedef.bg_objects));
+            left_out.extend(flagged(&fg_objects, &fg_sources, &a.stagedef.fg_objects));
+            for object in &left_out {
+                r.set_in_mirror(*object, false);
+            }
+            SceneMirror {
+                kind,
+                levels,
+                left_out,
+            }
+        });
 
         let start = a
             .stagedef
@@ -818,6 +948,7 @@ impl StageScene {
             flipbooks,
             clouds,
             wave_objects,
+            mirror,
             common_set: loader.common_set,
             start,
             missing_models: missing,
@@ -851,6 +982,13 @@ impl StageScene {
                 }
             };
             r.set_transform(it.object, m);
+        }
+        // The highest level, as for a camera above the stage; a game that plays the stage chooses per
+        // frame (`PlayScene::face_camera`).
+        let plane = (self.mirror.as_ref()).and_then(|m| Some(m.levels.first()?.plane));
+        if let Some(plane) = plane.filter(|p| p.moves()) {
+            let group = |i: usize| groups.get(i).copied().unwrap_or(Mat4::IDENTITY);
+            r.set_mirror_plane(plane.at(group));
         }
     }
 }

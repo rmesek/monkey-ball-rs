@@ -1283,3 +1283,568 @@ fn the_action_button_cuts_a_fall_out_short_at_the_same_cost() {
     assert_eq!(results[0].3, results[1].3);
     h.shutdown();
 }
+
+/// A save with every stage open and the Reflections option as given.
+fn storage_with_reflections(on: bool) -> SharedStorage {
+    let mut storage = SharedStorage::default();
+    let mut profile = Profile::default();
+    profile.settings.unlock_all = true;
+    profile.settings.reflections = on;
+    profile.save(&mut storage).unwrap();
+    storage
+}
+
+/// A mirror model of a stage as its file has it: its vertices and bounding sphere, in its own space.
+struct MirrorModel {
+    points: Vec<Vec3>,
+    centre: Vec3,
+    radius: f32,
+}
+
+/// The mirror models of `stage` in the order of the scene's mirror surfaces (level by level), read
+/// from the stage's files; for stage 92, the floor of the wave.
+fn mirror_models(content: &Content, stage: u32) -> Vec<MirrorModel> {
+    use mb_app::mirror::{stage_mirror, StageMirror};
+    use mb_app::stage_scene::StageAssets;
+    let assets = StageAssets::load(content, stage, None).unwrap();
+    match stage_mirror(&assets) {
+        StageMirror::None(_) => Vec::new(),
+        StageMirror::Wavy(_) => {
+            let naomi = assets.naomi.as_ref().expect("the wave is a NaomiLib stage");
+            let name = mb_app::backdrop::BONUS_WAVE_MODEL_NAME;
+            let model = naomi.obj.model_by_name(name).expect("the wave's floor");
+            vec![MirrorModel {
+                points: Vec::new(),
+                centre: Vec3::from(model.bound_sphere_center),
+                radius: model.bound_sphere_radius,
+            }]
+        }
+        StageMirror::Flat { entries, plan, .. } => {
+            let (gma, _) = assets.stage_gma.as_ref().expect("a stage archive");
+            let surfaces = plan.levels.iter().flat_map(|l| l.surfaces.iter());
+            surfaces
+                .map(|i| {
+                    let model = gma.model(&entries[*i].name).expect("the mirror model");
+                    let meshes = model.meshes().unwrap();
+                    let positions = meshes.iter().flat_map(|m| m.vertices.positions.iter());
+                    MirrorModel {
+                        points: positions.map(|p| Vec3::from(*p)).collect(),
+                        centre: Vec3::from(model.bound_sphere_center),
+                        radius: model.bound_sphere_radius,
+                    }
+                })
+                .collect()
+        }
+    }
+}
+
+/// The mirror surfaces of the stage being played, level by level, and how many levels there are.
+fn mirror_surfaces(h: &Headless) -> (Vec<mb_render::ObjectId>, usize) {
+    let view = h.top().unwrap().play_view().unwrap();
+    match &view.scene.scene.mirror {
+        Some(mirror) => (mirror.surfaces().collect(), mirror.levels.len()),
+        None => (Vec::new(), 0),
+    }
+}
+
+/// How far the vertices of the mirror models, as they are drawn, are from the plane the renderer
+/// mirrors in: the largest distance, leaving out one vertex in a hundred (`mirror::STRAY_VERTICES`).
+fn off_the_plane(h: &Headless, models: &[MirrorModel], surfaces: &[mb_render::ObjectId]) -> f32 {
+    let plane = h.renderer().mirror().expect("a mirror").plane;
+    let origin = plane.transform_point3(Vec3::ZERO);
+    let normal = plane.transform_vector3(Vec3::Y).normalize();
+    let mut worst = 0.0f32;
+    for (model, object) in models.iter().zip(surfaces) {
+        let shown = h.renderer().transform(*object);
+        let gap = |p: &Vec3| normal.dot(shown.transform_point3(*p) - origin).abs();
+        let mut gaps: Vec<f32> = model.points.iter().map(gap).collect();
+        gaps.sort_by(f32::total_cmp);
+        let kept = gaps.len() - gaps.len() / mb_app::mirror::STRAY_VERTICES;
+        worst = worst.max(gaps[..kept].last().copied().unwrap_or(0.0));
+    }
+    worst
+}
+
+/// Every stage whose stagedef names mirror models has a mirror floor, like the bonus wave; a sample of
+/// them of every kind is played here (`tests/mirrors.rs` holds the whole list). The mirror is set up as
+/// the reference does it (mode, opacity, reflection-only mirror models, what is left out), in the plane
+/// the mirror models lie in: at 144 frames a second, with the engine moving the anim groups, every
+/// mirror model stays in the plane the renderer mirrors in, also where the plane rides on a group
+/// (stage 103) and where the models ride on many groups that slide along it (78, 106, 121, 123).
+/// Nothing is created on the GPU after the load. Stages that name no mirror model have none.
+#[test]
+fn mirror_floors_lie_in_the_plane_of_their_mirror_models() {
+    use mb_app::mirror::{MirrorKind, MirrorPlane};
+    use mb_app::play_scene::mat4_from_mtx;
+    use mb_app::stage_scene::ItemKind;
+    use mb_render::glam::Mat4;
+    let _gpu = GPU.lock().unwrap_or_else(|e| e.into_inner());
+    let storage = SharedStorage::unlocked();
+    let Some(mut h) = start(&storage) else {
+        return;
+    };
+    let content = open_disc_image(find_disc().unwrap()).unwrap();
+    let half = (h.size().0 / 2, h.size().1 / 2);
+    // (stage, mirror models, anim groups they ride on, the plane rides on a group)
+    for (stage, count, groups, rides) in [
+        (92u32, 1usize, 0usize, false),
+        (102, 1, 1, false),
+        (103, 1, 1, true),
+        (91, 1, 1, false),
+        (48, 1, 1, false),
+        (74, 1, 1, false),
+        (77, 10, 1, false),
+        (78, 5, 5, false),
+        (106, 16, 15, false),
+        (113, 1, 1, false),
+        (121, 24, 24, false),
+        (123, 21, 21, false),
+    ] {
+        let models = mirror_models(&content, stage);
+        start_practice_stage(&mut h, &storage, stage);
+        h.render().unwrap();
+        let created = (
+            h.renderer().counters(),
+            h.renderer().object_count(),
+            h.renderer().texture_count(),
+        );
+        assert!(h.renderer().object_capacity() >= h.renderer().object_count());
+        let set = *h.renderer().mirror().expect("the renderer has a mirror");
+        let (surfaces, levels) = mirror_surfaces(&h);
+        assert_eq!((surfaces.len(), levels), (count, 1), "stage {stage}");
+        assert_eq!(models.len(), count, "stage {stage}");
+        let plane = {
+            let view = h.top().unwrap().play_view().unwrap();
+            assert!(view.request.settings.reflections, "on by default");
+            let scene = &view.scene.scene;
+            let mirror = scene.mirror.as_ref().expect("the stage has a mirror");
+            // `AnimGroup.prepareToRender`: a model shows in the capture only with flag bit 2;
+            // `BgObjectInst`: a background or foreground object with flag bit 7 does not.
+            let stagedef = view.stage;
+            let in_mirror = (stagedef.anim_groups.iter())
+                .flat_map(|g| g.models.iter())
+                .filter(|m| m.flags & 4 != 0);
+            let in_mirror: Vec<&str> = in_mirror.map(|m| m.name.as_str()).collect();
+            let drawn = |name: &&&str| !scene.missing_models.iter().any(|m| m == **name);
+            let models = scene.items.iter().filter(|it| it.kind == ItemKind::Model);
+            let hidden_models = models.count() - in_mirror.iter().filter(drawn).count();
+            assert_eq!(in_mirror.is_empty(), stage != 113, "stage {stage}");
+            let listed = |list: &[mb_stage::BgObject], sources: &[usize]| {
+                let shown = sources.iter().filter_map(|i| list.get(*i));
+                shown.filter(|o| o.flags & 0x80 != 0).count()
+            };
+            let hidden = hidden_models
+                + listed(&stagedef.bg_objects, &scene.bg_sources)
+                + listed(&stagedef.fg_objects, &scene.fg_sources);
+            assert_eq!(mirror.left_out.len(), hidden, "stage {stage}");
+            let mirrors = scene.items.iter().filter(|it| it.kind == ItemKind::Mirror);
+            let on: std::collections::BTreeSet<usize> = mirrors.map(|it| it.group).collect();
+            assert_eq!(on.len(), groups, "stage {stage}");
+            if stage == 92 {
+                // `WAVY_MIRROR_PLANE_Y`, `WAVY_MIRROR_ALPHA`; the reference's distortion is left out.
+                assert_eq!(mirror.kind, MirrorKind::Wavy);
+                assert_eq!(surfaces, scene.wave_objects);
+                let at = Mat4::from_translation(Vec3::new(0.0, 0.02, 0.0));
+                assert_eq!(mirror.levels[0].plane, MirrorPlane::Fixed(at));
+                assert_eq!((set.alpha, set.distortion), (96.0 / 255.0, None));
+            } else {
+                assert_eq!(mirror.kind, MirrorKind::Flat, "stage {stage}");
+                assert_eq!((set.alpha, set.distortion), (1.0, None));
+                assert_eq!(on.contains(&0), !matches!(stage, 103 | 113));
+            }
+            assert_eq!(mirror.levels[0].plane.moves(), rides, "stage {stage}");
+            mirror.levels[0].plane
+        };
+        // The target is half the frame each way, colour and depth: reported apart from the textures.
+        assert_eq!(h.renderer().mirror_size(), Some(half));
+        assert_eq!(h.renderer().mirror_bytes(), (half.0 * half.1 * 8) as usize);
+
+        // Through the fly-in into play, at a display rate that is no multiple of the tick rate, so
+        // that frames fall between ticks.
+        let (mut drawn, mut between, mut worst) = (0, 0, 0.0f32);
+        let mut moved = std::collections::BTreeSet::new();
+        for frame in 0..1100 {
+            assert!(h.step(1.0 / 144.0).unwrap());
+            let now = h.renderer().mirror().expect("still set").plane;
+            if rides {
+                // The plane is where its mirror model is drawn: the same blend of the same two ticks,
+                // which is not the newest tick's pose while the group moves.
+                let shown = h.renderer().transform(surfaces[0]);
+                let expect = plane.at(|_| shown);
+                assert!(now.abs_diff_eq(expect, 1e-4), "stage {stage}");
+                let view = h.top().unwrap().play_view().unwrap();
+                let tick = mat4_from_mtx(&view.sim.runtime.anim_groups[1].transform);
+                between += !shown.abs_diff_eq(tick, 1e-6) as u32;
+                moved.insert((now.y_axis.x * 2000.0).round() as i32);
+            } else {
+                assert_eq!(now, plane.at(|_| Mat4::IDENTITY), "stage {stage}");
+            }
+            // Every mirror model is in the plane, wherever the engine has moved its group.
+            if frame % 5 == 0 {
+                worst = worst.max(off_the_plane(&h, &models, &surfaces));
+            }
+            if frame % 25 == 0 {
+                h.render().unwrap();
+                let stats = h.renderer().stats;
+                // The capture and the surfaces are counted apart from the frame's own draws.
+                if stats.mirror_draws > 0 {
+                    assert!(stats.mirror_surface_draws > 0, "stage {stage}: {stats:?}");
+                    assert!(stats.mirror_draws > stats.mirror_surface_draws);
+                    assert_eq!(
+                        stats.total_draws(),
+                        stats.draws + stats.quad_draws + stats.sprite_draws + stats.mirror_draws
+                    );
+                    drawn += 1;
+                }
+            }
+        }
+        eprintln!(
+            "stage {stage}: {count} mirror model(s) at most {worst:.4} from the plane; the mirror \
+             showed in {drawn} of 44 frames"
+        );
+        assert!(
+            worst < 0.025,
+            "stage {stage}: a mirror model is {worst} off"
+        );
+        assert!(
+            drawn >= 8,
+            "stage {stage}: the mirror showed in {drawn} frames"
+        );
+        if rides {
+            assert!(between > 300, "the plane was blended in {between} frames");
+            assert!(moved.len() > 20, "the plane moved: {}", moved.len());
+        }
+        h.render().unwrap();
+        assert_eq!(
+            (
+                h.renderer().counters(),
+                h.renderer().object_count(),
+                h.renderer().texture_count(),
+            ),
+            created,
+            "stage {stage}: the mirror created something"
+        );
+        // Leaving the stage frees the mirror with it.
+        h.shutdown();
+        assert!(h.renderer().mirror().is_none());
+        assert_eq!(h.renderer().mirror_bytes(), 0);
+    }
+    // Stages whose stagedef names no mirror model have none.
+    for stage in [1u32, 2, 5, 81, 107, 122] {
+        start_practice_stage(&mut h, &storage, stage);
+        assert!(mirror_models(&content, stage).is_empty(), "stage {stage}");
+        assert_eq!(mirror_surfaces(&h), (Vec::new(), 0), "stage {stage}");
+        assert!(h.renderer().mirror().is_none(), "stage {stage}");
+        for _ in 0..60 {
+            h.step(FRAME).unwrap();
+        }
+        h.render().unwrap();
+        let stats = h.renderer().stats;
+        assert_eq!(
+            (stats.mirror_draws, stats.mirror_surface_draws),
+            (0, 0),
+            "stage {stage}"
+        );
+        assert_eq!(
+            (h.renderer().mirror_size(), h.renderer().mirror_bytes()),
+            (None, 0)
+        );
+    }
+    h.shutdown();
+}
+
+/// Stage 110 has mirror floors at two heights. The frame mirrors in the higher one while the camera
+/// is above it and in the lower one below (the reference's `cameraPos[1] >= -9.0`), and only the
+/// mirror model of that floor is drawn. The scene is posed directly here, since the lower floor is at
+/// the end of the stage.
+#[test]
+fn a_stage_with_two_mirror_floors_mirrors_in_the_one_under_the_camera() {
+    use mb_app::play_scene::PlayScene;
+    use mb_app::stage_scene::{LoadTimings, StageAssets};
+    let _gpu = GPU.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(mut h) = start(&SharedStorage::default()) else {
+        return;
+    };
+    h.shutdown();
+    let content = open_disc_image(find_disc().unwrap()).unwrap();
+    let models = mirror_models(&content, 110);
+    assert_eq!(models.len(), 2);
+    let assets = StageAssets::load(&content, 110, None).unwrap();
+    let mut scene = PlayScene::build(h.renderer_mut(), assets, LoadTimings::default(), true);
+    let sim = mb_engine::Sim::new(
+        &scene.assets.stagedef,
+        mb_engine::SimConfig::first_attempt(110),
+    );
+    let mirror = scene.scene.mirror.clone().expect("a mirror");
+    assert_eq!(mirror.levels.len(), 2);
+    let heights: Vec<f32> = (mirror.levels.iter())
+        .map(|l| l.plane.at(|_| mb_render::glam::Mat4::IDENTITY).w_axis.y)
+        .collect();
+    assert!((heights[0] + 8.99).abs() < 1e-3 && (heights[1] + 42.99).abs() < 1e-3);
+    scene.sync(&sim);
+    // What only the first frame of a session makes (the frame's depth texture, the mirror's target).
+    scene.apply(h.renderer_mut(), 1.0);
+    h.render_with(&Camera::look_at(Vec3::ONE, Vec3::ZERO, Vec3::Y));
+    // A camera above each floor's mirror model, looking down at it; then back up again.
+    for (level, pass) in [(0usize, 0), (1, 1), (0, 2), (1, 3)] {
+        let floor = scene.scene.mirror.as_ref().unwrap().levels[level].surfaces[0];
+        let middle = (h.renderer().transform(floor)).transform_point3(models[level].centre);
+        let eye = middle + Vec3::new(0.0, 6.0, 9.0);
+        let camera = Camera::look_at(eye, middle, Vec3::Y);
+        scene.apply(h.renderer_mut(), 1.0);
+        scene.face_camera(h.renderer_mut(), &camera);
+        assert_eq!(scene.mirror_level(), level, "pass {pass}");
+        let plane = h.renderer().mirror().unwrap().plane;
+        assert!(
+            (plane.w_axis.y - heights[level]).abs() < 1e-4,
+            "pass {pass}"
+        );
+        let before = h.renderer().counters();
+        h.render_with(&camera);
+        let stats = h.renderer().stats;
+        // The floor under the camera shows its reflection; the other floor's model is not drawn.
+        let meshes = stats.mirror_surface_draws;
+        assert!(meshes > 0 && stats.mirror_draws > meshes, "{stats:?}");
+        assert_eq!(h.renderer().counters(), before, "pass {pass}");
+        // From far above both floors, looking down the stage: still only one of them.
+        let high = Camera::look_at(Vec3::new(0.0, 60.0, 0.0), middle, Vec3::Z);
+        scene.face_camera(h.renderer_mut(), &high);
+        assert_eq!(scene.mirror_level(), 0);
+        scene.sync(&sim);
+    }
+    scene.unload(h.renderer_mut());
+    assert!(h.renderer().mirror().is_none());
+}
+
+/// Where the ray through the middle of pixel `at` meets the plane through `origin` facing `normal`.
+fn plane_hit(
+    camera: &Camera,
+    size: (u32, u32),
+    at: (u32, u32),
+    origin: Vec3,
+    normal: Vec3,
+) -> Option<Vec3> {
+    let aspect = size.0 as f32 / size.1 as f32;
+    let clip = camera.projection(aspect, camera.near, camera.far) * camera.view;
+    let x = (at.0 as f32 + 0.5) / size.0 as f32 * 2.0 - 1.0;
+    let y = 1.0 - (at.1 as f32 + 0.5) / size.1 as f32 * 2.0;
+    let world = clip.inverse();
+    let near = world.project_point3(Vec3::new(x, y, 0.0));
+    let far = world.project_point3(Vec3::new(x, y, 1.0));
+    let dir = far - near;
+    let along = normal.dot(dir);
+    if along.abs() < 1e-9 {
+        return None;
+    }
+    let t = normal.dot(origin - near) / along;
+    (t > 0.0).then(|| near + dir * t)
+}
+
+/// The reflection is really in the picture: the same frames of a sample of mirror stages (the bonus
+/// wave, the two of the first mirrors, two bonus floors, night, ice, storm, space and master floors)
+/// are played and drawn with the Reflections option on and off, and they differ, by many pixels, on
+/// the mirror models and nowhere else. The option's whole cost is the mirror's draws. On a stage
+/// without a mirror the option changes no pixel and no draw.
+#[test]
+fn the_mirror_floor_shows_a_reflection_that_the_option_turns_off() {
+    let _gpu = GPU.lock().unwrap_or_else(|e| e.into_inner());
+    let (on, off) = (
+        storage_with_reflections(true),
+        storage_with_reflections(false),
+    );
+    let Some(mut h) = start(&on) else {
+        return;
+    };
+    let content = open_disc_image(find_disc().unwrap()).unwrap();
+    let size = h.size();
+    // The fly-in, GO, and play with the ball on the floor.
+    let ticks = [150u32, 300, 420, 560];
+    for stage in [92u32, 102, 103, 91, 94, 21, 72, 77, 82, 105, 121, 129, 1, 5] {
+        let models = mirror_models(&content, stage);
+        let mirrored = !models.is_empty();
+        assert_eq!(mirrored, !matches!(stage, 1 | 5));
+
+        // The frames with the option on: the picture, the camera, and where the mirror is.
+        let mut frames = Vec::new();
+        start_practice_stage(&mut h, &on, stage);
+        for at in ticks {
+            run_until(&mut h, 2000, "the tick", |h| {
+                playing(h).is_some_and(|p| p.2 >= at)
+            });
+            let rgba = shot(&mut h, &format!("mirror_{stage:03}_tick{at}_on"));
+            let stats = h.renderer().stats;
+            let camera = h.top().unwrap().camera();
+            let plane = h.renderer().mirror().map(|m| m.plane);
+            let (surfaces, _) = mirror_surfaces(&h);
+            // The bounding sphere of each mirror model, where it is drawn.
+            let spheres: Vec<(Vec3, f32)> = (models.iter().zip(&surfaces))
+                .map(|(m, o)| {
+                    let shown = h.renderer().transform(*o);
+                    (shown.transform_point3(m.centre), m.radius)
+                })
+                .collect();
+            frames.push((rgba, stats, camera, plane, spheres));
+        }
+        // The same frames with it off.
+        start_practice_stage(&mut h, &off, stage);
+        assert!(h.renderer().mirror().is_none(), "stage {stage}: off");
+        assert_eq!(mirror_surfaces(&h), (Vec::new(), 0));
+        let (mut shown, mut most) = (0, 0);
+        for (at, (with, stats, camera, plane, spheres)) in ticks.into_iter().zip(frames) {
+            run_until(&mut h, 2000, "the tick", |h| {
+                playing(h).is_some_and(|p| p.2 >= at)
+            });
+            let without = shot(&mut h, &format!("mirror_{stage:03}_tick{at}_off"));
+            let plain = h.renderer().stats;
+            assert_eq!(plain.mirror_draws, 0, "stage {stage}");
+            assert_eq!(h.renderer().mirror_bytes(), 0);
+            // What the option costs is the mirror's draws and nothing else.
+            assert_eq!(
+                stats.total_draws() - stats.mirror_draws,
+                plain.total_draws(),
+                "stage {stage} tick {at}"
+            );
+            // Per pixel, the largest difference of a colour channel.
+            let differs = |i: usize| {
+                let (a, b) = (&with[i * 4..i * 4 + 3], &without[i * 4..i * 4 + 3]);
+                let channels = a.iter().zip(b).map(|(a, b)| a.abs_diff(*b));
+                channels.max().unwrap_or(0)
+            };
+            let pixels = (size.0 * size.1) as usize;
+            let changed: Vec<usize> = (0..pixels).filter(|i| differs(*i) > 0).collect();
+            let strong = changed.iter().filter(|i| differs(**i) >= 16).count();
+            let Some(plane) = plane else {
+                assert!(!mirrored, "stage {stage}");
+                assert_eq!(stats.mirror_draws, 0, "stage {stage}");
+                assert!(
+                    changed.is_empty(),
+                    "stage {stage} tick {at}: {} pixels differ without a mirror",
+                    changed.len()
+                );
+                continue;
+            };
+            eprintln!(
+                "stage {stage} tick {at}: {} pixels differ ({strong} by 16 or more of 255); \
+                 {} draws + {} for the mirror ({} of them its surface)",
+                changed.len(),
+                plain.total_draws(),
+                stats.mirror_draws,
+                stats.mirror_surface_draws,
+            );
+            if stats.mirror_draws == 0 {
+                assert!(changed.is_empty(), "stage {stage} tick {at}");
+                continue;
+            }
+            shown += 1;
+            most = most.max(changed.len());
+            // Every pixel that changed looks at a mirror model: its ray meets the mirror's plane
+            // inside one. (The floor of the wave rises and falls about its plane, hence the slack.)
+            let origin = plane.transform_point3(Vec3::ZERO);
+            let normal = plane.transform_vector3(Vec3::Y).normalize();
+            let slack = if stage == 92 { 2.5 } else { 0.3 };
+            for i in &changed {
+                let pixel = ((i % size.0 as usize) as u32, (i / size.0 as usize) as u32);
+                let hit = plane_hit(&camera, size, pixel, origin, normal);
+                let inside = |p: Vec3| spheres.iter().any(|(c, r)| (p - *c).length() <= r + slack);
+                assert!(
+                    hit.is_some_and(inside),
+                    "stage {stage} tick {at}: pixel {pixel:?} changed off the mirror ({hit:?})"
+                );
+            }
+        }
+        if mirrored {
+            assert!(
+                shown >= 2,
+                "stage {stage}: the mirror showed in {shown} frames"
+            );
+            // The mirror of a night stage is a strip of floor far from the start; elsewhere it is
+            // most of the floor.
+            let least = if stage == 21 { 1000 } else { 5000 };
+            assert!(most >= least, "stage {stage}: at most {most} pixels differ");
+        }
+    }
+    h.shutdown();
+}
+
+/// The Reflections row of the options screen, through the real states: chosen with the keys and with a
+/// finger, it turns the option off and on, the change is saved at once, and a menu started again on the
+/// same save has it. A stage loaded with it off has no mirror; loaded with it on again, it has.
+#[test]
+fn the_reflections_option_toggles_saves_and_survives_a_restart() {
+    let _gpu = GPU.lock().unwrap_or_else(|e| e.into_inner());
+    let storage = SharedStorage::unlocked();
+    let Some(mut h) = start(&storage) else {
+        return;
+    };
+    assert!(storage.profile().settings.reflections, "on by default");
+    // Title -> Options; the row is the sixth (unlock, stick curve, three volumes, reflections).
+    let open_options = |h: &mut Headless| {
+        h.tap(Action::LookDown).unwrap();
+        h.tap(Action::LookDown).unwrap();
+        h.tap(Action::Confirm).unwrap();
+        assert_eq!(h.status(), "menu: options");
+    };
+    open_options(&mut h);
+    for _ in 0..5 {
+        h.tap(Action::LookDown).unwrap();
+    }
+    h.tap(Action::Confirm).unwrap();
+    assert_eq!(h.status(), "menu: options");
+    assert!(!storage.profile().settings.reflections, "saved when chosen");
+    assert!(
+        storage.profile().settings.unlock_all,
+        "nothing else changed"
+    );
+    shot(&mut h, "options_reflections_off");
+
+    // A restart of the states on the same save: stage 102 is loaded without its mirror.
+    let play_102 = |h: &mut Headless| {
+        start_practice_stage(h, &storage, 102);
+        for _ in 0..120 {
+            h.step(FRAME).unwrap();
+        }
+        h.render().unwrap();
+        let view = h.top().unwrap().play_view().unwrap();
+        let on = view.request.settings.reflections;
+        assert_eq!(view.scene.scene.mirror.is_some(), on);
+        assert_eq!(h.renderer().mirror().is_some(), on);
+        assert_eq!(h.renderer().stats.mirror_draws > 0, on);
+        assert_eq!(h.renderer().mirror_bytes() > 0, on);
+        on
+    };
+    assert!(!play_102(&mut h));
+
+    // Back on with a finger, on a screen the size of a phone held upright (every row is in view).
+    h.shutdown();
+    h.resize((540, 1200));
+    h.push(Box::new(Menu::new(Box::new(storage.clone()))))
+        .unwrap();
+    h.step(FRAME).unwrap();
+    open_options(&mut h);
+    let layout = h.layout();
+    let rows = mb_app::widgets::ListLayout::column(&layout, 8, 0.24);
+    assert!(rows.is_visible(5, 0.0) && rows.max_scroll() == 0.0);
+    assert!(rows.item_h >= layout.min_tap(), "a full tap target");
+    let spot = rows.item_rect(5, 0.0).center();
+    let mut touches = mb_app::ui::TouchControls::new();
+    let (began, ended) = (
+        mb_app::ui::TouchPhase::Started,
+        mb_app::ui::TouchPhase::Ended,
+    );
+    touches.touch(1, began, spot, &layout, &mut h.input);
+    h.step(FRAME).unwrap();
+    touches.touch(1, ended, spot, &layout, &mut h.input);
+    h.step(FRAME).unwrap();
+    assert_eq!(h.status(), "menu: options");
+    assert!(storage.profile().settings.reflections, "a tap turned it on");
+    shot(&mut h, "options_reflections_on_portrait");
+    // The stick or d-pad of a gamepad and its A button are the same actions as the keys: the row the
+    // tap chose is the selected one, and choosing it turns the option off and on again.
+    for expect in [false, true] {
+        h.tap(Action::Confirm).unwrap();
+        assert_eq!(storage.profile().settings.reflections, expect);
+    }
+    h.resize((640, 360));
+    assert!(play_102(&mut h));
+    h.shutdown();
+}

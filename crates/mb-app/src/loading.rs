@@ -212,7 +212,9 @@ impl Game for StageLoad {
                 }
                 Phase::Build(loaded) => {
                     let (assets, timings) = *loaded;
-                    let scene = PlayScene::build(ctx.renderer, assets, timings);
+                    // The options are read when a stage is built: a change shows with the next load.
+                    let reflections = self.request.settings.reflections;
+                    let scene = PlayScene::build(ctx.renderer, assets, timings, reflections);
                     // Everything is parsed and on the GPU: the raw files are not needed any more.
                     ctx.content.release(&self.wanted);
                     let play = PlayState::new(
