@@ -1,10 +1,10 @@
 //! The simulation's behaviour, recorded: every stage on the disc is run through fixed input scripts and a
 //! hash over every tick's state is compared with the value recorded here. Skips without a disc image.
 //!
-//! This is what holds the simulation still when the reference is not at hand. `tests/parity.rs` proves the
-//! port equal to WebMonkeyBall, but only with a checkout of it and Deno; the values below were recorded from
-//! the engine at the commit where that comparison last passed (0.2.0, USA disc), so a change to them is a
-//! change to what the parity tests proved. A behaviour change that is meant updates the table in the same
+//! This is what holds the simulation still. The port was proved equal to WebMonkeyBall tick for tick by a
+//! harness that ran the reference under Deno (`tests/parity.rs`, in the repository up to 0.2.0); the values
+//! below were recorded from the engine where that comparison last passed (0.2.0, USA disc), so a change to
+//! them is a change to what it proved. A behaviour change that is meant updates the table in the same
 //! commit and says why; the failure message prints the new rows.
 //!
 //! The scripted runs use integer arithmetic only, so their inputs are the same on every machine. The state

@@ -1,4 +1,4 @@
-//! The waypoint controller used to script goal runs for the parity test must itself reach the goal on a few
+//! The waypoint controller used to script goal runs for the golden test must itself reach the goal on a few
 //! early stages (skipped without a disc image).
 
 mod common;

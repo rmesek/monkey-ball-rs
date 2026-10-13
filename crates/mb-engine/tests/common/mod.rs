@@ -76,8 +76,7 @@ pub fn install_real_tables() -> bool {
 }
 
 /// A crude closed-loop controller that steers the ball through a list of XZ waypoints (bananas, then the
-/// goal). Used to produce stick scripts that actually reach bananas/goals. The Rust sim is deterministic, so a
-/// script recorded here can be replayed verbatim on the reference.
+/// goal). Used to produce stick scripts that actually reach bananas/goals.
 pub struct Autopilot {
     pub targets: Vec<mb_engine::math::Vec3>,
     pub next: usize,

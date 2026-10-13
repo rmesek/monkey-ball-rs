@@ -1,6 +1,6 @@
 //! The display-only particles (`runtime.effects`, `runtime.confetti`) on a hand-built stage, no game data
 //! needed: when they spawn, how long they live, that the pools never grow, and that the simulation is the
-//! same with and without them. Bit-for-bit agreement with the reference is `tests/parity.rs`.
+//! same with and without them. What they do tick for tick is held by `tests/golden.rs`.
 
 use mb_engine::determinism::QuantizedInput;
 use mb_engine::effects::{CONFETTI_MODEL_COUNT, CONFETTI_PER_GOAL, MAX_BALL_EFFECTS};

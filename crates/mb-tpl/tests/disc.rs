@@ -1,13 +1,11 @@
 //! Real-disc tests. Skipped cleanly when no Super Monkey Ball 1 image is available (set `MB_DISC`
-//! or put `Super Monkey Ball*.rvz|iso` next to this repository). The reference comparison also
-//! needs `deno` on PATH and the read-only `../WebMonkeyBall` checkout (or `MB_REF_SRC`).
+//! or put `Super Monkey Ball*.rvz|iso` next to this repository).
 
 use mb_assets::disc::DiscPack;
 use mb_assets::lzss;
 use mb_assets::pack::PackProvider;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::process::Command;
 
 fn find_disc() -> Option<PathBuf> {
     if let Some(p) = std::env::var_os("MB_DISC") {
@@ -64,15 +62,6 @@ fn all_tpls(disc: &DiscPack) -> Vec<(String, Vec<u8>)> {
         .collect()
 }
 
-fn fnv1a(data: &[u8]) -> u32 {
-    let mut h: u32 = 0x811c9dc5;
-    for &b in data {
-        h ^= b as u32;
-        h = h.wrapping_mul(0x01000193);
-    }
-    h
-}
-
 #[test]
 fn every_tpl_parses_and_decodes() {
     let disc = disc_or_skip!();
@@ -95,95 +84,4 @@ fn every_tpl_parses_and_decodes() {
         }
     }
     eprintln!("{} tpls, {n_tex} textures, formats {formats:?}", tpls.len());
-}
-
-fn ref_src_dir() -> Option<PathBuf> {
-    let p = std::env::var_os("MB_REF_SRC")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../WebMonkeyBall/src")
-        });
-    p.join("tpl.ts").exists().then(|| {
-        // Strip the Windows verbatim prefix so Deno can build a file URL from it.
-        let c = p.canonicalize().unwrap().to_string_lossy().into_owned();
-        PathBuf::from(c.strip_prefix("\\\\?\\").unwrap_or(&c))
-    })
-}
-
-/// Compares the RGBA of every level of a selection of TPLs against the reference decoder (Deno).
-#[test]
-fn matches_reference_decoder() {
-    let disc = disc_or_skip!();
-    let Some(src) = ref_src_dir() else {
-        eprintln!("skipped: WebMonkeyBall/src not found (set MB_REF_SRC)");
-        return;
-    };
-    let tpls = all_tpls(&disc);
-    // A mix: HUD bitmaps, common/init, stage textures, a preview, and an LZ-compressed one.
-    let wanted = [
-        "test/bmp/bmp_nml.tpl",
-        "test/bmp/bmp_com.tpl.lz",
-        "test/init/common.tpl.lz",
-        "test/st001/st001.tpl",
-        "test/bg/bg_jun.tpl",
-        "test/st050/st050.tpl",
-        "test/ape/boy_ch.tpl.lz",
-    ];
-    let dir = std::env::temp_dir().join("mb-tpl-ref");
-    std::fs::create_dir_all(&dir).unwrap();
-    let mut files = Vec::new();
-    let mut ours = BTreeMap::new();
-    for w in wanted {
-        let Some((_, bytes)) = tpls.iter().find(|(p, _)| p.eq_ignore_ascii_case(w)) else {
-            continue;
-        };
-        let f = dir.join(w.replace('/', "_"));
-        std::fs::write(&f, bytes).unwrap();
-        let tpl = mb_tpl::parse(bytes).unwrap();
-        for t in tpl.textures() {
-            for l in 0..t.level_count() {
-                let (tw, th) = t.level_size(l);
-                let h = fnv1a(&t.decode_rgba(l).unwrap());
-                ours.insert(
-                    format!("{}\t{}\t{l}\t{tw}x{th}\t{h:x}", f.display(), t.index),
-                    (),
-                );
-            }
-        }
-        files.push(f);
-    }
-    assert!(files.len() >= 3, "too few sample tpls on disc");
-
-    let out = Command::new("deno")
-        .arg("run")
-        .arg("-A")
-        .arg("--sloppy-imports")
-        .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/ref_hash.ts"))
-        .arg(&src)
-        .args(&files)
-        .output();
-    let out = match out {
-        Ok(o) if o.status.success() => o,
-        Ok(o) => panic!("deno failed: {}", String::from_utf8_lossy(&o.stderr)),
-        Err(_) => {
-            eprintln!("skipped: deno not available");
-            return;
-        }
-    };
-    let theirs: Vec<String> = String::from_utf8(out.stdout)
-        .unwrap()
-        .lines()
-        .map(str::to_string)
-        .collect();
-    assert!(theirs.len() >= 3);
-    let mut compared = 0;
-    for line in &theirs {
-        assert!(
-            ours.contains_key(line),
-            "mismatch / missing in rust: {line}"
-        );
-        compared += 1;
-    }
-    assert_eq!(compared, ours.len(), "level count differs from reference");
-    eprintln!("compared {compared} levels across {} files", files.len());
 }

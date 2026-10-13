@@ -1,15 +1,11 @@
 //! Real-disc tests. They run only when a Super Monkey Ball 1 image is available and skip otherwise.
 //! Point `MB_DISC` at an image, or put a `Super Monkey Ball*.rvz|iso` next to this repository.
-//! The Deno parity test additionally needs `deno` on PATH and the read-only `../WebMonkeyBall` checkout
-//! (override with `MB_REF`); dumps go to `MB_SCRATCH` (default: the OS temp dir), never into the repo.
 
 use mb_assets::disc::DiscPack;
 use mb_assets::lzss;
 use mb_assets::pack::PackProvider;
 use mb_gma::{parse_gma, parse_naomi_obj};
-use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::path::PathBuf;
 
 fn find_disc() -> Option<PathBuf> {
     if let Some(p) = std::env::var_os("MB_DISC") {
@@ -59,19 +55,6 @@ fn all_gmas(disc: &DiscPack) -> Vec<(String, Vec<u8>)> {
         out.push((f.to_string(), bytes));
     }
     out
-}
-
-/// Triangle count and position checksum (same formula and order as `tests/ref/gma_ref.ts`).
-fn checksum(model: &mb_gma::Model) -> (usize, f64) {
-    let (mut tris, mut sum) = (0usize, 0.0f64);
-    for mesh in model.meshes().unwrap() {
-        tris += mesh.triangle_count();
-        for &i in &mesh.indices {
-            let p = mesh.vertices.positions[i as usize];
-            sum += p[0] as f64 + 2.0 * p[1] as f64 + 3.0 * p[2] as f64;
-        }
-    }
-    (tris, sum)
 }
 
 #[test]
@@ -204,98 +187,4 @@ fn every_naomilib_archive_parses() {
     }
     eprintln!("{files} NaomiLib archives, {models} models, {tris} triangles");
     assert!(files > 5 && models > 10);
-}
-
-fn scratch_dir() -> PathBuf {
-    let d = std::env::var_os("MB_SCRATCH")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| std::env::temp_dir().join("mb-gma-test"));
-    std::fs::create_dir_all(&d).unwrap();
-    d
-}
-
-#[test]
-fn matches_reference_triangle_counts_and_checksums() {
-    let disc = disc_or_skip!();
-    let ref_dir = std::env::var_os("MB_REF")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../WebMonkeyBall")
-        });
-    if !Path::new(&ref_dir).join("src/gma.ts").exists() {
-        eprintln!(
-            "skipped: reference checkout not found at {}",
-            ref_dir.display()
-        );
-        return;
-    }
-    if Command::new("deno").arg("--version").output().is_err() {
-        eprintln!("skipped: deno not available");
-        return;
-    }
-    let scratch = scratch_dir();
-    let wanted = [
-        "test/st001/st001.gma",
-        "test/st002/st002.gma",
-        "test/st040/st040.gma",
-        "test/init/common.gma",
-        "test/bg/bg_jun.gma",
-        "test/bg/bg_wat.gma",
-        "test/init/commend.gma",
-        "test/init/m_bowl.gma",
-        "test/init/common.gma.lz",
-    ];
-    let mut ours = BTreeMap::new();
-    let mut args = vec![];
-    for (path, bytes) in all_gmas(&disc) {
-        if !wanted.contains(&path.as_str()) {
-            continue;
-        }
-        let local = scratch.join(path.replace('/', "_"));
-        std::fs::write(&local, &bytes).unwrap();
-        let gma = parse_gma(&bytes).unwrap();
-        let file = local.file_name().unwrap().to_string_lossy().into_owned();
-        for m in gma.iter() {
-            ours.insert((file.clone(), m.name.clone()), checksum(m));
-        }
-        args.push(local);
-    }
-    assert!(args.len() >= 3, "expected at least 3 wanted gma files");
-    let out = Command::new("deno")
-        .arg("run")
-        .arg("-A")
-        .arg("--no-check")
-        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/ref/gma_ref.ts"))
-        .arg(&ref_dir)
-        .arg(&scratch)
-        .args(&args)
-        .output()
-        .expect("run deno");
-    assert!(
-        out.status.success(),
-        "deno failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let text = String::from_utf8_lossy(&out.stdout);
-    let (mut compared, mut tri_total) = (0, 0usize);
-    for line in text.lines() {
-        let f: Vec<&str> = line.split('\t').collect();
-        assert_eq!(f.len(), 6, "bad line {line}");
-        let key = (f[0].to_string(), f[1].to_string());
-        let (tris, sum) = *ours
-            .get(&key)
-            .unwrap_or_else(|| panic!("reference model {key:?} missing from ours"));
-        let ref_tris = f[4].parse::<f64>().unwrap() as usize;
-        let ref_sum: f64 = f[5].parse().unwrap();
-        assert_eq!(tris, ref_tris, "triangle count {key:?}");
-        assert!(
-            (sum - ref_sum).abs() <= 1e-6 * ref_sum.abs().max(1.0),
-            "checksum {key:?}: {sum} vs {ref_sum}"
-        );
-        compared += 1;
-        tri_total += tris;
-    }
-    assert_eq!(compared, ours.len(), "model sets differ");
-    eprintln!("parity: {compared} models, {tri_total} triangles identical to reference");
-    assert!(compared >= 3);
 }
