@@ -36,6 +36,7 @@
 //! r.set_wave_time(stage_timer_frames);                   // every frame
 //! r.draw_sprite_blended(banner, SpriteBlend::Additive);
 //! let before = r.counters();                             // GPU objects created so far
+//! r.reserve_objects(object_count);                       // loading: the first frame creates nothing
 //! ```
 //!
 //! Mirror floors (`mirror.rs`; stages 92, 102 and 103): one more scene pass into a reduced target and
@@ -44,7 +45,7 @@
 //! ```ignore
 //! // Loading, after `clear_scene` and the objects.
 //! r.set_mirror(Some(Mirror::flat(Mat4::IDENTITY)));      // or Mirror::wavy(plane, gb_grad_texture)
-//! r.set_mirror_surface(mirror_model_object, true);
+//! r.set_mirror_surface(mirror_model_object, true);      // or set_mirror_surface_only: reflection alone
 //! r.set_in_mirror(bg_object_with_flag_bit_7, false);
 //! // Every frame, for a mirror that moves.
 //! r.set_mirror_plane(anim_group_transform);

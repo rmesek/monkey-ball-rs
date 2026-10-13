@@ -195,6 +195,8 @@ struct Object {
     culled: bool,
     /// A mirror model: left out of the capture and drawn again with it ([`Renderer::set_mirror_surface`]).
     mirror_surface: bool,
+    /// A mirror surface that is drawn by the overlay alone ([`Renderer::set_mirror_surface_only`]).
+    overlay_only: bool,
     /// Shows in the capture ([`Renderer::set_in_mirror`]).
     in_mirror: bool,
     /// Not drawn into the capture this frame: one of the two flags, below the plane or out of its view.
@@ -337,6 +339,8 @@ pub struct Renderer {
     models: Vec<GpuModel>,
     objects: Vec<Object>,
     object_buffer: Option<ObjectBuffer>,
+    /// The buffer was just created: nothing of `object_data` is in it yet.
+    object_buffer_fresh: bool,
     /// CPU copy of the object uniform buffer (`object_stride` bytes per object).
     object_data: Vec<u8>,
     object_stride: usize,
@@ -631,6 +635,7 @@ impl Renderer {
             models: Vec::new(),
             objects: Vec::new(),
             object_buffer: None,
+            object_buffer_fresh: false,
             object_data: Vec::new(),
             object_stride,
             scene_buffers: [b0, b1],
@@ -1252,6 +1257,7 @@ impl Renderer {
             radius: 0.0,
             culled: false,
             mirror_surface: false,
+            overlay_only: false,
             in_mirror: true,
             mirror_hidden: false,
         });
@@ -1785,40 +1791,9 @@ impl Renderer {
         if count == 0 {
             return 0;
         }
-        let mut grown = false;
-        if self
-            .object_buffer
-            .as_ref()
-            .is_none_or(|b| b.capacity < count)
-        {
-            let capacity = count.next_power_of_two().max(64);
-            self.counters.buffers += 1;
-            self.counters.bind_groups += 1;
-            let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("objects"),
-                size: (capacity * stride) as u64,
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-            let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("objects"),
-                layout: &self.object_layout,
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                        buffer: &buffer,
-                        offset: 0,
-                        size: wgpu::BufferSize::new(OBJECT_UNIFORM_SIZE as u64),
-                    }),
-                }],
-            });
-            self.object_buffer = Some(ObjectBuffer {
-                buffer,
-                group,
-                capacity,
-            });
-            grown = true;
-        }
+        self.ensure_object_capacity(count);
+        // A new buffer holds nothing: every slot is sent, whether its object changed or not.
+        let grown = std::mem::take(&mut self.object_buffer_fresh);
         self.object_data.resize(count * stride, 0);
         let buffer = &self.object_buffer.as_ref().unwrap().buffer;
         let models = &self.models;
@@ -1899,6 +1874,60 @@ impl Renderer {
             uploaded += bytes.len();
         }
         uploaded
+    }
+
+    /// Room for `objects` objects in the object uniform buffer, so that the first frame of a stage
+    /// creates neither the buffer nor its bind group: call it while loading, with the number of objects
+    /// of the largest scene the session will show (or of each stage as it loads). Without it the buffer
+    /// is made, or replaced by a larger one, in the first [`Renderer::prepare`] that needs the room. It
+    /// never shrinks and outlives [`Renderer::clear_scene`]; a request it already satisfies does
+    /// nothing. The capacity is rounded up to a power of two, at least 64.
+    pub fn reserve_objects(&mut self, objects: usize) {
+        self.ensure_object_capacity(objects.max(1));
+    }
+
+    /// Slots the object uniform buffer has ([`Renderer::reserve_objects`]); 0 before it exists.
+    pub fn object_capacity(&self) -> usize {
+        self.object_buffer.as_ref().map_or(0, |b| b.capacity)
+    }
+
+    /// Make the object uniform buffer hold `count` slots, replacing it by a larger one if it does not.
+    fn ensure_object_capacity(&mut self, count: usize) {
+        let stride = self.object_stride;
+        if self
+            .object_buffer
+            .as_ref()
+            .is_none_or(|b| b.capacity < count)
+        {
+            let capacity = count.next_power_of_two().max(64);
+            self.counters.buffers += 1;
+            self.counters.bind_groups += 1;
+            let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("objects"),
+                size: (capacity * stride) as u64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("objects"),
+                layout: &self.object_layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: &buffer,
+                        offset: 0,
+                        size: wgpu::BufferSize::new(OBJECT_UNIFORM_SIZE as u64),
+                    }),
+                }],
+            });
+            self.object_buffer = Some(ObjectBuffer {
+                buffer,
+                group,
+                capacity,
+            });
+            self.object_buffer_fresh = true;
+            self.changed = true;
+        }
     }
 
     /// Flag visible objects whose bounding sphere is outside the frustum of their pass. Returns how many.
@@ -2034,7 +2063,7 @@ impl Renderer {
             list.clear();
         }
         for (oi, o) in self.objects.iter().enumerate() {
-            if Self::sorts_all(o) {
+            if Self::sorts_all(o) || o.overlay_only {
                 continue;
             }
             let layer = layer_index(o.layer);
@@ -2075,7 +2104,8 @@ impl Renderer {
             list.clear();
         }
         for (oi, o) in self.objects.iter().enumerate() {
-            if !o.visible || if mirror { o.mirror_hidden } else { o.culled } {
+            // An overlay-only mirror surface has no draw of its own in either pass.
+            if !o.visible || o.overlay_only || if mirror { o.mirror_hidden } else { o.culled } {
                 continue;
             }
             let sort_all = Self::sorts_all(o);
@@ -2346,6 +2376,11 @@ impl Renderer {
     /// depth tested, waved if it has a wave). World layer only. Does nothing while no mirror is set.
     pub fn set_mirror_surface(&mut self, object: ObjectId, on: bool) {
         let o = &mut self.objects[object.0];
+        if !on && o.overlay_only {
+            o.overlay_only = false;
+            self.opaque_dirty = true;
+            self.changed = true;
+        }
         if o.mirror_surface != on {
             o.mirror_surface = on;
             self.changed = true;
@@ -2354,6 +2389,26 @@ impl Renderer {
             } else {
                 self.mirror_surfaces.retain(|i| *i != object.0 as u32);
             }
+        }
+    }
+
+    /// A mirror surface that is nothing but its reflection: what the reference does with the mirror
+    /// models of the flat mirrors (`STAGE102_MIR`, `STAGE103_MIR`), which it draws with the mirror
+    /// program and never with their own material. `true` makes the object a mirror surface
+    /// ([`Renderer::set_mirror_surface`]) that has no draw in the picture or in the capture and none in
+    /// `FrameStats::draws`: only the overlay draws it, so while no mirror is set (or the mirror has no
+    /// plane) it draws nothing at all. It is culled like any object. `false` leaves it a mirror surface
+    /// that is drawn with its own material again; `set_mirror_surface(object, false)` clears both. Set
+    /// it while loading: it re-sorts the opaque draws.
+    pub fn set_mirror_surface_only(&mut self, object: ObjectId, only: bool) {
+        if only {
+            self.set_mirror_surface(object, true);
+        }
+        let o = &mut self.objects[object.0];
+        if o.overlay_only != only {
+            o.overlay_only = only;
+            self.opaque_dirty = true;
+            self.changed = true;
         }
     }
 
