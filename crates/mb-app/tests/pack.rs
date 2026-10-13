@@ -83,6 +83,77 @@ fn a_disc_image_opens_from_an_open_file_as_from_its_path() {
     assert_eq!(by_file.main_dol(), by_path.main_dol());
 }
 
+/// The pack as a platform with a file system keeps it: imported into a file, read back from the file.
+#[test]
+fn a_pack_file_reads_as_the_image_does_and_a_cut_import_leaves_none() {
+    let Some(path) = find_disc() else {
+        eprintln!("skipped: no disc image (set MB_DISC)");
+        return;
+    };
+    let dir = std::env::temp_dir().join(format!("mb-pack-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let pack = dir.join("game.pack");
+    let image = mb_app::content::open_disc_image(&path).unwrap();
+
+    let mut calls = 0;
+    let len =
+        mb_app::import::import_to_file(FileStream::open(&path).unwrap(), &pack, &mut |d, t| {
+            assert!(d <= t);
+            calls += 1;
+        })
+        .unwrap();
+    assert!(calls > 100, "progress was reported {calls} times");
+    assert_eq!(len, std::fs::metadata(&pack).unwrap().len());
+    assert_eq!(len, pack_bytes().unwrap().len() as u64);
+    assert!(!dir.join("game.pack.tmp").exists());
+    {
+        let (content, id, size) = mb_app::content::open_pack_file(&pack).unwrap();
+        assert_eq!((id.as_str(), size), ("GMBE8P", len));
+        assert!(!content.is_deferred());
+        for wanted in boot_files() {
+            let name = wanted.resolve(&|p| image.contains(p)).unwrap();
+            assert_eq!(content.read(&name).unwrap(), image.read(&name).unwrap());
+        }
+        assert_eq!(content.main_dol(), image.main_dol());
+    }
+
+    // An import replaces the pack that is there; one that fails leaves it alone and no temp file.
+    mb_app::import::import_to_file(FileStream::open(&path).unwrap(), &pack, &mut |_, _| {})
+        .unwrap();
+    let not_a_disc = dir.join("junk.iso");
+    std::fs::write(&not_a_disc, vec![0u8; 4096]).unwrap();
+    let failed = mb_app::import::import_to_file(
+        FileStream::open(&not_a_disc).unwrap(),
+        &pack,
+        &mut |_, _| {},
+    );
+    assert!(failed.is_err());
+    assert!(!dir.join("game.pack.tmp").exists());
+    assert!(mb_app::content::open_pack_file(&pack).is_ok());
+
+    // A pack cut short, at any of a few lengths, is refused, and so is one with a damaged file in it.
+    let whole = std::fs::read(&pack).unwrap();
+    for keep in [0, 16, 32, whole.len() / 2, whole.len() - 1] {
+        std::fs::write(&pack, &whole[..keep]).unwrap();
+        assert!(
+            mb_app::content::open_pack_file(&pack).is_err(),
+            "{keep} bytes"
+        );
+    }
+    let mut damaged = whole;
+    damaged[4096] ^= 0xff;
+    std::fs::write(&pack, &damaged).unwrap();
+    let (content, ..) = mb_app::content::open_pack_file(&pack).unwrap();
+    let bad = all_files()
+        .iter()
+        .filter_map(|w| w.resolve(&|p| content.contains(p)))
+        .filter(|name| content.read(name).is_err())
+        .count();
+    assert_eq!(bad, 1, "exactly the damaged file fails its checksum");
+    drop(content);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn the_import_copies_exactly_what_the_game_reads() {
     let Some(bytes) = pack_bytes() else {

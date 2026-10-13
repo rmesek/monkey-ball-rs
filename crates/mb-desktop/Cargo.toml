@@ -22,6 +22,7 @@ dev = ["mb-app/dev"]
 # The game; `winit` switches on its keyboard bindings for winit's key codes.
 mb-app = { path = "../mb-app", features = ["winit"] }
 mb-game = { path = "../mb-game" }
+mb-assets = { path = "../mb-assets" }
 mb-render = { path = "../mb-render" }
 # Window + input event loop (decision recorded in docs/PLAN.md). 0.30 is the latest stable release (0.31 is
 # still beta).

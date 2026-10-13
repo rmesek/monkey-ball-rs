@@ -1,5 +1,6 @@
 //! The on-device game pack: the files the game uses, copied once out of the user's disc image into one
-//! file (the browser keeps it in the Origin Private File System; see `docs/WEB.md`).
+//! file. The browser keeps it in the Origin Private File System (`docs/WEB.md`), a native program in its
+//! data directory ([`PackFile`]).
 //!
 //! Layout, little-endian:
 //!
@@ -342,6 +343,78 @@ pub fn build(game_id: &str, files: &[(&str, &[u8])]) -> io::Result<Vec<u8>> {
     out.extend(&done.index);
     out[..HEADER_LEN].copy_from_slice(&done.header);
     Ok(out)
+}
+
+/// A pack in a file, as a [`crate::pack::PackProvider`]: the index is held, each file is read from its
+/// place when asked for and checked against its checksum.
+pub struct PackFile {
+    file: std::sync::Mutex<std::fs::File>,
+    index: PackIndex,
+    game_id: String,
+    len: u64,
+}
+
+impl PackFile {
+    /// Open and check a pack. A file that is not a complete pack of this format version is an error:
+    /// the caller removes it and imports again.
+    pub fn open(path: impl AsRef<std::path::Path>) -> io::Result<Self> {
+        use std::io::{Read, Seek, SeekFrom};
+        let mut file = std::fs::File::open(path)?;
+        let len = file.metadata()?.len();
+        let mut head = [0u8; HEADER_LEN];
+        file.read_exact(&mut head)
+            .map_err(|_| invalid("game data is incomplete (no header)"))?;
+        let header = Header::parse(&head, len)?;
+        let mut index = vec![0u8; header.index_len as usize];
+        file.seek(SeekFrom::Start(header.index_offset))?;
+        file.read_exact(&mut index)?;
+        Ok(Self {
+            index: PackIndex::parse(&header, &index)?,
+            game_id: header.game_id(),
+            file: std::sync::Mutex::new(file),
+            len,
+        })
+    }
+
+    pub fn game_id(&self) -> &str {
+        &self.game_id
+    }
+
+    /// Size of the pack file in bytes.
+    pub fn len(&self) -> u64 {
+        self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.index.is_empty()
+    }
+}
+
+impl crate::pack::PackProvider for PackFile {
+    fn fetch(&self, path: &str) -> io::Result<Vec<u8>> {
+        use std::io::{Read, Seek, SeekFrom};
+        let e = self.index.get(path).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("missing pack entry: {}", disc_path(path)),
+            )
+        })?;
+        let mut data = vec![0u8; e.len as usize];
+        {
+            let mut file = self
+                .file
+                .lock()
+                .map_err(|_| io::Error::other("pack lock"))?;
+            file.seek(SeekFrom::Start(e.offset))?;
+            file.read_exact(&mut data)?;
+        }
+        self.index.verify(path, &data)?;
+        Ok(data)
+    }
+
+    fn contains(&self, path: &str) -> bool {
+        self.index.get(path).is_some()
+    }
 }
 
 /// A complete pack held in memory, as a [`crate::pack::PackProvider`] (tests).

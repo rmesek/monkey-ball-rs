@@ -49,6 +49,9 @@ pub struct RunStats {
     /// Simulation ticks run by the stage that was open at exit, and how long it had been open.
     pub stage_ticks: Option<(u32, f64)>,
     pub adapter: String,
+    /// The player chose Options -> Remove game data: the window was closed for it, and the caller
+    /// deletes the data now that nothing has it open.
+    pub remove_game_data: bool,
 }
 
 impl RunStats {
@@ -320,6 +323,12 @@ impl App {
             }
         }
         self.input.end_frame();
+        // What the states asked of the platform. Fullscreen is a key here and tilt does not exist.
+        if (mb_app::host::drain()).contains(&mb_app::host::Command::RemoveGameData) {
+            self.stats.remove_game_data = true;
+            event_loop.exit();
+            return;
+        }
         let Some(top) = self.stack.top() else {
             return;
         };
@@ -578,6 +587,7 @@ mod tests {
             p99_frame_ms: 16.9,
             stage_ticks: Some((300, 5.0)),
             adapter: "test".into(),
+            remove_game_data: false,
         };
         assert_eq!(stats.average_fps(), 60.0);
         assert!((stats.average_frame_ms() - 16.666).abs() < 0.01);

@@ -16,13 +16,12 @@ pub struct Caps {
     pub fullscreen: bool,
     /// The device reports its orientation, so tilt can steer.
     pub tilt: bool,
-    /// The path of the disc image is remembered between runs and can be forgotten (desktop).
-    pub forget_image: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Command {
-    /// Delete the imported game data (and saves kept with it) and return to the import screen.
+    /// Delete the imported game data and return to where the game image is asked for (the browser's
+    /// landing page; the desktop program ends, and asks at its next start).
     RemoveGameData,
     SetFullscreen(bool),
     /// Steer by device tilt (or stop): `range_deg` of tilt is full deflection.
@@ -36,7 +35,7 @@ pub enum Command {
 
 thread_local! {
     static CAPS: Cell<Caps> = const {
-        Cell::new(Caps { remove_data: false, fullscreen: false, tilt: false, forget_image: false })
+        Cell::new(Caps { remove_data: false, fullscreen: false, tilt: false })
     };
     static INFO: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
     static FULLSCREEN: Cell<bool> = const { Cell::new(false) };

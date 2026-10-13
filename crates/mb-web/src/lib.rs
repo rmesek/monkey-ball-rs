@@ -260,7 +260,6 @@ mod web {
             remove_data,
             fullscreen,
             tilt,
-            forget_image: false,
         });
     }
 

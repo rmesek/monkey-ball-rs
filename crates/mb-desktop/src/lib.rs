@@ -1,10 +1,11 @@
 //! The desktop program (Windows, Linux, macOS): one of the platform drivers on top of the game library
 //! `mb-app` (see `docs/ARCHITECTURE.md`). [`app`] is the window and its event loop; this file is the command
-//! line, the file dialog and where the disc image and the saves are found.
+//! line, the file dialog, and where the game data and the saves are kept.
 //!
-//! The executable is called `mb-app`. It opens the disc image used last time, or asks for one with a file dialog; `mb-app <disc image>`
-//! uses that image. The game starts at the title menu. Options are listed in [`USAGE`]; a build with the
-//! `dev` feature adds the developer ones in [`DEV_USAGE`].
+//! The executable is called `mb-app`. The first time it asks for the disc image and copies the files the
+//! game uses out of it into one pack file beside the saves; from then on it starts from that pack and the
+//! image is not needed. Options are listed in [`USAGE`]; a build with the `dev` feature adds the developer
+//! ones in [`DEV_USAGE`].
 
 use std::path::{Path, PathBuf};
 
@@ -12,22 +13,26 @@ pub mod app;
 
 use app::WindowOptions;
 use mb_app::audio::Audio;
-use mb_app::content::{Content, LAST_DISC_KEY, open_disc_image};
+use mb_app::content::{Content, open_disc_image, open_pack_file};
+use mb_app::import::import_to_file;
 use mb_app::menu::{Autostart, Menu};
+use mb_assets::disc::FileStream;
 use mb_game::{Difficulty, FileStorage, MemoryStorage, SlotStorage, Storage};
 
 const USAGE: &str = "usage: mb-app [disc image] [stage] [options]
 
-The disc image is your own copy of Super Monkey Ball (Nintendo GameCube, 2001): an RVZ (uncompressed or
-Zstandard) or ISO/GCM file, for example 'Super Monkey Ball (USA).rvz' (about 475 MB). Disc ids GMBE8P (USA,
-the tested one), GMBP8P (Europe) and GMBJ8P (Japan) are accepted. The image is read in place: nothing is
-copied, only its path is remembered. With no arguments the image used last time is reopened, or a file
-dialog asks for one. A stage number starts practice on that stage directly.
+The disc image is your own copy of Super Monkey Ball (Nintendo GameCube, 2001): an RVZ or ISO/GCM file,
+for example 'Super Monkey Ball (USA).rvz'. It is needed once: the files the game uses (about 145 MB) are
+copied into the program's data folder, and later starts need no argument and no image. With no game data
+yet, a file dialog asks for the image. A stage number starts practice on that stage directly.
 
-  --pick                   ask for the disc image even if one is remembered
+  --pick                   ask for a disc image and import it again
   --fullscreen             start in fullscreen (F11 or Alt+Enter toggles)
   --course <name>          start course play directly (beginner, advanced, expert, ...)
   --mute                   do not open an audio device";
+
+/// The imported game data, in the save directory.
+const PACK_FILE: &str = "game.pack";
 
 #[cfg(feature = "dev")]
 const DEV_USAGE: &str = "
@@ -191,26 +196,23 @@ fn parse_size(s: &str) -> Result<(u32, u32), String> {
     Ok((w, h))
 }
 
-/// The per-user save directory, or memory when there is none. Values are kept in two checksummed slots
-/// (`SlotStorage`) written through a temp file and a rename, so killing the program at any moment leaves
-/// the previous save or the new one.
-fn open_storage() -> Box<dyn Storage> {
-    match FileStorage::default_dir() {
-        Some(dir) => {
-            mb_app::host::set_info(vec![format!("Saves: {}", dir.display())]);
-            Box::new(SlotStorage::new(FileStorage::new(dir)))
-        }
-        None => {
-            eprintln!("no save directory found; progress will not be kept");
-            Box::new(MemoryStorage::new())
-        }
+/// The per-user data directory (saves and the game pack), if there is one.
+fn data_dir() -> Option<PathBuf> {
+    let dir = FileStorage::default_dir();
+    if dir.is_none() {
+        eprintln!("no data directory found: nothing will be kept between runs");
     }
+    dir
 }
 
-fn remembered_disc(storage: &dyn Storage) -> Option<PathBuf> {
-    let bytes = storage.read(LAST_DISC_KEY).ok()??;
-    let path = PathBuf::from(String::from_utf8(bytes).ok()?.trim());
-    path.exists().then_some(path)
+/// Saves: two checksummed slots per value (`SlotStorage`) written through a temp file and a rename, so
+/// killing the program at any moment leaves the previous save or the new one. In memory without a
+/// directory.
+fn open_storage(dir: Option<&Path>) -> Box<dyn Storage> {
+    match dir {
+        Some(dir) => Box::new(SlotStorage::new(FileStorage::new(dir))),
+        None => Box::new(MemoryStorage::new()),
+    }
 }
 
 fn pick_disc() -> Option<PathBuf> {
@@ -221,69 +223,85 @@ fn pick_disc() -> Option<PathBuf> {
         .pick_file()
 }
 
-fn open_content(path: &Path) -> Result<Content, String> {
-    eprintln!("opening disc image {}", path.display());
-    open_disc_image(path).map_err(|e| format!("{}: {e}", path.display()))
+/// Copy the files the game uses out of `image` into the pack file. Atomic: see `import_to_file`.
+fn import(image: &Path, pack: &Path) -> Result<(), String> {
+    eprintln!("importing {}", image.display());
+    let stream = FileStream::open(image).map_err(|e| format!("{}: {e}", image.display()))?;
+    let mut shown = 0;
+    import_to_file(stream, pack, &mut |done, total| {
+        let tenth = done * 10 / total.max(1);
+        if tenth > shown {
+            shown = tenth;
+            eprintln!("  {} %", tenth * 10);
+        }
+    })
+    .map_err(|e| format!("{}: {e}", image.display()))?;
+    Ok(())
 }
 
-/// Find and open the game content: explicit path, else the remembered image, else a file dialog (which
-/// comes back after an image that could not be opened). Remembers what worked.
-fn resolve_content(args: &Args, storage: &mut dyn Storage) -> Result<Content, String> {
-    if let Some(path) = &args.source {
-        let content = open_content(path)?;
-        remember(storage, path);
-        return Ok(content);
+/// The stored pack, if it is there and complete. One that cannot be read (cut short, another format
+/// version) is removed: the image is asked for again.
+fn stored_pack(pack: &Path) -> Option<(Content, String, u64)> {
+    if !pack.exists() {
+        return None;
     }
-    let mut candidate = if args.pick {
-        None
-    } else {
-        remembered_disc(storage)
-    };
-    loop {
-        let path = match candidate.take().or_else(pick_disc) {
-            Some(p) => p,
-            None => return Err("no disc image selected".into()),
-        };
-        match open_content(&path) {
-            Ok(content) => {
-                remember(storage, &path);
-                return Ok(content);
-            }
-            Err(e) => {
-                eprintln!("error: {e}");
-                rfd::MessageDialog::new()
-                    .set_level(rfd::MessageLevel::Error)
-                    .set_title("Monkey Ball")
-                    .set_description(format!("{e}\n\nPlease pick another disc image."))
-                    .show();
-            }
+    match open_pack_file(pack) {
+        Ok(found) => Some(found),
+        Err(e) => {
+            eprintln!("the stored game data cannot be used ({e}); it will be imported again");
+            let _ = std::fs::remove_file(pack);
+            None
         }
     }
 }
 
-fn remember(storage: &mut dyn Storage, path: &Path) {
-    let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
-    // The options screen shows where things are and offers to forget the image.
-    let mut info = mb_app::host::info();
-    info.push(format!(
-        "Game image (read in place): {}",
-        absolute.display()
-    ));
-    mb_app::host::set_info(info);
+/// Find the game content. With a data directory: the stored pack; else the image named on the command
+/// line or picked in a dialog is imported first (the dialog comes back after an image that could not be
+/// used). An image named again whose pack is already there is not copied twice. Without a data
+/// directory the image is read where it is, for this run.
+fn resolve_content(args: &Args, dir: Option<&Path>) -> Result<Content, String> {
+    let Some(dir) = dir else {
+        let path = (args.source.clone().or_else(pick_disc)).ok_or("no disc image selected")?;
+        return open_disc_image(&path).map_err(|e| format!("{}: {e}", path.display()));
+    };
+    let pack = dir.join(PACK_FILE);
+    let mut stored = stored_pack(&pack);
+    if let Some(image) = &args.source {
+        let id = mb_assets::disc::DiscPack::open(image)
+            .map(|d| d.game_id().to_string())
+            .map_err(|e| format!("{}: {e}", image.display()))?;
+        if stored.as_ref().is_none_or(|(_, have, _)| *have != id) {
+            // Let go of the old pack before it is replaced.
+            stored = None;
+            import(image, &pack)?;
+        }
+    } else if args.pick {
+        stored = None;
+    }
+    let (content, _, len) = loop {
+        if let Some(found) = stored.take().or_else(|| stored_pack(&pack)) {
+            break found;
+        }
+        let image = pick_disc().ok_or("no disc image selected")?;
+        if let Err(e) = import(&image, &pack) {
+            eprintln!("error: {e}");
+            rfd::MessageDialog::new()
+                .set_level(rfd::MessageLevel::Error)
+                .set_title("Monkey Ball")
+                .set_description(format!("{e}\n\nPlease pick another disc image."))
+                .show();
+        }
+    };
+    // The options screen shows what is kept and where, and offers to remove it.
+    mb_app::host::set_info(vec![
+        format!("Game data: {} MB", len >> 20),
+        format!("Kept with the saves in {}", dir.display()),
+    ]);
     mb_app::host::set_caps(mb_app::host::Caps {
-        forget_image: true,
+        remove_data: true,
         ..mb_app::host::caps()
     });
-    // Unchanged: nothing to write.
-    let same = storage
-        .read(LAST_DISC_KEY)
-        .is_ok_and(|v| v.as_deref() == Some(absolute.to_string_lossy().as_bytes()));
-    if same {
-        return;
-    }
-    if let Err(e) = storage.write(LAST_DISC_KEY, absolute.to_string_lossy().as_bytes()) {
-        eprintln!("could not remember the disc image: {e}");
-    }
+    Ok(content)
 }
 
 /// The scripted, windowless run of `--autoplay`.
@@ -336,19 +354,18 @@ fn run() -> Result<(), String> {
         }
     };
     let scripted = args.dev.autoplay();
-    if scripted.is_some() && args.source.is_none() {
-        return Err("--autoplay needs the disc image path".into());
-    }
-    // A scripted run never reads or writes the player's own save directory.
-    let mut storage: Box<dyn Storage> = if scripted.is_some() {
-        Box::new(MemoryStorage::new())
-    } else {
-        open_storage()
-    };
-    let content = resolve_content(&args, storage.as_mut())?;
+    // A scripted run reads the image in place and never touches the player's own data.
     if let Some(stage) = scripted {
+        let path = args
+            .source
+            .as_ref()
+            .ok_or("--autoplay needs the disc image path")?;
+        let content = open_disc_image(path).map_err(|e| format!("{}: {e}", path.display()))?;
         return autoplay(&content, stage, &args.dev);
     }
+    let dir = data_dir();
+    let storage = open_storage(dir.as_deref());
+    let content = resolve_content(&args, dir.as_deref())?;
 
     // The device stream opens here; without a device the game simply runs silent.
     let audio = (!args.mute).then(|| Audio::new(Box::new(mb_app::audio_cpal::CpalBackend::new())));
@@ -367,6 +384,17 @@ fn run() -> Result<(), String> {
         audio: audio.clone(),
     };
     let stats = app::run_windowed(content, Box::new(menu), options)?;
+    if stats.remove_game_data {
+        // Options -> Remove game data: the window is closed and the pack no longer open.
+        if let Some(dir) = &dir {
+            match std::fs::remove_file(dir.join(PACK_FILE)) {
+                Ok(()) => {
+                    eprintln!("game data removed; the disc image is asked for at the next start")
+                }
+                Err(e) => eprintln!("could not remove the game data: {e}"),
+            }
+        }
+    }
     if args.dev.exit_after().is_some() {
         // A timed run reports what it measured.
         println!("{}", stats.summary());

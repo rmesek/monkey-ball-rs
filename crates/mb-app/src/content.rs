@@ -25,10 +25,6 @@ use mb_game::course::stage_list;
 
 use crate::stage_info::{BgInfo, bg_by_name, bg_for_stage_or_nearest};
 
-/// Storage key under which the desktop program remembers the path of the disc image (the image itself is
-/// read in place and never copied).
-pub const LAST_DISC_KEY: &str = "last_disc";
-
 /// State of an asynchronous fetch.
 pub enum Fetch {
     /// Nothing was requested (or the result was already handed over).
@@ -106,6 +102,16 @@ pub fn open_disc_stream(stream: Box<dyn DiscStream + Send>) -> io::Result<Conten
         ));
     }
     Ok(Content::new(Rc::new(disc)))
+}
+
+/// Open an imported game pack kept in a file ([`crate::import::import_to_file`]) for direct reading.
+/// Returns the content, the pack's disc id and its size in bytes. An error means the file is not a
+/// complete pack this build can read: remove it and import again.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn open_pack_file(path: impl AsRef<Path>) -> io::Result<(Content, String, u64)> {
+    let pack = mb_assets::gamepack::PackFile::open(path)?;
+    let (id, len) = (pack.game_id().to_string(), pack.len());
+    Ok((Content::new(Rc::new(pack)), id, len))
 }
 
 impl Content {
