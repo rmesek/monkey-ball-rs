@@ -122,6 +122,21 @@ What will cost the most in a native port, in order:
 5. **Determinism on ARM** is expected and unverified; `mb-engine/tests/golden.rs` is where a difference
    would show.
 
+Nothing in the shared crates has to change for a native port; 42 500 of the 46 000 lines are shared. What a
+port has to write, by size:
+
+| Size | What | Why it is that size |
+|---|---|---|
+| none | formats, simulation, rules, renderer, states, HUD, touch controls and layout, pack, saves, mixer, tilt maths | the renderer asks for no GPU feature and is written against the WebGL2 limits, so Vulkan and OpenGL ES 3 both fit; storage and content take a directory and a stream |
+| small | entry point and event loop; the data directory; capabilities (`host::Caps`); back button as `Cancel`; dropping the surface on suspend and making it again on resume | each is a few calls into what exists; device and renderer are kept across a new surface |
+| medium | the first-run screen (picker in Java, progress while `Importer::step` runs off the main thread); the tilt sensor; gamepads; packaging | there is no import screen inside the game (the desktop prints to the terminal, the browser uses its page); the sensor reports a vector, `TiltSteering::sample` takes the W3C angles; `gilrs` has no Android backend |
+| unknown until on a device | phone GPU speed, `cpal` output, ARM determinism | never run |
+
+Three traps for whoever writes it: `host` keeps capabilities and commands per thread, so they must be set and
+drained on the game's thread, never from a Java callback; the engine's trig tables are installed once per
+process, and an Android process outlives its activity; the Android compile check in the gates covers `mb-app`
+without its `winit` feature.
+
 ## Review: where the code is harder to change than it should be
 
 Findings of a read-through, not yet acted on. None is a fault a player sees.
