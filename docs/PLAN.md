@@ -39,7 +39,7 @@ its voices, jingles, menu music, minigames).
 | The desktop program | `mb-desktop` | the kill test |
 | The static site | `mb-web`, `web/` | `scripts/web-e2e.ts` |
 
-Last run of everything, 2026-10-13, Windows 11, USA disc: `cargo xtask ci` passes with 548
+Last run of everything, 2026-10-14, Windows 11, USA disc: `cargo xtask ci` passes with 548
 tests; `deno run -A scripts/web-e2e.ts` passes its 93 checks in Chrome 154.
 
 ## Budgets
@@ -49,7 +49,7 @@ cause, with the reason in the message.
 
 | What | Limit | Now | Enforced by |
 |---|---|---|---|
-| wasm module | 4 127 298 bytes | 4 009 217 bytes | `WASM_BUDGET_BYTES` in `xtask/src/main.rs`: the build fails above it |
+| wasm module | 4 127 298 bytes | 4 009 226 bytes | `WASM_BUDGET_BYTES` in `xtask/src/main.rs`: the build fails above it |
 | Game pack | 382 files, 144 084 942 bytes | the same | `the_import_copies_exactly_what_the_game_reads` |
 | Draw calls per stage, fly-in and play | the recorded table `DRAWS` | 25 517 / 23 343 over the 109 stages | `every_stage_draws_what_is_recorded_outside_the_particles` |
 | Draw calls of particles | 12 | at most 11 | `particles_add_at_most_twelve_draws_at_their_peak` |
@@ -94,7 +94,7 @@ Each is a statement about where the evidence stops.
 | Item | State |
 |---|---|
 | Licence | `Cargo.toml` declares `MIT OR Apache-2.0`; there is no `LICENSE` file, and the reference this code was ported from carries no licence statement. For the owner to settle before publishing more widely. |
-| The review findings | [ARCHITECTURE.md](ARCHITECTURE.md), "Review": ten places where the code is harder to change than it should be. None acted on. |
+| The review findings | [ARCHITECTURE.md](ARCHITECTURE.md), "Review": twelve places where the code is harder to change than it should be. None acted on. |
 | Desktop import feedback | The import runs before the window opens and reports to the terminal only: a program started by double-click shows nothing for a second or two. |
 | Tilt without readings | If the device never delivers sensor readings there is no stick to fall back on until the player switches Options -> Controls back. |
 | Phones | Nothing ran on a real phone. The file chooser asks for `application/octet-stream`; a file manager that reports the image under another type greys it out, hence the "show all files" button. |

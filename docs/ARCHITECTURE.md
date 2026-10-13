@@ -146,9 +146,12 @@ Findings of a read-through, not yet acted on. None is a fault a player sees.
 | One file holds uploads, mesh merging, objects, sorting, culling, mirror passes and the frame | `mb-render/src/renderer.rs` (2 950 lines) | split by concern; no behaviour change |
 | One state is the title, the course flow, stage select and the options screen | `mb-app/src/menu.rs` (1 400 lines) | options into a state of its own |
 | The platform seam is global state: capabilities, info lines and the command queue are thread-locals | `mb-app/src/host.rs` | carry them in `GameCtx`; tests then need no resetting |
-| Two drivers repeat touch routing, frame set-up and surface errors | `mb-desktop/src/app.rs`, `mb-web/src/shell.rs` | see "Adding Android", 2 |
+| Two drivers repeat touch routing, frame set-up and surface errors, and the general one (it uses no browser API and has the per-platform trait) lives in the browser crate. The desktop's lacks what that one has: a lost device, pausing when the player looks away, not redrawing a still picture | `mb-desktop/src/app.rs`, `mb-web/src/shell.rs` | move `shell.rs` where both can use it and make the desktop a `Platform`; the first step of a native Android port ("Adding Android", 2) |
+| The options screen is addressed by row number | `mb-app/src/menu.rs` and its tests, `mb-app/tests/gameplay.rs`, tap positions in `scripts/web-e2e.ts` | rows found by name in tests; removing three options for 0.3.0 meant edits in all three |
+| The browser crate has no Rust tests (2 500 lines) | `mb-web` | only `scripts/web-e2e.ts` covers it, which needs the disc image and Chrome; unit tests for what does not touch the page |
+| The engine's trig tables are installed once per process | `mb-engine/src/tables.rs`, `Content::install_trig_tables` | fine for one game per run; a pack of another region imported without a restart keeps the first one's tables |
 | The desktop import runs before the window opens; progress goes to the terminal only | `mb-desktop/src/lib.rs` | acceptable at a second or two; a loading state if it ever is not |
 | Frame statistics for the browser test ship in the product | `mb-app/src/perf.rs`, `mb-web` | kept so the test measures the real build |
 | Calls on the renderer that only tests use; a material flag no file on the disc sets | `set_mirror_capture_whole`, `set_mirror_scale`, `set_color_mul`, `set_tex_matrix`; `LayerInfo::uv_scroll` | remove with their tests |
-| Some budget constants are still named after version 0.1.0 | `mb-app/tests/memory.rs`, `xtask`, `scripts/web-e2e.ts` | rename; the numbers are the budgets |
+| Some budget constants are still named after version 0.1.0 | `mb-app/tests/memory.rs`, `scripts/web-e2e.ts` | rename; the numbers are the budgets |
 | The shared game library depends on `cpal` and `pollster` | `mb-app/Cargo.toml` | a small native-support crate; kept together because Android will want both |

@@ -215,8 +215,14 @@ fn resolve_content(args: &Args, dir: Option<&Path>) -> Result<Content, String> {
             stored = None;
             import(image, &pack)?;
         }
-    } else if args.pick {
+    } else if args.pick
+        && let Some(image) = pick_disc()
+    {
+        // Let go of the old pack before it is replaced. An image that cannot be used leaves it in place.
         stored = None;
+        if let Err(e) = import(&image, &pack) {
+            eprintln!("error: {e}");
+        }
     }
     let (content, _, len) = loop {
         if let Some(found) = stored.take().or_else(|| stored_pack(&pack)) {
