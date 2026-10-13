@@ -36,8 +36,8 @@ use crate::play_scene::PlayScene;
 use crate::text::{rgb, Align, Color, FontId, Painter, UiAssets, WHITE};
 use crate::ui::Rect;
 use crate::widgets::{
-    back_button_rect, draw_back_button, draw_list, draw_rail, fit_scale, ListLayout, ListState,
-    Row, Tap,
+    back_button_rect, draw_back_button, draw_list, draw_rail, fit_scale, fit_scale_lines,
+    ListLayout, ListState, Row, Tap,
 };
 
 const BACKGROUND: [f64; 4] = [0.02, 0.07, 0.24, 1.0];
@@ -1016,8 +1016,10 @@ impl Menu {
             }
         }
         let mut y = safe.y + safe.h * 0.03 + title_box + line_h * 0.6;
+        // One size for all of them: they are the lines of wrapped messages.
+        let lines = info.iter().map(|(line, _)| line.as_str());
+        let s = fit_scale_lines(&p, FontId::Asc32, lines, safe.w * 0.9, line_h * 0.8);
         for (line, color) in &info {
-            let s = fit_scale(&p, FontId::Asc32, line, safe.w * 0.9, line_h * 0.8);
             p.text(
                 FontId::Asc32,
                 line,

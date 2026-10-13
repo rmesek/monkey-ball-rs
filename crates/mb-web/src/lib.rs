@@ -159,6 +159,41 @@ mod web {
         })
     }
 
+    /// What the frames of [`perf_frames`] drew, oldest first, seven numbers per frame: model draw calls,
+    /// pipeline and bind switches, bytes written to GPU buffers, the mirror floor's draw calls, particle
+    /// instances, particle quads, and 1 when the ball's shadow was drawn. Built when asked for, like the
+    /// rows; empty while recording is off.
+    #[wasm_bindgen]
+    pub fn perf_counts() -> Vec<u32> {
+        PERF.with(|p| {
+            p.borrow()
+                .as_ref()
+                .map(|p| {
+                    p.samples()
+                        .flat_map(|s| {
+                            [
+                                s.draws,
+                                s.state_changes,
+                                s.upload_bytes,
+                                s.mirror_draws,
+                                s.instances,
+                                s.quads,
+                                u32::from(s.shadow),
+                            ]
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        })
+    }
+
+    /// Frames recorded since the last [`perf_reset`]. The window keeps the newest 1024 of them, so a
+    /// reader that wants every frame of a longer stretch takes the new rows each time this has grown.
+    #[wasm_bindgen]
+    pub fn perf_total_frames() -> f64 {
+        PERF.with(|p| p.borrow().as_ref().map_or(0, |p| p.total_frames)) as f64
+    }
+
     #[wasm_bindgen(start)]
     pub fn init() {
         // Panics go to the console with a stack and to the page's error box instead of a silent freeze.

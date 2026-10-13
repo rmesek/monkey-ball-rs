@@ -407,9 +407,9 @@ pub fn stage_mirror(a: &StageAssets) -> StageMirror {
         stage.or_else(|| a.backdrop.gma.model(name))
     };
     // Candidates for the entries whose model exists, and the entry each belongs to.
-    let found: Vec<(usize, MirrorCandidate)> = (entries.iter().enumerate())
+    let (found, candidates): (Vec<usize>, Vec<MirrorCandidate>) = (entries.iter().enumerate())
         .filter_map(|(i, e)| Some((i, MirrorCandidate::from_model(e.group, model(&e.name)?)?)))
-        .collect();
+        .unzip();
     if found.is_empty() {
         let reason = if entries.is_empty() {
             NoMirror::NotNamed
@@ -418,12 +418,18 @@ pub fn stage_mirror(a: &StageAssets) -> StageMirror {
         };
         return StageMirror::None(reason);
     }
-    let candidates: Vec<MirrorCandidate> = found.iter().map(|(_, c)| c.clone()).collect();
-    let Some(mut plan) = plan_mirror(&candidates, &group_poses(&a.stagedef)) else {
+    // Mirror models of the stage itself (group 0) never move: only a stage with a mirror model on
+    // another group has its animation sampled.
+    let poses = if candidates.iter().any(|c| c.group != 0) {
+        group_poses(&a.stagedef)
+    } else {
+        Vec::new()
+    };
+    let Some(mut plan) = plan_mirror(&candidates, &poses) else {
         return StageMirror::None(NoMirror::NotFlat);
     };
     // From indices of candidates to indices of entries.
-    let entry = |i: &mut usize| *i = found[*i].0;
+    let entry = |i: &mut usize| *i = found[*i];
     plan.levels
         .iter_mut()
         .for_each(|l| l.surfaces.iter_mut().for_each(entry));

@@ -33,7 +33,18 @@ pub struct Headless {
 impl Headless {
     /// Create a device without a window (a software adapter is accepted as a fallback).
     pub fn new(content: &Content, size: (u32, u32), force_software: bool) -> Result<Self, String> {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        Self::on_backends(content, size, force_software, None)
+    }
+
+    /// [`Headless::new`] on the given graphics backends only (`None`: any). The OpenGL backend is the
+    /// one the browser build uses for WebGL2, so what it costs can be measured without a browser.
+    pub fn on_backends(
+        content: &Content,
+        size: (u32, u32),
+        force_software: bool,
+        backends: Option<wgpu::Backends>,
+    ) -> Result<Self, String> {
+        let instance = wgpu::Instance::new(crate::gpu::instance_descriptor(backends));
         let gpu = request_gpu(instance, None, force_software)?;
         let format = wgpu::TextureFormat::Rgba8Unorm;
         let renderer = Renderer::new(gpu.device.clone(), gpu.queue.clone(), format);

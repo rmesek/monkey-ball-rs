@@ -44,6 +44,15 @@ pub struct FrameSample {
     pub upload_bytes: u32,
     /// Event-loop iterations since the previous frame (1 when the loop sleeps until the next frame).
     pub wakeups: u32,
+    /// Draw calls of the mirror floor this frame (the capture and the mirror models over the frame);
+    /// they are not part of `draws`. Zero on a stage without a mirror and with reflections off.
+    pub mirror_draws: u32,
+    /// Particle instances (confetti, stars, flashes, glows) and quads (streaks, sparkles) queued this
+    /// frame.
+    pub instances: u32,
+    pub quads: u32,
+    /// The ball's projected shadow was drawn.
+    pub shadow: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]

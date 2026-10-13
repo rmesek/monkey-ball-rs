@@ -730,6 +730,8 @@
   //   mbPerf.summary()  rolling window (about the last 1000 frames): avg / p50 / p99 / worst frame interval,
   //                     update and render CPU time, sim ticks per frame, draw calls
   //   mbPerf.reset()    start a fresh window        mbPerf.frames()  raw [interval, update, render, ticks] rows
+  //   mbPerf.counts()   raw [draws, binds, upload bytes, mirror draws, instances, quads, shadow] rows of the
+  //                     same frames               mbPerf.total()   frames since the last reset
   //   mbPerf.log()      print the summary and the interval histogram to the console
   //   mbPerf.lastLoad() where the time of the last stage load went (reads, LZSS, parsing, textures, meshes)
   window.mbPerf = {
@@ -749,6 +751,16 @@
       for (let i = 0; i + 3 < flat.length; i += 4) rows.push([flat[i], flat[i + 1], flat[i + 2], flat[i + 3]]);
       return rows;
     },
+    // What the same frames drew: [draw calls, pipeline and bind switches, bytes uploaded, the mirror floor's
+    // draw calls, particle instances, particle quads, 1 when the ball's shadow was drawn] rows.
+    counts: () => {
+      const flat = wasm.perf_counts();
+      const rows = [];
+      for (let i = 0; i + 6 < flat.length; i += 7) rows.push(Array.from(flat.subarray(i, i + 7)));
+      return rows;
+    },
+    // Frames recorded since the last reset (frames() and counts() hold the newest 1024 of them).
+    total: () => wasm.perf_total_frames(),
     log: () => {
       const s = window.mbPerf.summary();
       if (!s) return console.info("frame timing is off (add ?fps=1 or call mbPerf.enable())");

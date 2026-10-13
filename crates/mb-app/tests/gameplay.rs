@@ -1848,3 +1848,128 @@ fn the_reflections_option_toggles_saves_and_survives_a_restart() {
     assert!(play_102(&mut h));
     h.shutdown();
 }
+
+/// The options screen on a phone held upright (412 x 915): the storage note is wrapped into two lines,
+/// and both are drawn at one size. (Each line used to be fitted by itself, so the short second line,
+/// `MAY CLEAR IT)`, came out several times as large as the long first one.)
+#[test]
+fn the_storage_note_of_the_options_screen_is_one_size_on_a_phone() {
+    let _gpu = GPU.lock().unwrap_or_else(|e| e.into_inner());
+    let storage = SharedStorage::default();
+    let Some(mut h) = start(&storage) else {
+        return;
+    };
+    h.shutdown();
+    h.resize((412, 915));
+    let note = "Game data: 144 MB in this browser (the browser may clear it)";
+    mb_app::host::set_info(vec![note.into()]);
+    h.push(Box::new(Menu::new(Box::new(storage.clone()))))
+        .unwrap();
+    h.step(FRAME).unwrap();
+    h.tap(Action::LookDown).unwrap();
+    h.tap(Action::LookDown).unwrap();
+    h.tap(Action::Confirm).unwrap();
+    assert_eq!(h.status(), "menu: options");
+    let rgba = shot(&mut h, "options_storage_note_412x915");
+    mb_app::host::set_info(Vec::new());
+    let (w, height) = (412usize, 915usize);
+    assert_eq!(rgba.len(), w * height * 4);
+    // The note is the only pale blue text above the list; the title is yellow.
+    let pale = |p: &[u8; 4]| p[0] > 150 && p[1] > 170 && p[2] > 200;
+    let row = |y: usize| {
+        let pixels = rgba[y * w * 4..(y + 1) * w * 4].as_chunks::<4>().0.iter();
+        let lit: Vec<usize> = (pixels.enumerate())
+            .filter(|(_, p)| pale(p))
+            .map(|(x, _)| x)
+            .collect();
+        (lit.first().copied()).zip(lit.last().copied())
+    };
+    // Bands of rows with such pixels between the Back button and the list: (first row, last row,
+    // leftmost, rightmost).
+    let rows = mb_app::widgets::ListLayout::column(&h.layout(), 8, 0.24 + 2.0 * 0.055);
+    let below_back = mb_app::widgets::back_button_rect(&h.layout());
+    let top = (below_back.y + below_back.h) as usize + 4;
+    let mut bands: Vec<(usize, usize, usize, usize)> = Vec::new();
+    for y in top..rows.area.y as usize {
+        let Some((left, right)) = row(y) else {
+            continue;
+        };
+        match bands.last_mut() {
+            Some(b) if b.1 + 1 >= y => *b = (b.0, y, b.2.min(left), b.3.max(right)),
+            _ => bands.push((y, y, left, right)),
+        }
+    }
+    assert_eq!(bands.len(), 2, "two lines of the note: {bands:?}");
+    let tall = |b: &(usize, usize, usize, usize)| (b.1 - b.0 + 1) as f32;
+    let wide = |b: &(usize, usize, usize, usize)| (b.3 - b.2 + 1) as f32;
+    // The same letters' height (a line with a bracket reaches a little further up and down) ...
+    let ratio = tall(&bands[1]) / tall(&bands[0]);
+    assert!((0.7..=1.4).contains(&ratio), "line heights {bands:?}");
+    // ... the long line fits the screen, and the short one is much the narrower of the two.
+    assert!(wide(&bands[0]) <= w as f32 * 0.92, "{bands:?}");
+    assert!(wide(&bands[1]) < wide(&bands[0]) * 0.5, "{bands:?}");
+    h.resize((640, 360));
+    h.shutdown();
+}
+
+/// The capture is drawn only where the mirror surfaces in view can show it, and only with what falls
+/// there. That changes no pixel: on mirror stages of every kind, through the game's own camera in the
+/// fly-in and in play and through cameras all round the ball, high and low, the frame is the same,
+/// byte for byte, as with the whole reflected view captured, for fewer draw calls.
+#[test]
+fn cutting_the_capture_to_the_mirror_changes_no_pixel() {
+    let _gpu = GPU.lock().unwrap_or_else(|e| e.into_inner());
+    let storage = SharedStorage::unlocked();
+    let Some(mut h) = start(&storage) else {
+        return;
+    };
+    let (mut frames, mut saved, mut whole_draws) = (0, 0i64, 0i64);
+    for stage in [92u32, 102, 103, 91, 21, 77, 89, 110, 121] {
+        start_practice_stage(&mut h, &storage, stage);
+        for at in [150u32, 330, 450] {
+            run_until(&mut h, 2000, "the tick", |h| {
+                playing(h).is_some_and(|p| p.2 >= at)
+            });
+            // What the frame queued for itself (HUD, particles) goes with this one.
+            h.render().unwrap();
+            let ball = {
+                let view = h.top().unwrap().play_view().unwrap();
+                let p = view.sim.ball.pos;
+                Vec3::new(p.x as f32, p.y as f32, p.z as f32)
+            };
+            let mut cameras = vec![h.top().unwrap().camera()];
+            for step in 0..6 {
+                let yaw = step as f32 * std::f32::consts::TAU / 6.0 + 0.3;
+                let (dist, height) = [(6.0f32, 1.2f32), (14.0, 6.0), (30.0, 22.0)][step % 3];
+                let eye = ball + Vec3::new(yaw.sin() * dist, height, yaw.cos() * dist);
+                cameras.push(Camera::look_at(eye, ball, Vec3::Y));
+            }
+            for (i, camera) in cameras.iter().enumerate() {
+                h.renderer_mut().set_mirror_capture_whole(true);
+                let whole = h.render_with(camera);
+                let all = h.renderer().stats;
+                h.renderer_mut().set_mirror_capture_whole(false);
+                let cut = h.render_with(camera);
+                let stats = h.renderer().stats;
+                assert!(
+                    cut == whole,
+                    "stage {stage} tick {at} camera {i}: the picture changed"
+                );
+                assert_eq!(stats.draws, all.draws);
+                // (A mirror model whose bounding sphere reaches into the view while the model itself
+                // does not is no longer drawn at all.)
+                assert!(stats.mirror_surface_draws <= all.mirror_surface_draws);
+                // (A sphere test is on the safe side, so now and then the cut keeps one object more.)
+                frames += (all.mirror_draws > 0) as u32;
+                saved += all.mirror_draws as i64 - stats.mirror_draws as i64;
+                whole_draws += all.mirror_draws as i64;
+            }
+        }
+    }
+    eprintln!(
+        "{frames} frames with a mirror in view: the cut saved {saved} of {whole_draws} capture draws"
+    );
+    assert!(frames >= 120, "{frames} frames showed a mirror");
+    assert!(saved * 10 >= whole_draws, "saved {saved} of {whole_draws}");
+    h.shutdown();
+}

@@ -42,3 +42,9 @@ retail stagedefs to a hash recorded before the hardening.
 ## Not implemented
 SMB2 stagedefs (detected via magic `0, 0x447a0000|0x42c80000`) return `StageError::Unsupported`. Fog,
 texture-scroll and wormhole/switch data are SMB2-only in the reference and are not parsed.
+
+## Who reads what
+Collision, goals, bumpers, jamabars, bananas and animations are read by `mb-engine`; the model lists and
+the background and foreground objects with their flags and animations by `mb-app/src/stage_scene.rs`.
+Since version 0.2.0 the flipbook records of background objects (`mb-app/src/backdrop.rs`) and the mirror
+names (`mb-app/src/mirror.rs`) are read as well. The four header words marked unknown are read by nothing.

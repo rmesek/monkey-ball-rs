@@ -3,13 +3,26 @@
 Guidance for AI agents and contributors working in `monkey-ball-rs`.
 
 ## Goal
-A Rust port of Super Monkey Ball 1 that mirrors WebMonkeyBall (TypeScript) as closely as possible, fully
-offline. Do not invent a new game, art, audio or levels. The current state, the recorded decisions and the
-list of possible next features are in `docs/PLAN.md`; keep it current. **Start there when picking the work up:** its
-"Open items" table is the list of what is unverified or unfinished.
+A Rust port of Super Monkey Ball 1 that mirrors WebMonkeyBall (TypeScript, "the reference") as closely as
+possible, fully offline. Do not invent a new game, art, audio or levels. Four aims, in this order when they
+pull against each other:
 
-## The two targets
-Exactly two, and every change must keep both working:
+1. **Feature complete in the agreed scope:** everything the reference shows and plays for Super Monkey
+   Ball 1, with all effects, sounds and levels from and only from SMB1. Not multiplayer / netplay / lobby,
+   not the replay-file player, not the map viewer, not SMB2, and not what only the original game has (the
+   monkey in the ball, its voices, jingles, menu music).
+2. **Portable between platforms:** the desktop and the web browser now, a native Android app later.
+3. **Minimal footprint:** download size, memory, storage and per-frame work are measured and held by tests.
+4. **Minimal engine complexity,** using only portable and basic features. Prefer removing code to adding
+   it; add no pass, pipeline, option or abstraction that nothing on the SMB1 disc needs.
+
+`docs/PLAN.md` spells each aim out as rules that can be checked, and holds the current state, what is left
+for parity, the budgets, the recorded decisions and the candidates for simplification; keep it current.
+**Start there when picking the work up:** its "What is left for parity", "Unverified" and "Open items"
+sections are the list of what is unfinished.
+
+## The targets
+Two today, and every change must keep both working (both worked in 0.1.0; neither may regress):
 
 1. **The desktop executable** (`crates/mb-app`, binary `mb-app`).
 2. **The game in a web browser, as a light static site** (`crates/mb-web` compiled to WebAssembly, plus
@@ -24,8 +37,15 @@ The static site is a design constraint, not a packaging detail:
 - Nothing may be required that some supported environment lacks: service worker, private file system,
   `localStorage`, WebGPU, fullscreen, wake lock and the sensors are all optional (`docs/WEB.md` lists what the
   page does without each). WebGL2 is a first-class backend.
-- The same files will be shown in an Android `WebView` by someone else (`docs/ANDROID_WEBVIEW.md`). There is
-  no native mobile target in this repository; do not add one.
+- The same files can be shown in an Android `WebView` by someone else (`docs/ANDROID_WEBVIEW.md`), and a
+  phone's browser opens the site as it is.
+
+**A native Android app is a later target.** It is not built and there is no code for it in this
+repository; do not add it, or any other target, unless the project owner asks. Current work must not block
+it, which means (`docs/PLAN.md`, "Targets", has the full list): nothing in the renderer beyond what WebGL2
+allows, platform access only through `mb_app::host` and the input seam, desktop-only crates only in the
+desktop driver's files, game files only through `mb_app::content`, saves only through `mb_game::Storage`,
+and every screen usable by touch alone.
 
 The user's flow, on both targets: the app asks for the Super Monkey Ball 1 game file and says exactly what it
 expects; the user picks their own file; the app validates it, keeps what it needs on the device, tells the
@@ -89,16 +109,30 @@ The second clippy line is the desktop program as shipped (without the `dev` feat
 build. The tests need the disc image to mean anything (set `MB_DISC`); the browser check needs it too, plus
 Chrome and Python 3. `cargo test` needs no flags: `mb-app` switches its own `dev` feature on for its tests.
 
+What the gates hold beyond "it works" (the numbers are in `docs/PLAN.md`, "Budgets"):
+
+- **Budget tests** in `cargo test`: draw calls of every course stage against a recorded table, no GPU object
+  created and no heap allocation per tick during play, texture bytes, the mirror's cost
+  (`crates/mb-app/tests/budgets.rs`, `crates/mb-engine/tests/effects.rs`); heap while a stage loads and
+  plays (`crates/mb-app/tests/memory.rs`); the size of the game pack (`crates/mb-app/tests/pack.rs`).
+- **The wasm size budget** in `cargo xtask build-web`: the build fails, before `web/dist` is touched, when
+  the optimised module is larger than `WASM_BUDGET_BYTES` in `xtask/src/main.rs`.
+- **The browser check** (`scripts/web-e2e.ts`, 97 checks, about eight minutes): besides import, storage,
+  play, saves and the degraded environments, it measures wasm memory and frame time at 6x CPU throttle on
+  WebGL2 against 0.1.0, with Reflections on and off, sees the new drawing on WebGL2 and WebGPU through
+  `window.mbPerf`, loads a save written by 0.1.0 and fails on a console error or a graphics driver warning
+  (`docs/WEB.md`, "Checking it").
+
 ## Where things live, and how to add a feature
 
 | Layer | Crate | Belongs here |
 |---|---|---|
 | Files | `mb-assets` | reading the disc image, RVZ, LZSS, the game pack format |
 | Formats | `mb-stage`, `mb-tpl`, `mb-gma`, `mb-audio` | parsing and decoding; std only; hostile input never panics or over-allocates |
-| Simulation | `mb-engine` | everything that affects the outcome of a tick; deterministic; ported operation by operation from the reference |
+| Simulation | `mb-engine` | everything that affects the outcome of a tick; deterministic; ported operation by operation from the reference. Also the particles' state (`effects.rs`), which is display only: it is ported here because it steps with the tick and is compared with the reference, but the simulation never reads it |
 | Rules | `mb-game` | courses, lives, score, unlocks, settings, saves |
-| Drawing | `mb-render` | GPU resources, materials, passes; knows nothing of game rules or windows |
-| The game | `mb-app` | states (`menu`, `loading`, `play`, `hud`), scene assembly, input, audio requests, content access, and the two drivers: `app.rs` (desktop window) and `shell.rs` (browser canvas) |
+| Drawing | `mb-render` | GPU resources, materials, passes (`renderer.rs`, `material.rs`), instanced models and the quad batch (`instances.rs`, `quads.rs`, `effects.rs`), the vertex wave (`wave.rs`), mirror floors (`mirror.rs`); knows nothing of game rules, stages or windows |
+| The game | `mb-app` | states (`menu`, `loading`, `play`, `hud`), scene assembly (`stage_scene`, `play_scene`, `particles`, `backdrop`, `mirror`), input, audio requests, content access, and the two drivers: `app.rs` (desktop window) and `shell.rs` (browser canvas) |
 | Browser glue | `mb-web`, `web/` | what only the page can do: the file picker, the import worker, storage, Web Audio, history, sensors |
 
 Rules of thumb:
@@ -106,6 +140,21 @@ Rules of thumb:
 - **Simulation or look?** If it changes where the ball is, it goes into `mb-engine` with a parity or synthetic
   test. If it only changes what is drawn or heard, it reads the simulation state from `mb-app`
   (`play_scene.rs`, `audio.rs`) and never writes back.
+- **Effects never write into the simulation.** Particles draw from the reference's separate visual random
+  stream (`runtime.visual_rng`) and are outside `Sim::hash` (`Sim::hash_visual` includes them). Random
+  numbers for anything else that is only drawn come from a generator of their own.
+- **Budgets are recorded constants.** A test that holds a table or a limit (`DRAWS`, `MIRROR_DRAWS`,
+  `USAGE_0_1_0`, `WASM_BUDGET_BYTES`, the pack's size) fails when the number moves: the draw tables and the
+  pack in either direction, the others upward. Do not edit the constant to make it pass: find the cause
+  first. When the change is meant, change the
+  constant in the same commit as its cause, say why in the message, and update the figure in the docs.
+- **A loader that uploads much must stay under the staging limit.** Uploads go through the renderer, which
+  submits whenever `Renderer::STAGED_LIMIT` (1 MB) is staged; on WebGL2 anything staged is held twice in
+  memory that never shrinks. `crates/mb-app/tests/memory.rs` fails on a load that stages more at once.
+- **Nothing is created on the GPU during play.** Buffers, bind groups and targets are made while a stage
+  loads (`Renderer::reserve_objects`, `reserve_instances`, `reserve_quads`, `warm_sprite_texture`).
+- **GPU tests are serialised.** Tests that create a device take the file's `static GPU: Mutex<()>` first;
+  several devices at once make the counts and the memory figures of other tests wrong.
 - **Input goes through one seam.** Drivers write logical actions and axes into `mb_app::input::InputState`;
   game states read `tilt()`, actions and the pointer and never see a device. A new device is a few lines in
   `app.rs` (desktop) or in `mb-web`'s `Platform` implementation (browser).
@@ -140,6 +189,9 @@ Rules of thumb:
   that drive the real states (and the window), in the browser through `scripts/web-e2e.ts`, extended to cover
   the new behaviour. State what was not verified (real phones, other browsers).
 - **Git checkpoints.** One logical change per commit, gates green, a message that says what now works.
+- **No release without the owner's test.** No release tag and no push before the project owner has tried
+  the release candidate by hand and confirmed. Until then the docs call it a release candidate and do not
+  say it is released.
 - **No paid services.** Nothing runs on a push, a tag or a schedule. `ci.yml` (the gates) is
   `workflow_dispatch` only; `release.yml` starts only when a release is published on the GitHub website and
   attaches that version's builds to it (the gates, then Linux, Windows and Apple-silicon executables and the
@@ -172,14 +224,17 @@ For work that splits cleanly, the lead agent hands workstreams to subagents by c
 | Stagedef, collision | `src/stage.ts`, `src/noclip/SuperMonkeyBall/Stagedef.ts`, `src/collision.ts` | `mb-stage`, `mb-engine/src/collision.rs` |
 | Models, textures | `src/gma.ts`, `src/gx_displaylist.ts`, `src/tpl.ts`, `src/noclip/SuperMonkeyBall/{Gma,NaomiLib,AVTpl}.ts` | `mb-gma`, `mb-tpl` |
 | Materials, lighting, scene | `src/noclip/SuperMonkeyBall/{Material,TevLayer,Shape,Model,Lighting,Render,World,AnimGroup,Background,StageInfo}.ts` | `mb-render`, `mb-app/src/{stage_scene,play_scene,stage_info,anim}.rs` |
+| Backgrounds that move, the bonus wave | `src/noclip/SuperMonkeyBall/{Background,BonusWave}.ts` | `mb-app/src/backdrop.rs`, `mb-render/src/wave.rs` |
+| Mirror floors | `src/noclip/Render.ts`, `src/noclip/SuperMonkeyBall/World.ts` (`getMirrorMode`, `getMirrorPlaneMatrix`, `prepareToRenderMirrors`) | `mb-app/src/mirror.rs`, `mb-render/src/{mirror.rs,mirror.wgsl}` |
 | Physics, maths | `src/physics.ts`, `src/math.ts`, `src/math_lut.ts`, `src/world.ts`, `src/animation.ts`, `src/rng.ts` | `mb-engine` |
 | Camera | `src/camera.ts` | `mb-engine/src/camera.rs` |
 | Game flow | `src/game.ts`, `src/course.ts`, `src/constants.ts` | `mb-engine/src/sim.rs`, `mb-game`, `mb-app/src/{menu,play}.rs` |
 | HUD, input | `src/hud.ts`, `src/input.ts` | `mb-app/src/{hud,text,input,ui}.rs` |
 | Audio | `src/audio.ts`, `src/audio/smb1_sfx_ids.ts` | `mb-audio`, `mb-app/src/audio.rs` |
 | Determinism | `src/determinism.ts`, `src/sim_hash.ts` | `mb-engine/src/{determinism,hash}.rs` |
-| Effects, replays (not ported) | `src/effects.ts`, `src/replay.ts` | `docs/PLAN.md`, "Possible next features" |
-| Not used (network, SMB2) | `src/netplay.ts`, `src/netcode_protocol.ts`, `src/rollback.ts`, `src/course_smb2.ts`, `src/course_mb2ws.ts`, `src/smb2_render.ts` | |
+| Particles, confetti, shadow | `src/effects.ts`, `src/stage.ts` (confetti), `src/noclip/SuperMonkeyBall/World.ts` (`drawEffects`, `drawConfetti`, `drawProjectedShadow`) | `mb-engine/src/effects.rs`, `mb-render/src/{instances,quads,effects}.rs`, `mb-app/src/particles.rs` |
+| Result replays (not ported; version 0.3.0) | `src/game.ts` (`startResultReplay`, `stepResultReplay`), `src/camera.ts` (`FALLOUT_REPLAY`, `GOAL_REPLAY`) | `docs/PARITY_PLAN.md`, "Phase 5" |
+| Not used (network, replay files, SMB2) | `src/netplay.ts`, `src/netcode_protocol.ts`, `src/rollback.ts`, `src/replay.ts`, `src/course_smb2.ts`, `src/course_mb2ws.ts`, `src/smb2_render.ts` | |
 
 Format and porting notes: `docs/REFERENCE_NOTES.md`, `docs/STAGEDEF.md`, `docs/GMA.md`, `docs/TPL.md`,
 `docs/ENGINE.md`, `docs/AUDIO.md`, `docs/GAMEPLAY.md`. Parity tests compare against the reference's output on

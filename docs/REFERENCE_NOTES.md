@@ -21,9 +21,19 @@ builders (SMB2), `worker/` Cloudflare lobby (multiplayer signalling only, unrela
 Decomp-faithful physics using S16 angles and lookup tables (`math_lut.ts`), deterministic stepping, sim hashing,
 rollback and WebRTC netplay. Audio via the browser decoder from wav/ogg. HUD from PNG sprites.
 
+For SMB1 it draws the ball's shells and no monkey, particles (`effects.ts`), confetti, a projected ball
+shadow, three animated backgrounds (night, storm, sunset; the other classes of `Background.ts` only draw
+their objects), the bonus wave and mirror floors, and it replays a fall-out and a goal from its rollback
+states (`game.ts`, `startResultReplay`). Which of that is ported is in `docs/PLAN.md`.
+
 ## What this port does differently
 The reference is given extracted files (stages, models, `.ogg` / `.wav` audio, HUD PNGs) at fixed paths. This
 port reads everything from the user's own disc image at run time: HUD sheets from `bmp_*.tpl`, music from the
 `.adp` streams, sound effects from the MusyX banks (`docs/DISC_CONTENT.md`). For SMB2 the reference's
 `tools/smb2_pack_builder.py` derives stage environment data from `mkb2.main_loop.rel` with hard-coded US
 NTSC offsets; nothing of SMB2 is ported here.
+
+Two things in the reference do not work on the SMB1 data as it stands, and the port does not copy the
+fault: its post-goal sparkle loads `assets/particle/beautifulstar.png`, which is neither in its checkout nor
+on the disc, and its sunset cloud scroll needs a UV-scroll flag that no layer on the disc has. Both are
+described where the port's version is (`docs/GAMEPLAY.md`).

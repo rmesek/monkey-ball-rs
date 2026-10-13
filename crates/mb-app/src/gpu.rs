@@ -16,6 +16,25 @@ impl Gpu {
     }
 }
 
+/// The instance both drivers and the windowless one create, on `backends` (`None`: all there are).
+///
+/// On the OpenGL backend (WebGL2 in the browser) submitted work counts as done when it is submitted
+/// (`GlFenceBehavior::AutoFinish`). `wgpu` keeps what a submission used until its fence is signalled:
+/// the command list of the frame and a staging copy of every texture and buffer written since the
+/// submit before. WebGL only updates a fence between two tasks of the page, so with real fences a whole
+/// stage load (up to 16.6 MB of textures) and two frames' command lists were held at once, in memory
+/// that wasm never gives back. OpenGL runs the commands in order and keeps deleted objects alive while
+/// they are in use, so nothing needs the wait; the game maps no buffer and asks for no completion
+/// callback.
+pub fn instance_descriptor(backends: Option<wgpu::Backends>) -> wgpu::InstanceDescriptor {
+    let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+    if let Some(backends) = backends {
+        descriptor.backends = backends;
+    }
+    descriptor.backend_options.gl.fence_behavior = wgpu::GlFenceBehavior::AutoFinish;
+    descriptor
+}
+
 /// Request an adapter and device. With `compatible_surface` the adapter can present to it; without one
 /// (headless) a software adapter is accepted as a fallback so screenshots work on machines without a GPU.
 #[cfg(not(target_arch = "wasm32"))]

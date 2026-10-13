@@ -25,6 +25,11 @@ const MAGENTA: [f32; 3] = [1.0, 0.0, 1.0];
 /// The floor's own colour, which a mirror of full opacity never shows.
 const FLOOR: [f32; 3] = [0.0, 0.0, 0.5];
 
+/// One test at a time. Devices of several backends created and dropped from many test threads at once
+/// now and then deadlock inside the drivers (about one run in twenty on Windows); the product only ever
+/// has one device.
+static GPU: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn device(backends: wgpu::Backends) -> Option<(wgpu::Device, wgpu::Queue)> {
     let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
     descriptor.backends = backends;
@@ -380,6 +385,7 @@ fn flat_mirror_on(backends: wgpu::Backends) {
 
 #[test]
 fn a_flat_mirror_shows_what_is_above_it_at_the_mirrored_place() {
+    let _gpu = GPU.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     flat_mirror_on(wgpu::Backends::all());
 }
 
@@ -520,6 +526,7 @@ fn capture_contents_on(backends: wgpu::Backends) {
 
 #[test]
 fn the_capture_leaves_out_mirrors_flagged_objects_and_effects() {
+    let _gpu = GPU.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     capture_contents_on(wgpu::Backends::all());
 }
 
@@ -589,6 +596,7 @@ fn alpha_on(backends: wgpu::Backends) {
 
 #[test]
 fn the_reflection_is_blended_by_mirror_alpha_times_vertex_alpha() {
+    let _gpu = GPU.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     alpha_on(wgpu::Backends::all());
 }
 
@@ -677,6 +685,7 @@ fn moving_plane_on(backends: wgpu::Backends) {
 
 #[test]
 fn a_moving_plane_moves_the_reflection_and_creates_nothing() {
+    let _gpu = GPU.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     moving_plane_on(wgpu::Backends::all());
 }
 
@@ -726,6 +735,7 @@ fn tilt_on(backends: wgpu::Backends) {
 
 #[test]
 fn the_mirror_tilts_with_the_stage() {
+    let _gpu = GPU.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     tilt_on(wgpu::Backends::all());
 }
 
@@ -858,6 +868,7 @@ fn wavy_on(backends: wgpu::Backends) {
 
 #[test]
 fn the_wavy_mirror_offsets_the_reflection_by_the_reference_formula() {
+    let _gpu = GPU.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     wavy_on(wgpu::Backends::all());
 }
 
@@ -958,6 +969,7 @@ fn no_mirror_on(backends: wgpu::Backends) {
 
 #[test]
 fn without_a_mirror_a_frame_is_what_it_was() {
+    let _gpu = GPU.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     no_mirror_on(wgpu::Backends::all());
 }
 
@@ -1048,6 +1060,7 @@ fn target_on(backends: wgpu::Backends) {
 
 #[test]
 fn the_target_follows_the_frame_and_is_counted_apart() {
+    let _gpu = GPU.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     target_on(wgpu::Backends::all());
 }
 
@@ -1082,6 +1095,7 @@ fn srgb_on(backends: wgpu::Backends) {
 
 #[test]
 fn an_srgb_frame_reflects_the_colours_it_shows() {
+    let _gpu = GPU.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     srgb_on(wgpu::Backends::all());
 }
 
@@ -1174,6 +1188,7 @@ fn surface_only_on(backends: wgpu::Backends) {
 
 #[test]
 fn a_surface_can_be_its_reflection_alone() {
+    let _gpu = GPU.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     surface_only_on(wgpu::Backends::all());
 }
 
@@ -1276,18 +1291,20 @@ fn many_surfaces_on(backends: wgpu::Backends) {
     }
     s.render();
     assert_eq!((s.r.stats.mirror_draws, s.r.stats.draws), (0, 1));
-    // One small surface back in view brings the whole capture back.
+    // One small surface back in view brings the capture back, cut down to what that tile can show:
+    // the reflection of the object above the mirror does not fall on it, so only the tile is drawn.
     s.r.set_visible(tiles[1].0, true);
     s.render();
     assert_eq!(
         (s.r.stats.mirror_draws, s.r.stats.mirror_surface_draws),
-        (2, 1)
+        (1, 1)
     );
     assert_eq!(s.r.counters(), warm);
 }
 
 #[test]
 fn dozens_of_surfaces_share_a_leaning_plane_and_none_in_view_costs_nothing() {
+    let _gpu = GPU.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     many_surfaces_on(wgpu::Backends::all());
 }
 
@@ -1396,6 +1413,7 @@ fn reserve_objects_on(backends: wgpu::Backends) {
 
 #[test]
 fn a_reserved_object_buffer_makes_the_first_frame_create_nothing() {
+    let _gpu = GPU.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     reserve_objects_on(wgpu::Backends::all());
 }
 
@@ -1403,6 +1421,7 @@ fn a_reserved_object_buffer_makes_the_first_frame_create_nothing() {
 
 #[test]
 fn the_gl_backend_draws_the_same() {
+    let _gpu = GPU.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     // WebGL2: the overlay's shader through naga's GLSL ES output (integer masking, `textureLod`), a
     // render target that is sampled, the oblique near plane and the flipped capture.
     let gl = wgpu::Backends::GL;
@@ -1418,4 +1437,106 @@ fn the_gl_backend_draws_the_same() {
     surface_only_on(gl);
     many_surfaces_on(gl);
     reserve_objects_on(gl);
+    merged_meshes_on(gl);
+}
+
+// ---- meshes of one model that share their state are one draw -----------------------------------------
+
+/// A model of standing squares, each a mesh of its own: where it stands, which faces it culls, whether
+/// its triangles are wound the other way round, and its colour.
+fn squares(r: &mut Renderer, parts: &[(f32, CullMode, bool, [f32; 3])]) -> ModelId {
+    let meshes = parts
+        .iter()
+        .map(|(x, cull, reversed, color)| mb_gma::NlMesh {
+            flags: 0,
+            tex_flags: 0,
+            tex_idx: None,
+            mesh_type: mb_gma::mesh_type::UNLIT_CONST_MAT_COLOR,
+            ambient_color_scale: 1.0,
+            material_color: [color[0], color[1], color[2], 1.0],
+            cull: *cull,
+            z_compare: 4,
+            depth_write: true,
+            vertices: mb_gma::Vertices {
+                normals: vec![[0.0, 0.0, 1.0]; 4],
+                colors: vec![[255; 4]; 4],
+                uv0: vec![[0.0; 2]; 4],
+                uv1: vec![[0.0; 2]; 4],
+                uv2: vec![[0.0; 2]; 4],
+                positions: vec![
+                    [x - 0.6, 0.4, 0.0],
+                    [x + 0.6, 0.4, 0.0],
+                    [x - 0.6, 1.6, 0.0],
+                    [x + 0.6, 1.6, 0.0],
+                ],
+            },
+            indices: if *reversed {
+                vec![0, 2, 1, 2, 3, 1]
+            } else {
+                vec![0, 1, 2, 2, 1, 3]
+            },
+        })
+        .collect();
+    r.upload_nl_model(
+        &mb_gma::NlModel {
+            id: 0,
+            flags: 0,
+            kind: mb_gma::VertexKind::B,
+            bound_sphere_center: [0.0, 1.0, 0.0],
+            bound_sphere_radius: 8.0,
+            meshes,
+        },
+        &[],
+    )
+}
+
+fn merged_meshes_on(backends: wgpu::Backends) {
+    let Some(mut s) = Scene::new(backends) else {
+        return;
+    };
+    let red = [0.9, 0.1, 0.1];
+    let green = [0.1, 0.8, 0.2];
+    // Four squares of one material: both windings under either culling. Each culling shows one
+    // winding and hides the other, and the two cullings show opposite ones.
+    let places = [-4.5f32, -1.5, 1.5, 4.5];
+    let parts = [
+        (places[0], CullMode::Back, false, red),
+        (places[1], CullMode::Back, true, red),
+        (places[2], CullMode::Front, false, red),
+        (places[3], CullMode::Front, true, red),
+    ];
+    let model = squares(&mut s.r, &parts);
+    let object = s.r.add_object(model, Layer::World, Mat4::IDENTITY);
+    let frame = s.render();
+    let shown = |frame: &Frame, x: f32| near(&frame.at(Vec3::new(x, 1.0, 0.0)), red, 2.0);
+    let seen: Vec<bool> = places.iter().map(|x| shown(&frame, *x)).collect();
+    assert_ne!(seen[0], seen[1], "{seen:?}");
+    assert_ne!(seen[2], seen[3], "{seen:?}");
+    assert_ne!(seen[0], seen[2], "{seen:?}");
+    assert!(frame.count(red, 2.0) > 20);
+    // One state, one draw: the triangles of the front-culled halves were turned round.
+    assert_eq!(s.r.stats.draws, 1);
+
+    // Another material, a mesh that blends (vertex alpha) or one that shows both faces is a draw of
+    // its own; the rest still share one.
+    s.r.set_visible(object, false);
+    let mut mixed = parts.to_vec();
+    mixed.push((0.0, CullMode::Back, seen[1], green));
+    mixed.push((0.0, CullMode::None, false, red));
+    let model = squares(&mut s.r, &mixed);
+    s.r.add_object(model, Layer::World, at(0.0, 2.0, 0.0));
+    let frame = s.render();
+    assert_eq!(s.r.stats.draws, 3);
+    for (x, was) in places.iter().zip(&seen) {
+        let now = near(&frame.at(Vec3::new(*x, 3.0, 0.0)), red, 2.0);
+        assert_eq!(now, *was, "x {x}");
+    }
+    // The square that shows both faces was drawn after the green one in the same place.
+    assert!(near(&frame.at(Vec3::new(0.0, 3.0, 0.0)), red, 2.0));
+}
+
+#[test]
+fn meshes_that_share_their_state_are_one_draw_whichever_face_they_cull() {
+    let _gpu = GPU.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    merged_meshes_on(wgpu::Backends::all());
 }

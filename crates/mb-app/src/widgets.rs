@@ -410,6 +410,36 @@ pub fn fit_scale(p: &Painter, font: FontId, text: &str, width: f32, height: f32)
     fit(height, f.line_height, width, f.measure(text, 1.0))
 }
 
+/// One scale for several lines that belong together (a wrapped message): the largest at which the
+/// longest of them still fits `width`. Fitted one by one, a short last line of a message would come
+/// out larger than the long line above it wherever the width is what limits the size (a phone held
+/// upright).
+pub fn fit_scale_lines<'a>(
+    p: &Painter,
+    font: FontId,
+    lines: impl Iterator<Item = &'a str>,
+    width: f32,
+    height: f32,
+) -> f32 {
+    let f = p.ui.font(font).p;
+    fit_lines(
+        height,
+        f.line_height,
+        width,
+        lines.map(|l| f.measure(l, 1.0)),
+    )
+}
+
+fn fit_lines(
+    height: f32,
+    line_height: f32,
+    width: f32,
+    natural_widths: impl Iterator<Item = f32>,
+) -> f32 {
+    let widest = natural_widths.fold(0.0, f32::max);
+    fit(height, line_height, width, widest)
+}
+
 fn fit(height: f32, line_height: f32, width: f32, natural_width: f32) -> f32 {
     let by_height = height / line_height.max(1e-3);
     by_height.min(width / natural_width.max(1.0)).max(0.0)
@@ -581,6 +611,37 @@ mod tests {
             count,
             0.3,
         )
+    }
+
+    /// A message wrapped into a long and a short line, on a wide and on a narrow screen: both lines
+    /// get the size of the long one. (Fitted line by line, the short one was three times as large on
+    /// a phone held upright.)
+    #[test]
+    fn the_lines_of_a_wrapped_message_share_the_size_of_the_longest() {
+        // A 32 pixel font; lines of 900 and 260 pixels at scale one; room for 40 pixels of height.
+        let (line_height, long, short) = (32.0, 900.0, 260.0);
+        for width in [1152.0f32, 370.8] {
+            let one_by_one = [long, short].map(|w| fit(40.0, line_height, width, w));
+            let shared = fit_lines(40.0, line_height, width, [long, short].into_iter());
+            assert_eq!(shared, one_by_one[0].min(one_by_one[1]));
+            assert_eq!(shared, fit(40.0, line_height, width, long));
+            assert!(long * shared <= width + 1e-3 && line_height * shared <= 40.0 + 1e-3);
+        }
+        // Wide: the height limits both, so nothing changes. Narrow: the long line is squeezed and the
+        // short one no longer stands out.
+        assert_eq!(fit(40.0, line_height, 1152.0, short), 1.25);
+        assert_eq!(
+            fit_lines(40.0, line_height, 1152.0, [long, short].into_iter()),
+            1.25
+        );
+        let narrow = fit_lines(40.0, line_height, 370.8, [long, short].into_iter());
+        assert!((narrow - 0.412).abs() < 1e-3, "{narrow}");
+        assert!(fit(40.0, line_height, 370.8, short) > 3.0 * narrow);
+        // No lines: the height alone.
+        assert_eq!(
+            fit_lines(40.0, line_height, 370.8, std::iter::empty()),
+            1.25
+        );
     }
 
     const ALL: &dyn Fn(usize) -> bool = &|_| true;

@@ -102,6 +102,35 @@ Where this still differs from the reference:
 | Opaque order | submission order | meshes without blending sorted by pipeline and material | invisible with the depth test; saves state changes |
 | `lod_bias`, `max_aniso`, `MAGFILT_NEAR`, `NO_FOG` | ignored (no fog at all) | ignored | same |
 
+### Meshes, uploads and memory
+* **One mesh per state** (`Renderer::make_meshes`). A model file has every shape twice, once to be drawn
+  with front faces culled and once with back faces culled. The triangles of the front-culled half are
+  turned round at upload, which shows the same faces under back-face culling, and then all meshes of
+  a model that are drawn without blending with the same pipeline and material are uploaded as one
+  vertex and index buffer. Blended meshes stay as they are (they are sorted or keep the file's order).
+  The picture is the same but for where two unblended meshes of one model lie in the same plane and
+  the later one used to win the depth test: compared with the commit before on 112 frames of 14
+  stages, 96 are identical byte for byte and 16 differ in one to four pixels of 230,400. A frame takes
+  15 to 50 % fewer draw calls (38,960 to 25,517 over all course stages at tick 60).
+  `meshes_that_share_their_state_are_one_draw_whichever_face_they_cull` (`tests/mirror.rs`).
+* **Uploads go to the queue in portions** (`Renderer::STAGED_LIMIT`, `LoadStats::staged_peak_bytes`).
+  On WebGL2 `wgpu` keeps a staging copy of every texture and buffer it is given until the next
+  submit. A stage load used to submit only with its first frame, so all its textures and meshes (up to
+  16.6 MB) were held twice at that moment, in wasm memory, which never shrinks. The renderer now
+  submits whenever more than a megabyte is staged.
+* **Submitted work is done work on OpenGL** (`mb_app::gpu::instance_descriptor`,
+  `GlFenceBehavior::AutoFinish`). `wgpu` frees what a submission used when its fence is signalled, and
+  WebGL only updates a fence between two tasks of the page: without this the portions above would
+  pile up through a load all the same, and the command lists of two frames would be alive at once.
+* **The mirror's capture is submitted by itself**, before the picture is encoded, so the two command
+  lists (about 0.7 KB a draw call on the OpenGL backend) are never held together.
+
+In the browser (Chrome, WebGL2, a fresh page per stage, `scripts/web-e2e.ts`) wasm memory with
+reflections on is 19.1 MB on stages 89, 76 and 21, where it was 34.3, 28.3 and 36.6 MB before these
+four and 26.1, 22.2 and 28.1 MB in 0.1.0; stage 89 with its mirror takes 9.8 to 10.1 ms of update and
+render at the 99th percentile under a sixfold CPU throttle, where it took 16.9 to 17.2 (`docs/WEB.md`,
+"Mirror floors in the browser", has the table).
+
 ### Mirror floors
 `crates/mb-render/src/mirror.rs`, `mirror.wgsl`, the mirror parts of `renderer.rs`; reference `Render.ts`
 ("Mirror Capture", "Mirror Overlay") and `World.ts` `prepareToRenderMirrors`. The caller sets one
@@ -109,6 +138,18 @@ Where this still differs from the reference:
 distortion), flags the mirror models (`set_mirror_surface`) and takes objects out of the reflection
 (`set_in_mirror`). Without a mirror none of this exists: no target, no pass, no pipeline, and a frame has
 the draws, uploads and GPU objects it had (`tests/mirror.rs`, `without_a_mirror_a_frame_is_what_it_was`).
+Which stages have a mirror, where its plane is and what is left out of it is the game's business:
+`docs/GAMEPLAY.md`, "Mirror floors". The game uses the flat mirror on every one of its 37 stages; it sets
+no distortion on stage 92 either (the reason is there), so the wavy path below is exercised by
+`the_wavy_mirror_offsets_the_reflection_by_the_reference_formula` only.
+
+The capture is cut to what the mirror surfaces in view can show: their bounding boxes are projected
+through the capture's own clip matrix (`mirror::projected_box`, cut at the eye), the bounds are widened
+by two texels and cut to the picture (`capture_window`), the passes are scissored to them and only
+objects whose spheres reach into that window of the view are drawn (`window_planes`). A distorted
+mirror reads the capture anywhere and keeps the whole view. `Renderer::set_mirror_capture_whole` draws
+the whole view for the test that compares the two (`cutting_the_capture_to_the_mirror_changes_no_pixel`
+in `crates/mb-app/tests/gameplay.rs`).
 
 A frame in which a mirror surface is in view:
 

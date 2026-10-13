@@ -14,6 +14,11 @@ use mb_render::{
 const SIZE: u32 = 64;
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
+/// One test at a time. Devices of several backends created and dropped from many test threads at once
+/// now and then deadlock inside the drivers (about one run in twenty on Windows); the product only ever
+/// has one device.
+static GPU: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn device(backends: wgpu::Backends) -> Option<(wgpu::Device, wgpu::Queue)> {
     let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
     descriptor.backends = backends;
@@ -217,6 +222,7 @@ fn at(x: f32, y: f32, z: f32) -> Mat4 {
 
 #[test]
 fn instances_draw_in_one_call_at_their_places_and_colours() {
+    let _gpu = GPU.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let Some(mut s) = Scene::new(wgpu::Backends::all()) else {
         return;
     };
@@ -265,6 +271,7 @@ fn instances_draw_in_one_call_at_their_places_and_colours() {
 
 #[test]
 fn hundreds_of_instances_of_several_models_cost_one_draw_per_model() {
+    let _gpu = GPU.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let Some(mut s) = Scene::new(wgpu::Backends::all()) else {
         return;
     };
@@ -333,6 +340,7 @@ fn hundreds_of_instances_of_several_models_cost_one_draw_per_model() {
 
 #[test]
 fn additive_instances_add_up_and_leave_depth_alone() {
+    let _gpu = GPU.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let Some(mut s) = Scene::new(wgpu::Backends::all()) else {
         return;
     };
@@ -408,6 +416,7 @@ fn additive_instances_add_up_and_leave_depth_alone() {
 
 #[test]
 fn instanced_and_plain_draws_of_a_lit_model_match() {
+    let _gpu = GPU.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let Some(mut s) = Scene::new(wgpu::Backends::all()) else {
         return;
     };
@@ -492,6 +501,7 @@ fn instanced_and_plain_draws_of_a_lit_model_match() {
 
 #[test]
 fn instance_alpha_blends_with_the_material_in_the_sorted_place() {
+    let _gpu = GPU.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let Some(mut s) = Scene::new(wgpu::Backends::all()) else {
         return;
     };
@@ -544,6 +554,7 @@ fn instance_alpha_blends_with_the_material_in_the_sorted_place() {
 
 #[test]
 fn tilted_batches_follow_the_stage_tilt() {
+    let _gpu = GPU.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let Some(mut s) = Scene::new(wgpu::Backends::all()) else {
         return;
     };
@@ -589,6 +600,7 @@ fn two_row_texture(r: &mut Renderer) -> TextureId {
 
 #[test]
 fn quads_batch_by_texture_and_blend_and_are_depth_tested() {
+    let _gpu = GPU.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let Some(mut s) = Scene::new(wgpu::Backends::all()) else {
         return;
     };
@@ -706,6 +718,7 @@ fn quads_batch_by_texture_and_blend_and_are_depth_tested() {
 
 #[test]
 fn quads_and_instances_keep_their_place_around_the_sorted_objects() {
+    let _gpu = GPU.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let Some(mut s) = Scene::new(wgpu::Backends::all()) else {
         return;
     };
@@ -791,6 +804,7 @@ fn mask(r: &mut Renderer, value: u8) -> (TextureId, SamplerKey) {
 
 #[test]
 fn shadow_darkens_receivers_under_the_ball_and_costs_no_draw() {
+    let _gpu = GPU.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let Some(mut s) = Scene::new(wgpu::Backends::all()) else {
         return;
     };
@@ -879,6 +893,7 @@ fn shadow_darkens_receivers_under_the_ball_and_costs_no_draw() {
 
 #[test]
 fn shadow_skips_faces_turned_from_the_light_and_stays_in_stage_space() {
+    let _gpu = GPU.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let Some(mut s) = Scene::new(wgpu::Backends::all()) else {
         return;
     };
@@ -929,6 +944,7 @@ fn shadow_skips_faces_turned_from_the_light_and_stays_in_stage_space() {
 
 #[test]
 fn a_frame_without_effects_draws_what_it_did_before() {
+    let _gpu = GPU.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let Some(mut s) = Scene::new(wgpu::Backends::all()) else {
         return;
     };
@@ -1022,6 +1038,7 @@ fn a_frame_without_effects_draws_what_it_did_before() {
 
 #[test]
 fn the_gl_backend_draws_the_same() {
+    let _gpu = GPU.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     // The browser's WebGL2 path goes through wgpu's GL backend: instancing without a base instance,
     // `textureGrad` for the shadow mask.
     let Some(mut s) = Scene::new(wgpu::Backends::GL) else {
