@@ -111,6 +111,18 @@ It is removed with the app or by "Clear storage", and no other app can read it.
   `android:fullBackupContent`), or the 144 MB of game data are uploaded to the user's cloud backup. The site
   itself never sends anything anywhere.
 
+What the user's actions in Android's settings do (**[platform]**, not yet seen on a device):
+
+| Action | Game data and saves | Next start |
+|---|---|---|
+| Clear cache | kept: the private file system and `localStorage` are data, not cache | as before |
+| Clear storage / clear data | both deleted | the first-run screen asks for the image again; progress starts over |
+| Uninstall | both deleted with the app's data directory; nothing is left on the device | - |
+| Device very low on space | a browser engine may clear a site's storage; the page asks for persistence (`navigator.storage.persist()`), and whether a web view grants it is not known | if cleared, as after "Clear storage" |
+
+The user's own disc image is never touched by any of these: the game only reads it, wherever the user keeps
+it.
+
 ## Back button
 
 The page keeps one history entry while the game is in a sub-menu or a stage, and none at the title
