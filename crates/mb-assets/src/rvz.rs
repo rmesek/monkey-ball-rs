@@ -1,8 +1,9 @@
 //! Pure-Rust reader for GameCube RVZ disc images: presents the original ISO bytes of an `.rvz` file as a
 //! random-access stream, decoding groups on demand.
 //!
-//! This is the only RVZ reader of the project, on every target (pure Rust, Zstandard through `ruzstd`); the
-//! `nod` crate is used by the tests only (`tests/disc.rs`), to prove this reader yields the same disc.
+//! This is the only RVZ reader of the project, on every target (pure Rust, Zstandard through `ruzstd`).
+//! `tests/disc.rs` holds what it yields for the USA disc by recorded hashes, taken when the `nod` crate
+//! read the same bytes from the whole image.
 //!
 //! Supported: RVZ of a GameCube disc, compression "none" or Zstandard, including RVZ-packed junk data.
 //! Not supported: Wii discs (partition data and hash exceptions), the older WIA variant, bzip2/LZMA/LZMA2/purge.

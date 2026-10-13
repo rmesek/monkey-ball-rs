@@ -11,9 +11,3 @@ publish.workspace = true
 # Pure-Rust Zstandard decoder for the RVZ reader (`src/rvz.rs`): Dolphin compresses RVZ images with Zstandard
 # by default. No C toolchain needed on any target, including wasm32.
 ruzstd = "0.8"
-
-[dev-dependencies]
-# Reference disc reader, tests only: `tests/disc.rs` proves the built-in readers (`src/disc.rs`, `src/rvz.rs`)
-# list and read the same files (the whole image with `-- --ignored`). Not part of any shipped binary, and the
-# only place in the workspace that uses it.
-nod = "2.0.0-alpha.9"

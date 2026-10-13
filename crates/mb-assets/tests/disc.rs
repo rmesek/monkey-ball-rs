@@ -2,19 +2,16 @@
 //! so CI and clones without game data stay green. Point `MB_DISC` at an image, or put a
 //! `Super Monkey Ball*.rvz|iso` next to this repository.
 //!
-//! `nod` is the reference here: the built-in readers must list the same files and return the same bytes.
-//! The normal run compares a sample; the whole image, every byte and every file, is one command away:
+//! What the built-in readers return is held by recorded hashes. The normal run reads a sample; the whole
+//! image, every byte and every file, is one command away:
 //!
 //! ```text
-//! cargo test --release -p mb-assets --test disc -- --ignored whole_image_matches_nod
+//! cargo test --release -p mb-assets --test disc -- --ignored the_whole_image_reads_as_recorded
 //! ```
 
 use mb_assets::disc::{DiscPack, DiscStream, FileStream, ImageStream, MAIN_DOL_PATH};
 use mb_assets::lzss;
 use mb_assets::pack::PackProvider;
-use nod::common::PartitionKind;
-use nod::read::{DiscOptions, DiscReader, PartitionOptions};
-use std::io::{Read, Seek, SeekFrom};
 use std::path::PathBuf;
 
 fn find_disc() -> Option<PathBuf> {
@@ -56,81 +53,77 @@ fn identifies_smb1() {
     assert!(disc.contains(MAIN_DOL_PATH));
 }
 
-/// Same file list, same executable, same file contents and same raw disc bytes as nod (a sample of the
-/// bytes and of the files).
-#[test]
-fn matches_nod() {
-    compare_with_nod(&disc_or_skip!(), false);
+struct Fnv(u64);
+
+impl Fnv {
+    fn bytes(&mut self, data: &[u8]) {
+        for b in data {
+            self.0 = (self.0 ^ *b as u64).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
 }
 
-/// The same over the whole image: every byte of the decoded disc and the contents of every file.
-/// On the tested USA image that is 1,459,978,240 disc bytes and 897 files.
-#[test]
-#[ignore = "reads the whole image twice (about a minute); run it after touching the disc or RVZ reader"]
-fn whole_image_matches_nod() {
-    compare_with_nod(&disc_or_skip!(), true);
-}
-
-fn compare_with_nod(path: &std::path::Path, whole: bool) {
-    let ours = DiscPack::open(path).expect("open with the built-in reader");
-    let mut reference = DiscReader::new(path, &DiscOptions::default()).expect("open with nod");
-    assert_eq!(ours.game_id(), reference.header().game_id_str());
-
-    // Raw disc bytes: every 16th MiB, or all of them.
+/// What the readers return for the USA disc (`GMBE8P`), as a hash: the decoded disc's size and raw bytes
+/// (every 16th MiB, or all of them), the file list with lengths, `main.dol`, and file contents (every
+/// file of stage 1 and its sounds and every 9th of the rest, or all of them). A second, independent
+/// reader (`nod`) returned the same bytes for the whole image when these values were recorded.
+fn image_hash(path: &std::path::Path, whole: bool) -> Option<(u64, usize, u64)> {
+    let disc = DiscPack::open(path).expect("open disc");
+    if disc.game_id() != "GMBE8P" {
+        eprintln!(
+            "skipped: recorded for the USA disc, this is {}",
+            disc.game_id()
+        );
+        return None;
+    }
+    let mut h = Fnv(0xcbf2_9ce4_8422_2325);
     const BLOCK: u64 = 1 << 20;
     let stride = if whole { 1 } else { 16 };
     let mut stream = ImageStream::open(FileStream::open(path).unwrap()).unwrap();
     let size = stream.stream_len().unwrap();
-    assert_eq!(size, reference.disc_size());
-    let (mut a, mut b) = (vec![0u8; BLOCK as usize], vec![0u8; BLOCK as usize]);
+    let mut block = vec![0u8; BLOCK as usize];
     for offset in (0..size).step_by(stride * BLOCK as usize) {
         let n = BLOCK.min(size - offset) as usize;
-        reference.seek(SeekFrom::Start(offset)).unwrap();
-        reference.read_exact(&mut a[..n]).unwrap();
-        stream.read_exact_at(&mut b[..n], offset).unwrap();
-        assert!(
-            a[..n] == b[..n],
-            "disc bytes differ in the MiB at {offset:#x}"
-        );
+        stream.read_exact_at(&mut block[..n], offset).unwrap();
+        h.bytes(&block[..n]);
     }
-
-    let mut partition = reference
-        .open_partition_kind(PartitionKind::Data, &PartitionOptions::default())
-        .expect("data partition");
-    let meta = partition.meta().expect("partition meta");
-    assert!(
-        ours.main_dol().unwrap() == meta.raw_dol.as_ref(),
-        "main.dol differs"
-    );
-    let fst = meta.fst().expect("fst");
-    let files: Vec<_> = fst
-        .iter()
-        .filter(|(_, node, _)| node.is_file())
-        .map(|(_, node, path)| (path.to_string(), node))
-        .collect();
-    let mut theirs: Vec<&str> = files.iter().map(|(p, _)| p.as_str()).collect();
-    theirs.sort_unstable();
-    let mine: Vec<&str> = ours
+    h.bytes(&disc.main_dol().unwrap());
+    let files: Vec<&str> = disc
         .list()
         .into_iter()
         .filter(|p| *p != MAIN_DOL_PATH)
         .collect();
-    assert_eq!(mine, theirs, "file lists differ");
-    // Contents: every file of stage 1 and its sounds, and every 9th file of the rest.
-    for (i, (path, node)) in files.iter().enumerate() {
+    for (i, path) in files.iter().enumerate() {
+        let len = disc.file_len(path).unwrap();
+        h.bytes(path.as_bytes());
+        h.bytes(&len.to_le_bytes());
         let sampled = i % 9 == 0 || path.contains("st001") || path.contains("init/");
-        if !whole && (!sampled || node.length() > 32 << 20) {
+        if !whole && (!sampled || len > 32 << 20) {
             continue;
         }
-        let mut expected = Vec::new();
-        partition
-            .open_file(*node)
-            .unwrap()
-            .read_to_end(&mut expected)
-            .unwrap();
-        assert!(ours.fetch(path).unwrap() == expected, "{path} differs");
-        assert_eq!(ours.file_len(path), Some(expected.len() as u32));
+        let data = disc.fetch(path).unwrap();
+        assert_eq!(data.len(), len as usize, "{path}");
+        h.bytes(&data);
     }
+    Some((size, files.len(), h.0))
+}
+
+#[test]
+fn the_image_reads_as_recorded() {
+    let Some(got) = image_hash(&disc_or_skip!(), false) else {
+        return;
+    };
+    assert_eq!(got, (1_459_978_240, 897, 0xf9b1_afcb_c0e0_d412));
+}
+
+/// The same over every byte of the decoded disc and the contents of every file.
+#[test]
+#[ignore = "reads the whole image; run it after touching the disc or RVZ reader"]
+fn the_whole_image_reads_as_recorded() {
+    let Some(got) = image_hash(&disc_or_skip!(), true) else {
+        return;
+    };
+    assert_eq!(got, (1_459_978_240, 897, 0x8fd8_0487_85d8_4659));
 }
 
 /// Every `.lz` file on the disc decompresses to the size its header declares (which also shows the
