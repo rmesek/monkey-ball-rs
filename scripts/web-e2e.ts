@@ -195,7 +195,7 @@ async function playToFloorTwo(p: Page, label: string, hold = false) {
 }
 
 // ---- measuring: frame times, GPU work per frame, wasm memory (docs/WEB.md, "Measurements") -------------------
-// What version 0.1.0 measured on this set-up (docs/WEB.md), and how far docs/PARITY_PLAN.md lets 0.2.0 go.
+// The budgets: what version 0.1.0 measured on this set-up (docs/WEB.md) plus the allowances below.
 const V010 = {
   beginnerMb: 23, expertMb: 28, // wasm memory after floors 1 and 2 of Beginner, and with Expert 50 loaded later
   beginner: { updateMs: 0.16, renderMs: 5.1, draws: 275 }, // Beginner 1 standing at the start, WebGL2, 6x CPU throttle
@@ -481,7 +481,9 @@ try {
     // changed and the setting 0.1.0 did not know added, switched on.
     await chooseOption(p, gl, UNLOCK_ROW);
     const rewritten = await readProfile(p);
-    const expected = signSave(SAVE_0_1_0.replace("setting unlock_all 0\n", "setting unlock_all 1\nsetting reflections 1\n"));
+    // Without the three settings that are gone since (the announcer's volume, two that were never read).
+    const kept = SAVE_0_1_0.replace("setting announcer_volume 30\n", "").replace("setting joystick_size 100\nsetting left_handed 0\n", "");
+    const expected = signSave(kept.replace("setting unlock_all 0\n", "setting unlock_all 1\nsetting reflections 1\n"));
     check("a 0.1.0 save: written back whole, with Reflections on", rewritten?.text === expected && rewritten.generation === 2,
       rewritten ? `generation ${rewritten.generation}: ${rewritten.text.replaceAll("\n", " | ").slice(0, 400)}` : "no profile");
 
@@ -547,7 +549,7 @@ try {
         await sleep(700);
         await p.tap(206, 542); // Options
         const opened = await p.status();
-        await p.tap(206, 787); // Reflections
+        await p.tap(206, 699); // Reflections (the sixth row; a row and its gap are 88 px here)
         await sleep(500);
         check("touch: a tap on the Reflections row turns it off and saves at once", opened === "menu: options" && (await savedSetting(p, "reflections")) === "0", `${opened}; saved: reflections ${await savedSetting(p, "reflections")}`);
         await p.tap(42, 36); // Back
@@ -567,7 +569,7 @@ try {
         await p.send("Emulation.setDeviceMetricsOverride", { width: 412, height: 915, deviceScaleFactor: 2.625, mobile: true });
         await p.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
         await sleep(700);
-        await p.tap(206, 542); await p.tap(206, 787);
+        await p.tap(206, 542); await p.tap(206, 699);
         await sleep(500);
         check("touch: a second tap turns Reflections on again", (await savedSetting(p, "reflections")) === "1", `saved: reflections ${await savedSetting(p, "reflections")}`);
         await p.tap(42, 36);
@@ -746,9 +748,9 @@ try {
   const idle0 = await taskTime(); await sleep(4000); const idle = ((await taskTime()) - idle0) / 4;
   check("a still menu costs next to nothing", idle < 0.05, `${(idle * 100).toFixed(1)} % of one core on the page's main thread`);
   await p.ev("document.getElementById('mb-canvas').focus()");
-  // Options -> Controls: TILT (the sixth row), back, Practice -> Beginner -> stage 1.
+  // Options -> Controls: TILT (the fifth row), back, Practice -> Beginner -> stage 1.
   await p.key("ArrowDown"); await p.key("ArrowDown"); await p.key("Enter");
-  for (let i = 0; i < 5; i++) await p.key("ArrowDown");
+  for (let i = 0; i < 4; i++) await p.key("ArrowDown");
   await p.key("Enter"); await p.key("Escape");
   await p.send("DeviceOrientation.setDeviceOrientationOverride", { alpha: 0, beta: 40, gamma: 0 }); // held at 40 degrees
   await p.key("ArrowUp"); await p.key("Enter"); await p.key("Enter"); await p.key("Enter");
@@ -763,7 +765,7 @@ try {
   // Back to the stick for the rest of the run.
   await p.key("Escape"); await p.key("Escape"); await p.key("Escape");
   await p.key("ArrowDown"); await p.key("Enter");
-  for (let i = 0; i < 5; i++) await p.key("ArrowDown");
+  for (let i = 0; i < 4; i++) await p.key("ArrowDown");
   await p.key("Enter"); await p.key("Escape");
   check("keys: back at the title after the tilt run", (await p.status()) === "menu: title", await p.status());
 

@@ -1023,7 +1023,7 @@ dependencies = [
 
 [[package]]
 name = "mb-app"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "cpal",
  "glam",
@@ -1044,21 +1044,21 @@ dependencies = [
 
 [[package]]
 name = "mb-assets"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "ruzstd",
 ]
 
 [[package]]
 name = "mb-audio"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "mb-assets",
 ]
 
 [[package]]
 name = "mb-desktop"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "gilrs",
  "mb-app",
@@ -1073,7 +1073,7 @@ dependencies = [
 
 [[package]]
 name = "mb-engine"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "mb-assets",
  "mb-stage",
@@ -1081,18 +1081,18 @@ dependencies = [
 
 [[package]]
 name = "mb-game"
-version = "0.2.0"
+version = "0.3.0"
 
 [[package]]
 name = "mb-gma"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "mb-assets",
 ]
 
 [[package]]
 name = "mb-render"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "bytemuck",
  "glam",
@@ -1105,21 +1105,21 @@ dependencies = [
 
 [[package]]
 name = "mb-stage"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "mb-assets",
 ]
 
 [[package]]
 name = "mb-tpl"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "mb-assets",
 ]
 
 [[package]]
 name = "mb-web"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "console_error_panic_hook",
  "js-sys",
@@ -3261,7 +3261,7 @@ checksum = "e450f9b2ed1dff33c94c12589a87338689467b9c4f5d8a5710bd09a847d2c8a7"
 
 [[package]]
 name = "xtask"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "wasm-bindgen-cli-support",
 ]

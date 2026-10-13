@@ -181,7 +181,7 @@ fn the_import_copies_exactly_what_the_game_reads() {
         importer.total_bytes() as f64 / 1e6,
         bytes.len()
     );
-    // The storage budget (`docs/PARITY_PLAN.md`): what version 0.1.0 copied from the USA disc. A loader
+    // The storage budget: what is copied from the USA disc. A loader
     // that reads a new file changes these numbers; that is then a deliberate edit here, in `docs/WEB.md`
     // and of `mb_assets::gamepack::VERSION`.
     if importer.game_id() == "GMBE8P" {

@@ -7,28 +7,24 @@ own bundle files, and its Content-Security-Policy forbids anything else.
 
 The output is a **static site**: plain files, relative paths only, no server-side component, no dependency on
 a service worker, WebGL2 as a first-class backend. It can be hosted by any static file server, installed as a
-PWA, placed inside another application's web view (see [ANDROID_WEBVIEW.md](ANDROID_WEBVIEW.md)), or opened
-as a single `.html` file.
+PWA, or placed inside another application's web view (see [ANDROID_WEBVIEW.md](ANDROID_WEBVIEW.md)).
 
 ## Build
 
-Needs the wasm-bindgen CLI at exactly the version of the `wasm-bindgen` crate in `Cargo.lock` (pinned in
-`crates/mb-web/Cargo.toml`, currently 0.2.129). The `wasm32-unknown-unknown` target comes with the toolchain
-(`rust-toolchain.toml` names it, so rustup installs it by itself).
+Needs Rust and nothing else: the `wasm32-unknown-unknown` target comes with the toolchain
+(`rust-toolchain.toml` names it), and the build tool links wasm-bindgen's post-processing as a library at
+the version of the `wasm-bindgen` crate (both pinned; a test compares them).
 
-```
-cargo install wasm-bindgen-cli --version 0.2.129 --locked
-```
-
-One command builds the site into `web/dist/` (git-ignored):
+`cargo web` builds the site and serves it on `http://localhost:8080` (`--port N` for another port).
+`cargo xtask build-web` only builds it, into `web/dist/` (git-ignored):
 
 ```
 cargo xtask build-web [--dev]
 ```
 
-It checks the CLI version, runs `cargo build -p mb-web --target wasm32-unknown-unknown --profile web`,
-`wasm-bindgen --target no-modules`, holds the module to its size budget (below), and assembles the directory. The same command works in any shell on any
-platform: it is a small Rust program (`xtask/`, standard library only; `cargo xtask` is an alias in
+It runs `cargo build -p mb-web --target wasm32-unknown-unknown --profile web` and wasm-bindgen's
+`no-modules` output, holds the module to its size budget (below), and assembles the directory. The same command works in any shell on any
+platform: it is a small Rust program (`xtask/`; `cargo xtask` is an alias in
 `.cargo/config.toml`), so there are no shell scripts and nothing else to install:
 
 | File | What |
@@ -47,8 +43,7 @@ feature set for `wasm32-unknown-unknown` (see "Browser requirements").
 
 **Size budget.** Every visitor downloads and compiles the module, so it may not grow by accident: the build
 prints its size and fails, before `web/dist` is touched, when the optimised module is larger than
-`WASM_BUDGET_BYTES` in `xtask/src/main.rs` (the 3 877 298 bytes of 0.1.0 plus 250 000, the allowance of
-`docs/PARITY_PLAN.md`). The comment on the constant says how to raise it on purpose. `--dev` builds are not
+`WASM_BUDGET_BYTES` in `xtask/src/main.rs` (4 127 298 bytes). The comment on the constant says how to raise it on purpose. `--dev` builds are not
 held to it.
 
 | | 0.1.0 | 0.2.0 |
@@ -136,7 +131,7 @@ reader, the `nod` crate, returned the same bytes for the whole image; `nod` is n
 
 | | Browser | Desktop |
 |---|---|---|
-| Game data | one **pack** file in the page's Origin Private File System: `monkey-ball/game.pack` plus the marker `monkey-ball/game.json` | nothing is copied: the image is read in place; only its path is remembered (`last_disc`) |
+| Game data | one **pack** file in the page's Origin Private File System: `monkey-ball/game.pack` plus the marker `monkey-ball/game.json` | the same pack as one file, `game.pack`, in the per-user data directory, written under another name and renamed when complete |
 | Saves | files in `monkey-ball/saves/` next to the pack; where the private file system is unavailable, `localStorage`; where neither works, memory for the session, and every save says so in the menu. Exactly one of the three, never two. | the per-user data directory (`%APPDATA%\monkey-ball-rs`, `~/Library/Application Support/monkey-ball-rs`, `$XDG_DATA_HOME/monkey-ball-rs`; `MB_SAVE_DIR` overrides) |
 
 The pack holds only what the game reads, 144.1 MB of the 475 MB image (382 of 897 files, USA disc):
@@ -176,8 +171,8 @@ without a single unprepared read.
 * **Reclaiming.** The page says before the import that it keeps game data and saves on the device. In the
   game, Options shows what is kept and where, with "Remove game data" (deletes the pack, returns to the
   import screen, keeps the saves) and "Erase save data", each asking for a second tap. The landing page and the
-  error dialog also offer the removal. On desktop, Options shows the save folder and the remembered image
-  path, with "Forget game image" and "Erase save data".
+  error dialog also offer the removal. On desktop, Options shows the data folder with the same two rows; "Remove game
+  data" closes the program, which asks for the image at its next start.
 
 ### Sudden exit
 

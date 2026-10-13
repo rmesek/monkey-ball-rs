@@ -1,4 +1,4 @@
-//! The memory budget of `docs/PARITY_PLAN.md`, counted natively: the peak of live heap bytes while a
+//! The memory budget, counted natively: the peak of live heap bytes while a
 //! stage is loaded and played may be at most 2 MB above what version 0.1.0 needed for the same stage,
 //! with reflections on.
 //!
@@ -147,7 +147,7 @@ const USAGE_0_1_0: &[(u32, usize, usize, usize)] = &[
     (109, 12_520_312, 7_015_209, 8_284_190),
 ];
 
-/// What the peak of a stage may grow by over all of 0.2.0 (`docs/PARITY_PLAN.md`).
+/// What the peak of a stage may be above its recorded figure.
 const GROWTH_BUDGET: usize = 2_000_000;
 
 #[test]

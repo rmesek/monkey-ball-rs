@@ -140,7 +140,7 @@ which the reference counts across stage loads.
 
 ## Not modelled
 SMB2 (wormholes, switches, seesaws) and multiplayer: out of scope. Audio and course progression: other
-crates. Result replays: dropped by decision (`docs/PARITY_PLAN.md`, "Dropped: result replays"). The reference
+crates. Result replays: dropped by decision. The reference
 starts one 30 ticks into a fall-out and at goal end; `Sim` just continues/finishes, as the reference does
 with replays switched off, so there is no skipping of a replay and no leaving of the goal sequence after
 one, and in a `Sim` the confetti is never older than the goal sequence, about 150 ticks of its 210 to 269.
@@ -170,86 +170,11 @@ same simulation with particles on and off), and disc-backed tests that skip clea
 wandering first attempt (random directions held for random times, the action held now and then, so the
 fast-forwarded fly-in and the shortened fall-out are in it) and a retry with the stick held forward, and four
 autopilot goal runs, folding `Sim::hash`, `Sim::hash_visual` and the event count of every tick into one hash
-per stage, compared with a table. The table was recorded at 0.2.0, where the comparison with the reference
-described below last passed, so it carries that result forward. The scripted inputs are
+per stage, compared with a table. The scripted inputs are
 integer arithmetic; the values are the same in debug and release builds. A failure names the stages that
 changed and prints the new table.
 
-## How parity with the reference was established
-A record: the harness described here (`tests/parity.rs` and its Deno drivers in `tests/ref/`) was removed
-after 0.2.0, when the project stopped depending on the reference. It is in the history up to the tag
-`v0.2.0`. What it proved is what `tests/golden.rs` now holds. The rest of this section is written as it
-was while the harness ran.
-
-`tests/parity.rs` runs the real reference `Game` headless under Deno
-(`tests/ref/`, stubs for DOM/gl-matrix/fflate) with scripted stick feeds and compares per tick: ball
-position/velocity (raw f64 bits), state, flags, rotations, camera yaw, timers, tilt and the sim hash, and for
-the particles the `includeVisual` hash, both counts, a hash over every field of every effect and confetti
-piece (computed by the harness from the reference's objects) and the visual random state, and for the camera
-its eye and look-at point (raw f64 bits), the other two angles and the fly-in timer.
-Knobs: `MB_PARITY_STAGES`, `MB_PARITY_SCRIPTS`, `MB_PARITY_FRAMES`, `MB_PARITY_AUTOPILOT`,
-`MB_PARITY_FX_STAGES`, `MB_PARITY_FX_SCRIPTS`, `MB_PARITY_FX_FAST`, `MB_PARITY_FX_GOALS`, `MB_PARITY_FX_FRAMES`,
-`MB_PARITY_FF_STAGES`, `MB_PARITY_FF_RETRY`, and `MB_PARITY_ACT_FALL`, `MB_PARITY_ACT_GOALS`,
-`MB_PARITY_ACT_TIMEOVER`. Every run also compares the fall-out skip timer and the time-over timer.
-
-`intro_fast_forward_matches_reference` gives the reference a scripted primary action: an inputs line with a
-third column makes the harness answer `input.isPrimaryActionDown()` from it, tick by tick (the game code is
-unchanged; only the device is scripted). The action is held during intros only. Next to the comparison the test checks that the
-reference's intro took exactly as many ticks as the rule says for the script, that a retry's took 120, and
-that some run took the timer from 121 to 119.
-
-`effects_match_reference` runs the reference with result replays off (`run.ts ... noreplay`), so that the
-particles can be followed where the game would cut to a replay: a fall-out runs its 270 ticks and reloads the
-stage, the harness awaits the reload and the comparison goes on into the retry against a fresh `Sim`; after a
-goal sequence the stage runtime alone is advanced 400 more ticks on both sides until the last confetti piece
-is gone. The test fails unless its runs reached every part of the particle code (each kind, rolling sparks,
-ground under effects and confetti, moving ground, a star's bounce, expiry, a retry).
-
-Result: bit-identical on every USA-disc stage (1..200) for the scripted runs tried, incl. goal runs
-(banana pickup, tape/bag, goal sequence), fall-out and time-over. The headless reference has no course, so
-bonus-stage rules (stages 91-95) are ported but only checked with `bonus_stage = false`.
-
-Particles: bit-identical in every field on the default runs of both tests (stages 1, 2, 10, 50 with four
-stick scripts; 36, 77, 95, 126, 133, 151, 197 with the stick held forward; goal runs on 1, 3, 11, 17 and 95;
-16 retries after a fall-out; 55,000 ticks), and on one run of `effects_match_reference` over all 200 stages
-(`MB_PARITY_FX_STAGES` and `MB_PARITY_FX_FAST` = 1..200, scripts 0 to 3: 1004 runs, 1.9 million ticks, 1997
-retries). Not compared: confetti from a goal on a moving group, and anything during a result replay (not
-ported yet).
-
-Intro fast-forward: bit-identical in every column on 7 stages (1, 2, 10, 36, 50, 77, 126) with 8 action
-scripts each, 900 ticks a run with a stick script after the intro: held from the first tick to the last of
-the intro; from the first tick to 60 frames before its end (across READY); from the second tick (121 -> 119);
-from tick 100 through the ball drop; released with 121 frames left; released and pressed again six times;
-every other tick; random taps. And on 6 stages (2, 10, 36, 50, 77, 126) with result replays off, the stick
-held forward and the action held for the first 110 ticks of every attempt, 2400 ticks a run: the first intro
-takes 250 ticks, the 18 intros after a fall-out take 120. 62 runs, 49,323 ticks. `tests/synthetic.rs` has the
-same rules without a disc (twice the speed above 120, nothing at 120 or below, nothing on a retry or with the
-flag off, the drop at 24 and the end at 0 for even, odd and tapped timers, the camera overshoot).
-
-The action after the intro (`action_in_sequences_matches_reference`): bit-identical in every column, 165
-runs, 324,897 ticks.
-
-- Fall-out, result replays off, stick held forward, stages 2, 10, 36, 50, 77, 126, 1,800 to 2,800 ticks a run
-  (a first attempt and at least two retries). Eight action scripts, each placed once on the fall of the first
-  attempt and once on the fall of the retries: held until one tick before it counts (270 ticks), pressed on
-  the first tick that counts (60), a tap at 59 and one at 150 (150), held from 30 ticks before the fall (60),
-  pressed at 269 (269), pressed at 30 and at 61 (61), held from the first tick of the attempt through the
-  fast-forwarded intro and play (60), random taps. Every one of the 324 fall-outs the reference ran has the
-  length the rule gives as arithmetic for its buttons (100 of 60 ticks, 114 of 270, 110 between), and 110
-  retries were cut short.
-- The same stages with result replays on and the action held (from the first tick; from 10 ticks before the
-  fall): the reference cuts to its replay 30 ticks into the fall-out, where the comparison ends.
-- Goal, autopilot runs on stages 1, 3, 11, 17, replays off (with the confetti followed for 400 ticks) and on:
-  held from the first tick of the attempt, from 20 ticks before the goal, until the launch, from the launch,
-  six presses across the sequence, random taps. All 48 sequences end 151 ticks after the ball entered the
-  goal, and the reference's `goalSkipTimerFrames` never went below 60.
-- Time over, stages 1, 2, 3 left alone for 4,400 ticks, replays off: held from the first tick, held through
-  the sequence, five presses in it. All 9 take 120 ticks and the retry's intro follows.
-
-Not compared with the reference: the bonus-stage branch of the fall-out rule and the bonus clear (the
-headless reference has no course); `tests/synthetic.rs` covers them, and each rule above, without a disc.
-
-One thing the retry comparison showed about the simulation itself: the reference reuses its ball object
-across a reload and `initBallForStage` leaves `ball.speed` as the last step set it, so its hash carries a
-stale speed until the ball next steps (the end of the intro). A fresh `Sim` has 0 there. Nothing but the
-hash reads the value; the test carries it over so that the rest of the retry can be compared.
+The table was first recorded from a port that a harness had proved equal to the reference, tick for tick
+and bit for bit, on every stage of the disc (the harness is in the history up to the tag `v0.2.0`). Not
+covered by that proof and held by `tests/synthetic.rs` alone: the bonus-stage branch of the fall-out rule
+and the bonus clear.

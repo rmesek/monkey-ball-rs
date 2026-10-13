@@ -13,7 +13,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 # The lowest release clippy's MSRV lint accepts for the standard library calls in use. Only the stable
 # toolchain of rust-toolchain.toml has built the code.

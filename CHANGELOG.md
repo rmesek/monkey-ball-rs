@@ -1,34 +1,46 @@
 # Changelog
 
-## Unreleased
+## 0.3.0
 
-Nothing new for a player; no version number yet. A cleaning pass that makes the project a base for more
-platforms ([docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)).
+Release candidate, not tagged: the owner tries it by hand first.
 
-- **Scope:** the instant replays after a fall-out and a goal are dropped, by the owner's decision. The plan
-  that had them as a version 0.3.0 is finished and kept as a record ([docs/PARITY_PLAN.md](docs/PARITY_PLAN.md)).
-- **Standalone:** the simulation of every stage on the disc is recorded as golden hashes
-  (`crates/mb-engine/tests/golden.rs`), taken where the comparison with WebMonkeyBall last passed. The
-  reference is no longer needed to develop.
-- **One crate per platform:** `mb-app` is the game as a library, without a window or an event loop. The
-  desktop program moved to the new crate `mb-desktop` (build it with `cargo run -p mb-desktop --release`;
-  the executable is still `mb-app`), the browser driver into `mb-web`.
-- **Android groundwork, no app:** the game library is compile-checked for `aarch64-linux-android` by
-  `cargo xtask check`; a disc image can be opened from an already-open file
-  (`content::open_disc_stream`), which is what a platform with file descriptors instead of paths needs; a GL
-  adapter gets the WebGL2 limits on every platform (`gpu::required_limits`).
-- **Rust edition 2024**, resolver 3, `rust-version` 1.88.
-- **The single-file page is gone.** `cargo xtask build-web` no longer has `--single` and writes no
-  `monkey-ball.html`; the site has to be served (to play without a server, use the desktop program). With
-  it went the build tool's own gzip compressor and SHA-256: `xtask` is 590 lines, from 1 540. A release
-  now carries the site as an archive instead.
-- **Removed from the renderer:** fog, the wavy mirror's distortion, additive sprites, the world-specular
-  switch for background light groups. None was reachable in play; no pixel changes.
-- **Removed from the tests:** the harness that compared the simulation and the parsers with WebMonkeyBall
-  under Deno (its result is in the golden tables), and the `nod` dev-dependency (the disc reader is held
-  by recorded hashes; `Cargo.lock` is 384 lines shorter). Seven copies of a test helper became one.
-- **Size and tests:** the wasm module is 4 011 275 bytes (0.2.0: 4 016 134); 547 tests (0.2.0: 559); the
-  browser test makes 93 checks (0.2.0: 97, four were the single file's).
+The same game, made smaller and easier to understand, port and change. Nothing new to play.
+
+For a player:
+
+- **One command per target:** `cargo desktop` and `cargo web` (builds the site and serves it on
+  `http://localhost:8080`). Nothing to install but Rust: the web build no longer needs the `wasm-bindgen`
+  command.
+- **The desktop imports the game once**, like the browser: the files the game uses are copied into
+  `game.pack` in the data folder, and the disc image is not needed after that. Options has "Remove game
+  data" in place of "Forget game image".
+- **Two volumes**, Music and Sound (the announcer follows Sound), both 80 by default. 80 is the level the
+  mix had before under the numbers 50 and 30; a save from an older version keeps its numbers and plays
+  quieter until the dial is turned up.
+- **A short landing page** in the browser: one line and the button.
+- **The single-file page is gone.** The site has to be served; to play without a server there is the
+  desktop program.
+- **The instant replays** after a fall-out and a goal, once planned for this version, are dropped.
+
+Under the hood:
+
+- **One crate per platform:** `mb-app` is the game as a library without a window; `mb-desktop` and
+  `mb-web` are the drivers. The library is compile-checked for Android in the gates. A disc image can be
+  opened from an already-open file, and imported into a pack file (`import::import_to_file`), which is
+  what an Android app will use.
+- **Standalone:** the simulation of every stage, every parsed file and the disc reader are held by
+  recorded hashes. The harness that compared the port with WebMonkeyBall, the `nod` dependency and the
+  0.1.0 draw-call tables are gone.
+- **Removed from the renderer:** fog, the wavy mirror's distortion, additive sprites, a specular switch
+  no data used. No pixel changes.
+- **Removed from the build tool:** its gzip compressor, SHA-256 and the single-file bundler.
+- **Removed settings:** announcer volume, and two that were stored and never read. Old saves load.
+- **Docs:** a short README, `docs/ARCHITECTURE.md` (which part is needed for what, what a platform
+  supplies, a review of what is hard to change), `docs/PLAN.md` (state and open items). The plan of the
+  port and the notes on the reference are deleted; the notes on single subjects stay.
+- **Rust edition 2024.**
+- **Size and tests:** the wasm module is 4 009 217 bytes (0.2.0: 4 016 134); 549 tests; the
+  browser test makes 93 checks.
 
 ## 0.2.0
 

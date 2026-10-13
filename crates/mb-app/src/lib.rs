@@ -4,7 +4,7 @@
 //! [`host::Command`]s, hands over a [`content::Content`], a `mb_game::Storage` and an
 //! [`audio::AudioBackend`], and calls [`game::GameStack::update`] and the renderer once per frame.
 //!
-//! * [`content`]: where game files come from (a disc image read in place, or imported game data that is
+//! * [`content`]: where game files come from (a game pack in a file, or imported game data that is
 //!   prepared before it is read) and the lists of files the game needs.
 //! * [`loading`]: the stage loading state (fetch, parse, build, with a progress screen).
 //! * [`host`] / [`tilt`]: the seam to platform features (fullscreen, removing imported data, device tilt).

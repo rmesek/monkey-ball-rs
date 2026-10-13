@@ -1,7 +1,8 @@
 //! Where game files come from, and which files the game needs.
 //!
 //! Two kinds of source sit behind [`Content`]:
-//! * **direct** (desktop, tests): a disc image read in place; every read is synchronous.
+//! * **direct** (desktop, tests): a game pack in a file, or a disc image read in place; every read is
+//!   synchronous.
 //! * **deferred** (browser): files live in on-device storage that can only be read asynchronously. A state
 //!   that needs files first *prepares* them ([`Content::prepare`], polled once per frame while a loading
 //!   screen is shown); the synchronous loaders then read from memory, and the files are released again

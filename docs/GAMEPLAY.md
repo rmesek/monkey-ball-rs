@@ -384,9 +384,8 @@ once it has been let go.
 |---|---|---|
 | Unlock all stages | on / off | every course and practice floor selectable |
 | Stick curve | 1.00 .. 2.00 | input falloff power |
-| Music volume | off, 10 .. 100 (default 50) | stage music |
-| Sound volume | off, 10 .. 100 (default 30) | effects: roll, impacts, bananas, goal, clock, menus |
-| Announcer volume | off, 10 .. 100 (default 30) | READY, GO, GOAL, FALL OUT, countdown, ... |
+| Music volume | off, 10 .. 100 (default 80) | stage music |
+| Sound volume | off, 10 .. 100 (default 80) | effects and the announcer: roll, impacts, bananas, goal, clock, menus, READY, GO, GOAL, FALL OUT |
 | Reflections | on / off (default on) | the mirror floors of the 37 stages that have one; off saves their extra pass (up to 94 % of those stages' draw calls, see "Mirror floors") on a weak device |
 
 Selecting a row steps its value (volumes by ten, wrapping from 100 to off). Changes are saved with the
@@ -492,7 +491,7 @@ Different from `hud.ts` here:
   screen, saves at once, and a menu started again on the save loads stage 102 without and then with
   its mirror. `tests/pack.rs` loads seven mirror stages over the pack with the option on and off.
   `menu.rs` has the row's unit test.
-- `tests/budgets.rs`: the regression budgets of `docs/PARITY_PLAN.md`. Draw calls outside the particles of
+- `tests/budgets.rs`: the regression budgets. Draw calls outside the particles of
   every course stage at tick 60 (fly-in) and 420 (play) equal a recorded table (`DRAWS`) and are never
   more than the table recorded from 0.1.0 (its model draws were compared with a build of the `v0.1.0`
   tag, all 109 stages identical) plus what `DRAWS_ADDED` records
@@ -538,8 +537,7 @@ feature, which `cargo test` switches on by itself. A `dev` build of the program 
 
 ## Not ported from the reference
 - Result replays: the reference replays the fall-out and the goal, and with them come the goal-sequence
-  skip and the rest of the confetti's life. Dropped by decision on 2026-10-13 (`docs/PARITY_PLAN.md`,
-  "Dropped: result replays").
+  skip and the rest of the confetti's life. Dropped by decision on 2026-10-13.
 - Not in the reference either (original game only): the monkey inside the ball, its voice lines and the
   sounds listed under "Known gaps" in `docs/AUDIO.md`.
 - Multiplayer, netplay, lobby, the replay-file player, the map viewer, SMB2 content (out of scope by

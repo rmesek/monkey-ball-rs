@@ -39,12 +39,11 @@ fn root() -> PathBuf {
 
 /// Size of `pkg/mb_web_bg.wasm` as version 0.1.0 shipped it (the optimised build, name section removed).
 const WASM_BYTES_0_1_0: u64 = 3_877_298;
-/// The most the optimised module may weigh: what `docs/PARITY_PLAN.md` ("Limits every phase works
-/// inside", Size) allows over 0.1.0. Every phone downloads and compiles these bytes, so they are not to
-/// grow by accident: `cargo xtask build-web` fails above this.
+/// The most the optimised module may weigh. Every phone downloads and compiles these bytes, so they
+/// are not to grow by accident: the web build fails above this.
 ///
 /// To raise it on purpose: change the allowance here in a commit of its own that says what the bytes buy,
-/// and put the new figure into `docs/PARITY_PLAN.md` and the size table of `docs/WEB.md`. First look for
+/// and put the new figure into the budget table of `docs/PLAN.md`. First look for
 /// what brought the bytes in (a new dependency, a generic instantiated many times, formatting code).
 const WASM_BUDGET_BYTES: u64 = WASM_BYTES_0_1_0 + 250_000;
 
