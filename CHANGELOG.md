@@ -2,7 +2,7 @@
 
 ## 0.3.0
 
-Release candidate, not tagged: the owner tries it by hand first.
+Released 2026-10-14, after the project owner tried the release candidate by hand and confirmed it.
 
 The same game, made smaller and easier to understand, port and change. Nothing new to play.
 
@@ -30,6 +30,8 @@ Under the hood:
   `mb-web` are the drivers. The library is compile-checked for Android in the gates. A disc image can be
   opened from an already-open file, and imported into a pack file (`import::import_to_file`), which is
   what an Android app will use.
+- **Quit is a platform capability** (`host::Caps::quit`), no longer guessed from the CPU architecture, so
+  a later platform decides for itself.
 - **Standalone:** the simulation of every stage, every parsed file and the disc reader are held by
   recorded hashes. The harness that compared the port with WebMonkeyBall, the `nod` dependency and the
   0.1.0 draw-call tables are gone.

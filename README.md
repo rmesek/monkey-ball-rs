@@ -10,29 +10,64 @@ sounds and music.
 
 ## What you need
 
-- [Rust](https://rustup.rs) (stable). The first `cargo` command installs the rest.
-- A disc image of **Super Monkey Ball** for the GameCube: an RVZ, ISO or GCM file, for example
-  `Super Monkey Ball (USA).rvz`. The USA disc (`GMBE8P`) is the tested one; Europe and Japan are accepted.
+To build:
+
+- [Rust](https://rustup.rs) (stable). Nothing else: the first `cargo` command installs the compiler, the
+  browser target and the tools named in `rust-toolchain.toml`. No Node, no scripts.
 - On Linux, the development packages of ALSA, udev and GTK 3 for the desktop program.
 
-## Run it
+To play:
 
-Desktop:
+- A disc image of **Super Monkey Ball** for the GameCube: an RVZ, ISO or GCM file, for example
+  `Super Monkey Ball (USA).rvz`. The USA disc (`GMBE8P`) is the tested one; Europe and Japan are accepted.
+  It is needed once (see "What is kept, and where").
+- Desktop: the one executable, `target/release/monkey-ball`. Web: the folder `target/site`, a browser, and
+  any static file server.
+
+## Commands
+
+| | |
+|---|---|
+| `cargo run --release` | build and start the desktop program |
+| `cargo xtask build-web` | build the web site into `target/site/` |
+| `cargo xtask ci` | formatting, lints for every target and all tests |
+
+`cargo xtask` runs the small build tool in `xtask/` (an alias in `.cargo/config.toml`, the usual
+convention); a web build needs it because cargo alone stops at the `.wasm` file. The commands are the same
+in every shell on Windows, Linux and macOS.
+
+### Desktop
 
 ```
 cargo run --release
 ```
 
-Web browser:
+The first start asks for the disc image in a file dialog. Options go after `--`:
+
+| | |
+|---|---|
+| `cargo run --release -- "path/to/image.rvz"` | name the image instead of using the dialog |
+| `-- --pick` | ask for an image and import it again |
+| `-- --stage <number>` | start practice on that stage |
+| `-- --course <name>` | start a course (beginner, advanced, expert, ...) |
+| `-- --fullscreen` | start in fullscreen |
+| `-- --mute` | open no audio device |
+| `-- --help` | the list |
+
+### Web browser
 
 ```
 cargo xtask build-web
 python -m http.server -d target/site 8080
 ```
 
-and open `http://localhost:8080`. The first command builds the site into `target/site/` as plain files and
-serves nothing; any static file server can host that folder, from any path. The commands work the same in every
-shell on Windows, Linux and macOS.
+and open `http://localhost:8080`. The build makes plain files and serves nothing; Python is only one way to
+host them, and any static file server works, from any path. The site loads nothing from the internet.
+
+A browser keeps the game data only on a page it trusts: `https`, or `http://localhost`. Opened from another
+device as `http://<address>:8080`, or in a private window, the game still plays, from the file you pick, and
+keeps nothing; tilt control needs a trusted page too. To try a phone over USB:
+`adb reverse tcp:8080 tcp:8080`, then `http://localhost:8080` on the phone.
 
 The first time, the game asks for the disc image and copies the files it uses (about 145 MB) into its own
 storage: the program's data folder on the desktop, the site's private storage in the browser. After that it
@@ -71,7 +106,20 @@ cargo xtask ci
 runs formatting, lints for every target and all tests. Tests that need the game look for your disc image in
 the `MB_DISC` environment variable, or for `Super Monkey Ball*.rvz` (`.iso`, `.gcm`) in the folder that
 contains this repository, and skip without it. The browser test, `deno run -A scripts/web-e2e.ts`, drives
-the built site in Chrome and needs [Deno](https://deno.com), Chrome and Python 3.
+the built site in Chrome and needs [Deno](https://deno.com), Chrome and Python 3; nothing else in the
+project uses any of the three.
+
+## What it is built on
+
+| | |
+|---|---|
+| Everywhere | [wgpu](https://wgpu.rs) (graphics: Vulkan, Metal, DirectX 12, OpenGL ES, WebGPU, WebGL2), `glam`, `bytemuck`, `ruzstd` (RVZ images) |
+| Desktop | `winit` (window), `cpal` (sound), `gilrs` (gamepads), `rfd` (file dialog) |
+| Browser | `winit`, `wasm-bindgen`, `web-sys`, `js-sys` |
+
+Nothing that talks to a network. The file formats, the simulation and the rules of the game use the standard
+library only. Android is the next target and not started: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md),
+"Adding Android".
 
 ## Where to read on
 

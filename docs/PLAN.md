@@ -3,8 +3,8 @@
 What the project is for, what works, what nobody has checked, what is open and what was decided. How the
 code is put together is in [ARCHITECTURE.md](ARCHITECTURE.md).
 
-**Version 0.3.0, release candidate.** Not tagged: the owner tries it by hand first (see "Decisions").
-Version 0.2.0 was released on 2026-10-13. What each version contains: [CHANGELOG.md](../CHANGELOG.md).
+**Version 0.3.0**, released on 2026-10-14 after the owner tried it by hand. The next step is the Android
+port ([ARCHITECTURE.md](ARCHITECTURE.md), "Adding Android"), which nobody starts before the owner asks. What each version contains: [CHANGELOG.md](../CHANGELOG.md).
 
 ## Goal
 
