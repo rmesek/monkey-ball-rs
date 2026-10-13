@@ -48,6 +48,7 @@ pub mod import;
 pub mod input;
 pub mod loading;
 pub mod menu;
+pub mod mirror;
 pub mod particles;
 pub mod perf;
 pub mod play;

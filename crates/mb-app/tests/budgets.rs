@@ -4,7 +4,10 @@
 //! * draw calls per stage outside the particles equal the recorded 0.1.0 table plus what was added on
 //!   purpose since (`DRAWS_ADDED`); the particles add at most 12;
 //! * no GPU object is created while a stage is played;
-//! * the textures of the heaviest stage stay within 1 MB of what 0.1.0 uploaded.
+//! * the textures of the heaviest stage stay within 1 MB of what 0.1.0 uploaded;
+//! * a mirror floor is drawn on the 37 stages that have one and on no other: its draws and the bytes of
+//!   its target are recorded apart from the rest, and with the Reflections option off those stages cost
+//!   what they did.
 //!
 //! The pack's size and file count are in `tests/pack.rs`. Like the other tests these need the developer's
 //! own disc image and a GPU adapter, and skip without either.
@@ -17,10 +20,11 @@ use std::sync::Mutex;
 
 use mb_app::content::{course_stage_ids, open_disc_image};
 use mb_app::headless::{Headless, FRAME};
+use mb_app::input::Axis;
 use mb_app::menu::{Autostart, Menu};
 use mb_engine::Phase;
-use mb_game::Difficulty;
-use mb_render::FrameStats;
+use mb_game::{Difficulty, MemoryStorage, Profile};
+use mb_render::{FrameStats, GpuCounters};
 
 static GPU: Mutex<()> = Mutex::new(());
 
@@ -64,9 +68,19 @@ fn printing() -> bool {
 
 /// Start `stage` in practice (first attempt) and run its first frame.
 fn start_stage(h: &mut Headless, stage: u32) {
+    start_stage_with(h, stage, true)
+}
+
+/// [`start_stage`] on a save with the Reflections option as given (it is on unless the player turns it
+/// off).
+fn start_stage_with(h: &mut Headless, stage: u32, reflections: bool) {
     h.shutdown();
-    let menu = Menu::new(mb_app::headless::unlocked_storage())
-        .with_autostart(Some(Autostart::Stage(stage)));
+    let mut storage = MemoryStorage::new();
+    let mut profile = Profile::default();
+    profile.settings.unlock_all = true;
+    profile.settings.reflections = reflections;
+    profile.save(&mut storage).unwrap();
+    let menu = Menu::new(Box::new(storage)).with_autostart(Some(Autostart::Stage(stage)));
     h.push(Box::new(menu))
         .unwrap_or_else(|e| panic!("stage {stage}: {e}"));
     assert!(h.step(FRAME).unwrap());
@@ -84,10 +98,21 @@ fn render(h: &mut Headless) -> FrameStats {
     h.renderer().stats
 }
 
-/// The draw calls of a frame that are not particles: stage, backdrop, ball, HUD. This is the path 0.1.0
-/// had, so it is what the table below holds.
+/// The draw calls of a frame that are neither particles nor the mirror's: stage, backdrop, ball, HUD.
+/// This is the path 0.1.0 had, so it is what the table below holds. (A mirror model is drawn with the
+/// reflection only, so it has no draw among these.)
 fn base_draws(stats: &FrameStats) -> usize {
-    stats.total_draws() - stats.instance_draws - stats.quad_draws
+    stats.total_draws() - stats.instance_draws - stats.quad_draws - stats.mirror_draws
+}
+
+/// Show the title menu and draw it, as every session does before its first stage: what only the first
+/// frame of a window can make (the frame's depth texture) exists from then on.
+fn show_title(h: &mut Headless) {
+    h.shutdown();
+    h.push(Box::new(Menu::new(mb_app::headless::unlocked_storage())))
+        .expect("menu");
+    assert!(h.step(FRAME).unwrap());
+    render(h);
 }
 
 /// Tick of the fly-in at which the first count is taken, and of play (the intro of a first attempt is 360
@@ -146,35 +171,105 @@ fn expected_draws(row: &(u32, usize, usize)) -> (u32, usize, usize) {
 /// Most draw calls the particles may add to a frame (sparks, stars, flash, sparkle, glow, confetti).
 const PARTICLE_DRAW_BUDGET: usize = 12;
 
+/// `(stage, mirror draws at INTRO_TICK, at PLAY_TICK)` with the Reflections option on, in course order:
+/// every stage that has a mirror floor (`tests/mirrors.rs` says which and why), and what it adds to
+/// their frames (`FrameStats::mirror_draws`: the scene once more from below the floor, less the stage's
+/// models that the reference leaves out, plus one draw per mesh of the mirror models in view). Recorded
+/// when the mirrors were added. Not part of the tables above: with the option off, and on every other
+/// stage, it is zero.
+#[rustfmt::skip]
+const MIRROR_DRAWS: &[(u32, usize, usize)] = &[
+    (91, 188, 197), (92, 187, 196), (21, 505, 492), (93, 357, 366), (48, 447, 187), (62, 120, 116),
+    (94, 187, 172), (71, 241, 239), (72, 408, 300), (74, 326, 290), (75, 390, 414), (76, 551, 562),
+    (77, 402, 289), (78, 388, 333), (95, 53, 53), (82, 279, 314), (83, 169, 215), (85, 278, 282),
+    (86, 376, 304), (89, 773, 805), (101, 225, 300), (102, 218, 249), (103, 223, 228), (104, 181, 211),
+    (105, 252, 317), (106, 318, 264), (108, 189, 207), (109, 253, 285), (110, 252, 220), (111, 225, 255),
+    (112, 166, 176), (113, 271, 300), (121, 55, 93), (123, 31, 66), (125, 275, 310), (128, 40, 66),
+    (129, 107, 194),
+];
+
+/// Bytes of the mirror's target under the 640 x 360 frame of these tests: half the frame each way,
+/// colour and depth at four bytes a pixel. Not texture bytes (`Renderer::texture_bytes`, the budget of
+/// stage 109 below): it is a render target that exists only on the mirror stages, and it follows the
+/// frame's size (1.84 MB under 1280 x 720, 4.15 MB under 1920 x 1080).
+const MIRROR_TARGET_BYTES: usize = 320 * 180 * 8;
+
+/// The mirror exists exactly on the stages of [`MIRROR_DRAWS`], with a target of the recorded size.
+fn assert_mirror_target(h: &Headless, stage: u32, reflections: bool) {
+    let r = h.renderer();
+    // (When the tables are printed rather than compared, the stages are taken as they come.)
+    let listed = MIRROR_DRAWS.iter().any(|row| row.0 == stage);
+    let expected = reflections && (listed || (printing() && r.mirror().is_some()));
+    assert_eq!(r.mirror().is_some(), expected, "stage {stage}");
+    let bytes = if expected { MIRROR_TARGET_BYTES } else { 0 };
+    assert_eq!(r.mirror_bytes(), bytes, "stage {stage}");
+    assert_eq!(r.mirror_size().is_some(), expected, "stage {stage}");
+}
+
+/// The draw calls of one frame, by what they are for.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct Frame {
+    /// [`base_draws`]: what the 0.1.0 table holds.
+    base: usize,
+    /// `FrameStats::mirror_draws`.
+    mirror: usize,
+}
+
+/// Start `stage` and count the draws of its frames at [`INTRO_TICK`] and [`PLAY_TICK`].
+fn measure_stage(h: &mut Headless, id: u32, reflections: bool) -> [Frame; 2] {
+    start_stage_with(h, id, reflections);
+    assert_mirror_target(h, id, reflections);
+    let mut frames = [Frame::default(); 2];
+    for (slot, at) in [INTRO_TICK, PLAY_TICK].into_iter().enumerate() {
+        while tick(h) < at {
+            assert!(h.step(FRAME).unwrap(), "stage {id}");
+            assert!(h.top().unwrap().play_view().is_some(), "stage {id} ended");
+        }
+        let stats = render(h);
+        let particles = stats.instance_draws + stats.quad_draws;
+        assert!(
+            particles <= PARTICLE_DRAW_BUDGET,
+            "stage {id} tick {at}: {stats:?}"
+        );
+        frames[slot] = Frame {
+            base: base_draws(&stats),
+            mirror: stats.mirror_draws,
+        };
+        // No mirror, no mirror draws: on the stages without one, and on the others with the option off.
+        if h.renderer().mirror().is_none() {
+            assert_eq!(
+                (stats.mirror_draws, stats.mirror_surface_draws),
+                (0, 0),
+                "stage {id} tick {at}"
+            );
+        }
+        if printing() {
+            // Model draws alone, the one figure 0.1.0's own driver reports.
+            let models = stats.draws - stats.instance_draws;
+            eprintln!("MODELS {id} {at} {models}");
+        }
+    }
+    assert_mirror_target(h, id, reflections);
+    frames
+}
+
 #[test]
 fn every_stage_draws_what_it_did_in_0_1_0_outside_the_particles() {
     let _gpu = GPU.lock().unwrap_or_else(|e| e.into_inner());
     let Some(mut h) = headless() else {
         return;
     };
+    // As in a session: the title menu was on screen before the first stage.
+    show_title(&mut h);
     let ids = course_stage_ids();
     let mut measured = Vec::new();
+    let mut mirrors = Vec::new();
     for id in ids.iter().copied() {
-        start_stage(&mut h, id);
-        let mut counts = [0usize; 2];
-        for (slot, at) in [INTRO_TICK, PLAY_TICK].into_iter().enumerate() {
-            while tick(&h) < at {
-                assert!(h.step(FRAME).unwrap(), "stage {id}");
-                assert!(h.top().unwrap().play_view().is_some(), "stage {id} ended");
-            }
-            let stats = render(&mut h);
-            let particles = stats.instance_draws + stats.quad_draws;
-            assert!(
-                particles <= PARTICLE_DRAW_BUDGET,
-                "stage {id} tick {at}: {stats:?}"
-            );
-            counts[slot] = base_draws(&stats);
-            if printing() {
-                // Model draws alone, the one figure 0.1.0's own driver reports.
-                eprintln!("MODELS {id} {at} {}", stats.draws - stats.instance_draws);
-            }
+        let frames = measure_stage(&mut h, id, true);
+        measured.push((id, frames[0].base, frames[1].base));
+        if h.renderer().mirror().is_some() {
+            mirrors.push((id, frames[0].mirror, frames[1].mirror));
         }
-        measured.push((id, counts[0], counts[1]));
     }
     h.shutdown();
     if printing() {
@@ -182,8 +277,49 @@ fn every_stage_draws_what_it_did_in_0_1_0_outside_the_particles() {
             let cells: Vec<String> = row.iter().map(|r| format!("{r:?},")).collect();
             println!("    {}", cells.join(" "));
         }
+        println!("    mirror draws:");
+        for row in mirrors.chunks(6) {
+            let cells: Vec<String> = row.iter().map(|r| format!("{r:?},")).collect();
+            println!("    {}", cells.join(" "));
+        }
         return;
     }
+    // What the mirror costs each stage that has one, the dearest first: the draws of the frame without
+    // it and with it, in the fly-in and in play, and the larger of the two increases.
+    let mut costs: Vec<(usize, String)> = (mirrors.iter())
+        .map(|row| {
+            let base = measured.iter().find(|m| m.0 == row.0).unwrap();
+            let percent = |base: usize, more: usize| (more * 100 + base / 2) / base.max(1);
+            let worst = percent(base.1, row.1).max(percent(base.2, row.2));
+            let line = format!(
+                "stage {:3}: fly-in {:3} -> {:3} (+{:3} %), play {:3} -> {:3} (+{:3} %)",
+                row.0,
+                base.1,
+                base.1 + row.1,
+                percent(base.1, row.1),
+                base.2,
+                base.2 + row.2,
+                percent(base.2, row.2)
+            );
+            (worst, line)
+        })
+        .collect();
+    costs.sort_by_key(|c| std::cmp::Reverse(c.0));
+    eprintln!(
+        "{} stages with a mirror floor; its target is {MIRROR_TARGET_BYTES} bytes",
+        costs.len()
+    );
+    for (_, line) in &costs {
+        eprintln!("{line}");
+    }
+    // One more pass over about the scene less the stage: the mirror at most doubles the draws of a
+    // frame. (Stages 82 and 89 in the fly-in are the ones above that, at 109 and 104 %: from below
+    // their floors more of the storm background is in view than from above.)
+    assert!(
+        costs.iter().all(|c| c.0 < 110),
+        "a mirror more than doubles a frame"
+    );
+    assert_eq!(mirrors, MIRROR_DRAWS, "mirror draws changed");
     assert_eq!(
         measured.len(),
         DRAWS_0_1_0.len(),
@@ -278,10 +414,9 @@ fn particles_add_at_most_twelve_draws_at_their_peak() {
 /// Everything the HUD draws with is made when the stage is entered (`UiAssets::warm`), so the count is
 /// taken when the load ends and holds from the first frame drawn.
 ///
-/// One thing the renderer makes in a frame cannot be asked for at load: the buffer of the objects, with
-/// its bind group, when a stage has more objects than any stage before it (so always for the first stage
-/// of a session), and the depth texture of a target that was never drawn to. Another stage is therefore
-/// drawn first here; `mb-render` has no call to reserve them.
+/// The buffer all objects share is sized by the load too (`Renderer::reserve_objects`), so this holds
+/// for the first stage of a session. Only the depth texture of a window that never drew a frame is made
+/// by the first frame; the title menu, which every session shows before a stage, has drawn one.
 #[test]
 fn no_gpu_object_is_created_while_a_stage_is_played() {
     let _gpu = GPU.lock().unwrap_or_else(|e| e.into_inner());
@@ -291,9 +426,7 @@ fn no_gpu_object_is_created_while_a_stage_is_played() {
     let mut frames = 0;
     let mut start = None;
     let (mut effects, mut confetti) = (0, 0);
-    // A stage before this one, so that what the first stage of a session sizes exists already.
-    start_stage(&mut h, 2);
-    render(&mut h);
+    show_title(&mut h);
     let mut loaded = None;
     play_floor_one_from(
         &mut h,
@@ -397,5 +530,159 @@ fn flipbook_stages_upload_less_than_the_heaviest_stage_may() {
         most.1,
         most.1 as f64 / 1e6
     );
+    h.shutdown();
+}
+
+/// With the Reflections option off every mirror stage is what it was before the mirrors: the draws of
+/// the table, no mirror draw, no mirror model, no target, the same textures. With it on, the frame's own
+/// draws are the same and the mirror's come on top.
+#[test]
+fn with_reflections_off_the_mirror_stages_cost_what_they_did() {
+    let _gpu = GPU.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(mut h) = headless() else {
+        return;
+    };
+    show_title(&mut h);
+    for row in MIRROR_DRAWS {
+        let stage = row.0;
+        let then = DRAWS_0_1_0.iter().find(|r| r.0 == stage).expect("a row");
+        let expected = expected_draws(then);
+        let off = measure_stage(&mut h, stage, false);
+        let (objects, textures) = (h.renderer().object_count(), h.renderer().load_stats);
+        assert_eq!((stage, off[0].base, off[1].base), expected);
+        for frame in off {
+            assert_eq!(frame.mirror, 0, "stage {stage}");
+        }
+        let view = h.top().unwrap().play_view().unwrap();
+        assert!(view.scene.scene.mirror.is_none(), "stage {stage}");
+        assert!(!view.request.settings.reflections);
+
+        // On: the same frame's own draws, and the mirror's on top of them.
+        let on = measure_stage(&mut h, stage, true);
+        assert_eq!((stage, on[0].base, on[1].base), expected);
+        assert_eq!(
+            (on[0].mirror, on[1].mirror),
+            (row.1, row.2),
+            "stage {stage}"
+        );
+        // What the option adds besides draws: an object for each mirror model (the wave's floor is
+        // there anyway), no texture, and the target, which is no texture of the stage.
+        let view = h.top().unwrap().play_view().unwrap();
+        let mirror = view.scene.scene.mirror.as_ref().expect("a mirror");
+        let models = if stage == 92 {
+            0
+        } else {
+            mirror.surfaces().count()
+        };
+        assert!(stage == 92 || models > 0, "stage {stage}");
+        assert_eq!(
+            h.renderer().object_count() - objects,
+            models,
+            "stage {stage}"
+        );
+        assert_eq!(
+            h.renderer().load_stats.texture_bytes,
+            textures.texture_bytes,
+            "stage {stage}"
+        );
+    }
+    h.shutdown();
+}
+
+fn created(after: GpuCounters, before: GpuCounters) -> GpuCounters {
+    GpuCounters {
+        buffers: after.buffers - before.buffers,
+        textures: after.textures - before.textures,
+        pipelines: after.pipelines - before.pipelines,
+        bind_groups: after.bind_groups - before.bind_groups,
+        samplers: after.samplers - before.samplers,
+    }
+}
+
+/// A mirror stage creates nothing on the GPU while it is played either: the mirror's buffers, bind
+/// groups and target are made by the load, the plane that rides on an anim group (stage 103) and the
+/// tilt of the stage only change uniforms. Played here: the wave, the two first mirrors, a bonus floor,
+/// an ice floor with ten mirror models, and a space and a master floor with mirror models on 15 and 24
+/// anim groups. A resize of the window replaces the frame's depth texture and
+/// the mirror's target (two textures and the bind group that reads them) in the first frame after it,
+/// and play after that creates nothing again.
+#[test]
+fn no_gpu_object_is_created_while_a_mirror_stage_is_played_or_after_a_resize() {
+    let _gpu = GPU.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(mut h) = headless() else {
+        return;
+    };
+    // Steer in a slow circle, so the stage tilts and the ball moves over the mirror.
+    let play = |h: &mut Headless, frames: u32, what: &str| {
+        let start = (
+            h.renderer().counters(),
+            h.renderer().texture_count(),
+            h.renderer().object_count(),
+        );
+        let (mut mirrored, mut uploaded) = (0, 0);
+        for frame in 0..frames {
+            let a = frame as f32 * 0.02;
+            h.input.set_axis(Axis::MoveX, a.cos() * 0.4);
+            h.input.set_axis(Axis::MoveY, a.sin() * 0.4);
+            assert!(h.step(FRAME).unwrap(), "{what}");
+            assert!(h.top().unwrap().play_view().is_some(), "{what}: left");
+            let stats = render(h);
+            mirrored += (stats.mirror_draws > 0) as u32;
+            uploaded += stats.upload_bytes;
+            let r = h.renderer();
+            let now = (r.counters(), r.texture_count(), r.object_count());
+            assert_eq!(now, start, "{what}: frame {frame} created something");
+        }
+        h.input.set_axis(Axis::MoveX, 0.0);
+        h.input.set_axis(Axis::MoveY, 0.0);
+        assert!(uploaded > 0, "{what}: nothing moved");
+        mirrored
+    };
+    show_title(&mut h);
+    for stage in [92u32, 102, 103, 91, 77, 106, 121] {
+        assert!(MIRROR_DRAWS.iter().any(|row| row.0 == stage));
+        start_stage(&mut h, stage);
+        // The load made the mirror with its target; the first frame makes nothing.
+        let loaded = h.renderer().counters();
+        assert_mirror_target(&h, stage, true);
+        render(&mut h);
+        assert_eq!(
+            h.renderer().counters(),
+            loaded,
+            "stage {stage}: first frame"
+        );
+        let frames = 520;
+        let mirrored = play(&mut h, frames, &format!("stage {stage}"));
+        assert!(
+            mirrored > frames / 2,
+            "stage {stage}: the mirror showed in {mirrored} of {frames} frames"
+        );
+
+        // The window is resized: the next frame replaces what depends on the frame's size.
+        let before = h.renderer().counters();
+        h.resize((800, 450));
+        assert!(h.step(FRAME).unwrap());
+        render(&mut h);
+        let made = created(h.renderer().counters(), before);
+        let expect = GpuCounters {
+            textures: 3,
+            bind_groups: 1,
+            ..GpuCounters::default()
+        };
+        assert_eq!(made, expect, "stage {stage}: the resize");
+        assert_eq!(h.renderer().mirror_size(), Some((400, 225)));
+        assert_eq!(h.renderer().mirror_bytes(), 400 * 225 * 8);
+        let mirrored = play(&mut h, 200, &format!("stage {stage} after the resize"));
+        // (Where the ball has rolled off by now, the mirror may be out of sight.)
+        assert!(
+            !matches!(stage, 92 | 102 | 103) || mirrored > 100,
+            "stage {stage}: {mirrored}"
+        );
+        // Back to the size of these tests, with a frame drawn at it, as a window always has: the
+        // target a load makes is sized for the frame last drawn.
+        h.resize((640, 360));
+        assert!(h.step(FRAME).unwrap());
+        render(&mut h);
+    }
     h.shutdown();
 }

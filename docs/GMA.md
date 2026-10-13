@@ -119,7 +119,10 @@ A frame in which a mirror surface is in view:
    Skipped: mirror surfaces, objects with `set_in_mirror(false)`, objects whose bounding sphere is
    wholly behind the plane (the reference's test in `Model.ts`) or outside the reflected view, world
    quads, the other instance batches and sprites.
-2. **The picture**, unchanged, mirror surfaces included with their own material.
+2. **The picture**, unchanged, mirror surfaces included with their own material. A surface flagged with
+   `set_mirror_surface_only` is the exception, as the reference's `STAGE102_MIR` / `STAGE103_MIR` are:
+   it has no draw here or in the capture and none in `FrameStats::draws`; only step 3 draws it, so
+   without a mirror (reflections off) it draws nothing.
 3. **Overlay**, after the opaque geometry and before the sorted objects: every mesh of each mirror
    surface in view again with the overlay program, both faces, depth tested without writing, blended
    `SrcAlpha / InvSrcAlpha` with `alpha = mirror alpha * vertex alpha`. It shows the capture at
@@ -142,6 +145,14 @@ colour format plus `Depth32Float` at `set_mirror_scale` (default 0.5) of the fra
 pixel, 1.84 MB under a 1280 x 720 frame and 4.15 MB under 1920 x 1080, reported by
 `Renderer::mirror_bytes` and not part of `texture_bytes`. Nothing is created in a play frame, also
 while the plane moves (`set_mirror_plane`).
+
+One plane per stage, any number of mirror surfaces on it: whether a surface is in view is asked every
+frame from the frustum flags the picture's culling already set (a loop over the flagged objects, no
+upload), and a frame without one has no capture pass, no overlay and writes none of the mirror's
+uniforms (`tests/mirror.rs`, 48 tiles on a leaning, moving plane).
+
+`Renderer::reserve_objects(n)` sizes the object uniform buffer and its bind group while loading;
+otherwise they are created in the first frame that has more objects than any before it.
 
 Where it differs from the reference:
 

@@ -24,7 +24,7 @@ Menu (title -> Course Play | Practice | Options | Quit)
 - `menu.rs` owns the `Profile` (progress + settings) and writes it through the injected `mb_game::Storage`
   after every stage and every option change. Extra and Master courses and unreached practice floors show as
   `LOCKED` unless the `Unlock all stages` option is on. Options only lists settings that act: that one, the
-  stick curve (the reference's input falloff) and the three volumes (below).
+  stick curve (the reference's input falloff), the three volumes and the reflections (below).
 - `play.rs` runs `mb_engine::Sim` in fixed 60 Hz ticks from an accumulator (`ticks_for_frame`): frame times
   within 12 % of one or two ticks are snapped, at most 5 ticks run per frame, a longer stall is dropped. The
   simulation is identical at any display rate. What is drawn is a blend of the last two ticks by the
@@ -157,6 +157,155 @@ Different from the reference, on purpose:
   renderer sorts every mesh the file marks as blended, so the windows are given a sort offset that puts
   them first in that order, right after the opaque meshes.
 
+### Mirror floors (`mirror.rs`, `stage_scene.rs`, `play_scene.rs`)
+37 of the 109 course stages have a floor that reflects: `World.getMirrorMode`, `getMirrorPlaneMatrix`,
+`prepareToRenderMirrors` and the capture of `Render.ts`. `mb-app` says which stage has a mirror, where
+its plane is, which objects show the reflection and which are left out of it; the passes are
+`mb-render`'s (`docs/GMA.md`, "Mirror floors"). Everything is decided from the parsed stage
+(`mirror::stage_mirror`, no GPU) and set while the stage is built (`StageScene::build`), from files the
+stage loads anyway: the mirror models are in the stage's own archive, so the file lists and the pack are
+unchanged.
+
+**Which stages** is the reference's rule (`mirror::mirror_kind`): the bonus wave (stage 92) when its
+floor was found, and every stage whose stagedef names mirror models (or that is stage 102 or 103). On
+the USA disc: 91 to 95, 21, 48, 62, 71, 72, 74 to 78, 82, 83, 85, 86, 89, 101 to 106, 108 to 113, 121,
+123, 125, 128, 129. `tests/mirrors.rs` holds the list with what each has.
+
+**Where the plane is** is not the reference's rule but read off the mirror models (`mirror::plan_mirror`):
+
+* A mirror model lies in a plane when all its vertices are within 0.02 of it, one in a hundred aside
+  (stage 48's has four of 1088 vertices half a unit down, in four slanted triangles of 1034). The plane
+  is at the middle height of the vertices, facing the way their normals do. A model that is not flat
+  would be no mirror; none on the disc is.
+* Mirror models share a plane when they lie in it at 128 moments of the stage's animation loop, whatever
+  anim groups carry them. On the disc the models of every stage do: also the 5, 16, 24 and 21 of stages
+  78, 106, 121 and 123, whose groups only slide along the plane. Played with the engine moving the
+  groups, no mirror model is ever more than 0.013 from the plane the frame mirrors in
+  (`mirror_floors_lie_in_the_plane_of_their_mirror_models`).
+* The plane with the most models is the mirror's. Planes parallel to it are further levels: stage 110 has
+  a floor at y = -8.99 and one at y = -42.99, and the frame mirrors in the highest one the camera is
+  above, showing only that floor's model (`mirror::level_for_eye`, `PlayScene::face_camera`; the
+  reference's `cameraPos[1] >= -9.0`). A plane that leans against the mirror's would be dropped with
+  its models; there is none on the disc.
+* The plane stands still unless its group takes it along. Only stage 103's does: there it is recorded
+  per tick with the pose (`PlayScene::sync`) and blended for the frame by the same blend as the mirror
+  model that lies in it (`PlayScene::apply`, `Renderer::set_mirror_plane`). The stage tilt is the
+  renderer's.
+
+**What shows the reflection.** The mirror models of the anim groups (`AnimGroup.mirrorModels`) and of
+the stage's own list, each an object of its group like the group's other models (posed, tilted and
+blended between ticks with it), drawn with the reflection only (`Renderer::set_mirror_surface_only`):
+the reference issues them with its mirror program and never with their own material, and without a
+mirror not at all. Their textures are therefore not uploaded. The reflection's opacity is the model's
+vertex alpha (22 to 255 of 255: faint on the checkered floors, a full mirror on the logo of stage 103).
+Such a surface writes no depth. On stage 92 the floor of the wave (`SHAPE_STAGE134`) is drawn as ever
+and shows the reflection over its own picture at 96 / 255 (`WAVY_MIRROR_ALPHA`), in the plane y = 0.02.
+Eight of the nine models stage 101 names and one of the two of stage 74 are in no archive; the others
+are the mirror.
+
+**In the reflection**, as the reference's capture: the ball, goals with bags, tapes and clocks, bananas,
+bumpers, jamabars, the background and foreground objects, confetti, and the models of the anim groups
+that have flag bit 2 (`AnimGroup.prepareToRender`; stages 113, 125 and 128 have such models, on the
+others the stage itself is not reflected). **Left out:** the other anim-group models, background and
+foreground objects with flag bit 7 (`BgObjectInst`: 1 on stage 62, 11 to 17 on stages 104, 121, 123, 125
+and 128), the mirror models, and all particles (`Renderer::set_in_mirror`, the renderer's own rules).
+
+**Reflections off** (the option below): `set_mirror` is never called and the mirror models are not
+created. The stage is then built and drawn exactly as before the mirrors existed.
+
+Cost, at 640 x 360 (`tests/budgets.rs`, `MIRROR_DRAWS`): the draws of a frame without the mirror and
+with it, in the fly-in (tick 60) and in play (tick 420), the dearest stages first.
+
+| Stage | Fly-in | Play |
+|---|---|---|
+| 82 | 256 -> 535 (+109 %) | 356 -> 670 (+88 %) |
+| 89 | 744 -> 1517 (+104 %) | 848 -> 1653 (+95 %) |
+| 86 | 380 -> 756 (+99 %) | 367 -> 671 (+83 %) |
+| 76 | 605 -> 1156 (+91 %) | 602 -> 1164 (+93 %) |
+| 93 | 386 -> 743 (+92 %) | 396 -> 762 (+92 %) |
+| 78 | 464 -> 852 (+84 %) | 365 -> 698 (+91 %) |
+| 48 | 497 -> 944 (+90 %) | 244 -> 431 (+77 %) |
+| 74 | 374 -> 700 (+87 %) | 323 -> 613 (+90 %) |
+| 83 | 189 -> 358 (+89 %) | 291 -> 506 (+74 %) |
+| 71 | 327 -> 568 (+74 %) | 271 -> 510 (+88 %) |
+| 113 | 431 -> 702 (+63 %) | 341 -> 641 (+88 %) |
+| 92 | 216 -> 403 (+87 %) | 226 -> 422 (+87 %) |
+| 94 | 218 -> 405 (+86 %) | 198 -> 370 (+87 %) |
+| 21 | 588 -> 1093 (+86 %) | 580 -> 1072 (+85 %) |
+| 75 | 485 -> 875 (+80 %) | 483 -> 897 (+86 %) |
+| 91 | 222 -> 410 (+85 %) | 232 -> 429 (+85 %) |
+| 77 | 474 -> 876 (+85 %) | 344 -> 633 (+84 %) |
+| 72 | 495 -> 903 (+82 %) | 360 -> 660 (+83 %) |
+| 85 | 349 -> 627 (+80 %) | 342 -> 624 (+82 %) |
+| 102 | 372 -> 590 (+59 %) | 308 -> 557 (+81 %) |
+| 105 | 404 -> 656 (+62 %) | 393 -> 710 (+81 %) |
+| 111 | 403 -> 628 (+56 %) | 343 -> 598 (+74 %) |
+| 62 | 167 -> 287 (+72 %) | 175 -> 291 (+66 %) |
+| 106 | 498 -> 816 (+64 %) | 368 -> 632 (+72 %) |
+| 110 | 383 -> 635 (+66 %) | 312 -> 532 (+71 %) |
+| 104 | 375 -> 556 (+48 %) | 308 -> 519 (+69 %) |
+| 101 | 493 -> 718 (+46 %) | 470 -> 770 (+64 %) |
+| 103 | 429 -> 652 (+52 %) | 364 -> 592 (+63 %) |
+| 129 | 323 -> 430 (+33 %) | 331 -> 525 (+59 %) |
+| 125 | 541 -> 816 (+51 %) | 537 -> 847 (+58 %) |
+| 109 | 591 -> 844 (+43 %) | 502 -> 787 (+57 %) |
+| 108 | 550 -> 739 (+34 %) | 388 -> 595 (+53 %) |
+| 112 | 395 -> 561 (+42 %) | 382 -> 558 (+46 %) |
+| 95 | 235 -> 288 (+23 %) | 245 -> 298 (+22 %) |
+| 121 | 378 -> 433 (+15 %) | 401 -> 494 (+23 %) |
+| 128 | 319 -> 359 (+13 %) | 327 -> 393 (+20 %) |
+| 123 | 393 -> 424 (+8 %) | 401 -> 467 (+16 %) |
+
+The capture is most of the picture again: everything but the stage's own models, so the backdrop with
+its objects, the bananas and the goals. On the storm stages 82 and 89 it is more than the picture in
+the fly-in, because from below the floor more of the background is in view than from above; nothing is
+in it that the reference leaves out. In draw calls the dearest frames are those of stages 89 (1653), 76
+(1164) and 21 (1093), each close to twice what it was; on stage 21 that pays for a strip of mirror a
+few hundred pixels large. The master floors are cheap because their background objects carry flag bit
+7. The target is half the frame each way, colour and depth: 460,800 bytes under 640 x 360, 1.84 MB
+under 1280 x 720 (`Renderer::mirror_bytes`, not texture bytes). No texture is uploaded for a mirror;
+a flat mirror adds an object per mirror model. The load creates the mirror's buffers, bind groups and
+target; a play frame creates nothing, also while the plane of stage 103 moves or the level of stage 110
+changes; a resize of the frame replaces the target (two textures, one bind group) with the frame's
+depth texture, in the first frame after it.
+
+Different from the reference, on purpose:
+
+- **The plane comes from the mirror models.** `getMirrorPlaneMatrix` takes the height of the first
+  named model's bounding centre for most stages, fixed choices for stages 48, 102 and 110, and anim
+  group 1's transform for stage 103. `tests/mirrors.rs` has both planes for every stage. They are the
+  same on 32 stages; on stages 48 and 102 the reference's y = 0 is the floor 0.015 under the mirror
+  model, and on stage 110 its two heights are 0.01 under the models, which makes no visible
+  difference. They differ on two:
+  - **Stage 103.** Group 1's transform is the plane y = 0 of the space the group's models are authored
+    in. `STAGE103_MIR` is not there: like every model of the group it is authored around the group's
+    initial pose, in a plane through y = 4.95 that leans 9 degrees. With the reference's plane the
+    mirror reflects about a plane five units below it and shows black space with no goal or banana in
+    it; with the model's own plane the goal and the bananas hang mirrored under themselves.
+  - **Stage 74.** The first model its stagedef names (`MIR_STAGE074_B_1`) is in no archive, at which
+    the reference gives up and shows no mirror; the second (`MIR_STAGE074_A`) exists and is the mirror
+    here.
+- **No distortion on the bonus wave.** The reference bends the wave floor's reflection by an offset
+  read from a texture (`gb_grad`, through a second target). As it stands in the reference, and as
+  `mb-render` ports it, the offset is not a wobble about zero: it moves the whole reflection 0.28 of
+  the picture's height down (the alpha it reads is always one) and, where the floor is level, about a
+  tenth of its width sideways, so the bananas' reflections lie some 200 of 720 pixels below the bananas
+  and the shifted horizon is a hard edge across the floor. Compared side by side, the undistorted
+  reflection is the one that is under its objects. Stage 92 therefore sets
+  `Mirror { distortion: None, .. }` with the reference's plane and opacity, and `gb_grad` is not
+  loaded.
+- **An option.** The reference always draws its mirrors.
+- The renderer's differences (the cut at the plane, the size of the target, the wave floor missing from
+  its own reflection) are listed in `docs/GMA.md`.
+
+Seen in screenshots (1280 x 720 and 640 x 360, desktop) of stages 21, 48, 72, 74, 77, 89, 91, 92, 102,
+103, 105, 110, 121 and 123: the reflection is a mirror image hanging from the floor under each thing,
+the ball's meets the ball where it stands, bananas and goals stand on their own reflections, and there
+is no seam or flicker at the floor; the half-size target shows as slightly soft, stair-stepped edges in
+the reflection. On stage 92 the reflections of the bananas and the ball are under them, on a floor that
+ripples through them. On stages 21, 48 and 74 the mirror is a part of the floor away from the start and
+little or nothing of it is in the pictures taken there.
+
 ### Material switches (`RenderParams`)
 What `World.ts`, `AnimGroup.ts`, `BgObject.ts` and `Background.ts` set per object, and where it is set here:
 
@@ -215,9 +364,16 @@ once it has been let go.
 | Music volume | off, 10 .. 100 (default 50) | stage music |
 | Sound volume | off, 10 .. 100 (default 30) | effects: roll, impacts, bananas, goal, clock, menus |
 | Announcer volume | off, 10 .. 100 (default 30) | READY, GO, GOAL, FALL OUT, countdown, ... |
+| Reflections | on / off (default on) | the mirror floors of the 37 stages that have one; off saves their extra pass (up to twice those stages' draw calls, see "Mirror floors") on a weak device |
 
 Selecting a row steps its value (volumes by ten, wrapping from 100 to off). Changes are saved with the
-profile and apply at once; a category that is off is not played at all. Menus click on move, confirm and
+profile and apply at once; a category that is off is not played at all. Reflections is read when a stage
+is built (`PlayScene::build`, from the settings in the stage's `PlayRequest`); no stage is loaded while
+the options are open, so the next stage played has the new value. The row comes after the rows only some
+platforms have (Controls, Tilt range, Fullscreen) and before the storage rows. In the save it is one more
+`setting` line (`reflections`): a save written before it existed has none and loads with it on, and an
+older build skips the line like any setting it does not know (`mb-game`,
+`a_save_from_0_1_0_loads_with_reflections_on`). Menus click on move, confirm and
 back. In the pause menu the music plays on and the ball's roll is silent; leaving a stage cuts its effects.
 What plays when, and how sound reaches the device, is in `docs/AUDIO.md`.
 
@@ -296,18 +452,40 @@ Different from `hud.ts` here:
   hurry-up), the wave floor of stage 92 under the ball, the green goal of Beginner floor 2 in course play
   (`JUMP TO FLOOR 5`, warp bonus 3, the course at floor 5 afterwards) and in practice (neither line), the
   shadow on and off, and the shortened fall-out. `tests/pack.rs` loads the same four backgrounds over the
-  pack. `MB_SHOT_DIR=<dir outside the repository>` makes the goal and wave tests save PNGs there.
+  pack. `MB_SHOT_DIR=<dir outside the repository>` makes the goal, wave and mirror tests save PNGs there.
+- The mirror floors. `tests/mirrors.rs` (no GPU): for every course stage, whether it has a mirror, how
+  many models its stagedef names, on how many anim groups, how many are missing or dropped, the plane
+  of each level, and the reference's plane beside it; the list is recorded in the test. `mirror.rs` has
+  the rule's unit tests (shared planes across groups, a plane that rides, two levels and the choice by
+  the eye, stray vertices, models that are not flat or face the other way). In `tests/gameplay.rs`:
+  twelve mirror stages of every kind are played at 144 frames a second and every mirror model stays in
+  the plane the frame mirrors in, the plane of stage 103 being the blend its model is drawn with, while
+  six stages that name no mirror model have none; stage 110 mirrors in the floor under the camera and
+  draws only that floor's model; the same four frames of twelve mirror stages played with the option on
+  and off differ in up to 150,000 of 230,400 pixels, every one of them a pixel whose ray meets the
+  mirror's plane inside a mirror model, the frame's other draws being equal, and in no pixel on stages
+  1 and 5; the options row turns the option off with the keys and on with a tap on a 540 x 1200
+  screen, saves at once, and a menu started again on the save loads stage 102 without and then with
+  its mirror. `tests/pack.rs` loads seven mirror stages over the pack with the option on and off.
+  `menu.rs` has the row's unit test.
 - `tests/budgets.rs`: the regression budgets of `docs/PARITY_PLAN.md`. Draw calls outside the particles of
   every course stage at tick 60 (fly-in) and 420 (play) equal a table recorded from 0.1.0 (its model draws
   were compared with a build of the `v0.1.0` tag, all 109 stages identical) plus what `DRAWS_ADDED` records
   for the 22 stages that draw something new (the wave floor of stage 92: 1; the windows of the eleven night
   stages with shown diners: 4 to 29; the fires of the ten storm stages: 0 to 4); particles add at most 12;
   the renderer's `GpuCounters`, texture and object counts do not change from the end of a stage's load to
-  the end of its goal sequence (drawn after another stage: the renderer makes its object buffer in the
-  first frame of the first or largest stage of a session, which only `mb-render` could move to the load);
+  the end of its goal sequence, on the first stage of a session too (`PlayScene::build` sizes the buffer
+  the objects share with `Renderer::reserve_objects`; only the title menu has drawn a frame before);
   stage 109 uploads at most 1 MB more texture bytes than 0.1.0's 16,617,412, and no night or storm stage,
   with its 2.1 to 2.2 MB of flipbook textures, uploads more than that limit (the largest is stage 90 with
-  14,251,776).
+  14,251,776). The mirror's draws are counted apart (`FrameStats::mirror_draws`): a table holds them
+  for the 37 mirror stages at the two ticks, no other stage has any, the frame's own draws of every
+  stage still equal the 0.1.0 table with its recorded additions, no mirror adds more than 110 % to a
+  frame, and with Reflections off the 37 stages have neither mirror draws, mirror models nor a target
+  and upload the same texture bytes; the target is 460,800 bytes at the tests' 640 x 360 and is not
+  counted with the textures; seven mirror stages (the wave, 102, 103, a bonus floor, an ice, a space
+  and a master floor) create nothing over 520 frames of steering, a resize creates three textures and
+  one bind group in its first frame, and the 200 frames after it nothing.
   `tests/pack.rs` holds the pack at 382 files and 144,084,942 bytes. `MB_BUDGET_PRINT=1` prints the tables.
 - `cargo test -p mb-app --test audio`: the autopilot's floor 1 with a recording audio backend and an offline
   render of its sound.
@@ -324,8 +502,6 @@ feature, which `cargo test` switches on by itself. A `dev` build of the program 
   and what the audio device played (stream, callbacks, peak / RMS, late callbacks).
 
 ## Not ported from the reference
-- Mirror floors (`World.ts` `prepareToRenderMirrors`, `prepareToRenderWavyDistort`): the reflection on the
-  wave floor of stage 92 and on the mirrors of stages 102 and 103.
 - Result replays (the reference replays the fall-out and the goal).
 - Not in the reference either (original game only): the monkey inside the ball, its voice lines and the
   sounds listed under "Known gaps" in `docs/AUDIO.md`.

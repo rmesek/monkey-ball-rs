@@ -62,6 +62,9 @@ pub struct Settings {
     pub input_falloff: u16,
     /// Every course and stage selectable from the start (the web reference behaves like this).
     pub unlock_all: bool,
+    /// Draw the mirror floors (one more pass over the scene on the stages that have one). A save from a
+    /// build without the setting has no line for it and loads with the default, on.
+    pub reflections: bool,
 }
 
 impl Default for Settings {
@@ -77,6 +80,7 @@ impl Default for Settings {
             tilt_range_deg: 25,
             input_falloff: 100,
             unlock_all: false,
+            reflections: true,
         }
     }
 }
@@ -102,6 +106,7 @@ impl Settings {
             ("input_falloff", Some(n)) => self.input_falloff = n.min(u16::MAX as u32) as u16,
             ("left_handed", Some(n)) => self.left_handed = n != 0,
             ("unlock_all", Some(n)) => self.unlock_all = n != 0,
+            ("reflections", Some(n)) => self.reflections = n != 0,
             ("control_mode", _) => {
                 if let Some(m) = ControlMode::from_key(value) {
                     self.control_mode = m;
@@ -124,6 +129,7 @@ impl Settings {
         line("tilt_range_deg", self.tilt_range_deg.to_string());
         line("input_falloff", self.input_falloff.to_string());
         line("unlock_all", (self.unlock_all as u8).to_string());
+        line("reflections", (self.reflections as u8).to_string());
     }
 }
 
@@ -435,6 +441,79 @@ mod tests {
         assert_eq!(p, q);
         assert_eq!(q.settings.control_mode, ControlMode::Tilt);
         assert_eq!(q.progress.stage_best(1).best_frames, 1500);
+    }
+
+    /// A save as version 0.1.0 wrote it, byte for byte (nine settings, no `reflections` line, its own
+    /// checksum).
+    const SAVE_0_1_0: &str = "MBSAVE 1\n\
+        setting music_volume 80\nsetting sfx_volume 30\nsetting announcer_volume 0\n\
+        setting control_mode tilt\nsetting joystick_size 100\nsetting left_handed 1\n\
+        setting tilt_range_deg 12\nsetting input_falloff 150\nsetting unlock_all 1\n\
+        course beginner 1 1 123456 1,2,91\nstage 1 1500 1\ncrc af96de2f\n";
+
+    /// A 0.1.0 save loads, and the setting it has never heard of is on. What is written now is that file
+    /// plus one `setting` line, which 0.1.0 skips like any setting it does not know.
+    #[test]
+    fn a_save_from_0_1_0_loads_with_reflections_on() {
+        let p = Profile::decode(SAVE_0_1_0.as_bytes()).expect("a 0.1.0 save");
+        assert!(p.settings.reflections);
+        let mut expect = Profile {
+            settings: Settings {
+                music_volume: 80,
+                announcer_volume: 0,
+                control_mode: ControlMode::Tilt,
+                left_handed: true,
+                tilt_range_deg: 12,
+                input_falloff: 150,
+                unlock_all: true,
+                ..Settings::default()
+            },
+            ..Profile::default()
+        };
+        for stage in [1, 2, 91] {
+            expect.progress.mark_reached(Difficulty::Beginner, stage);
+        }
+        expect.progress.record_score(Difficulty::Beginner, 123_456);
+        expect
+            .progress
+            .record_course_clear(Difficulty::Beginner, true);
+        expect.progress.record_stage_clear(1, 1500);
+        assert_eq!(p, expect);
+        // As the game reads it: through the slots (a 0.1.0 value may also predate them) and the loader,
+        // with no warning and no backup copy.
+        let mut slots = crate::storage::SlotStorage::new(MemoryStorage::new());
+        slots.write(PROFILE_KEY, SAVE_0_1_0.as_bytes()).unwrap();
+        assert_eq!(Profile::load(&mut slots), (expect.clone(), None));
+        assert_eq!(slots.read(BACKUP_KEY).unwrap(), None);
+        let mut plain = MemoryStorage::new();
+        plain.write(PROFILE_KEY, SAVE_0_1_0.as_bytes()).unwrap();
+        let mut slots = crate::storage::SlotStorage::new(plain);
+        assert_eq!(Profile::load(&mut slots), (expect, None));
+
+        // The format and its version are unchanged: without the new line the file is the 0.1.0 one.
+        let now = String::from_utf8(p.encode()).unwrap();
+        let line = "setting reflections 1\n";
+        assert_eq!(now.matches(line).count(), 1);
+        let body = |text: &str| text[..text.rfind("crc ").unwrap()].to_string();
+        assert_eq!(body(&now.replace(line, "")), body(SAVE_0_1_0));
+        assert!(now.starts_with("MBSAVE 1\n"));
+
+        // Off is saved and survives; any number but zero is on; a value that is no number leaves the
+        // default, like every other setting.
+        let mut off = p.clone();
+        off.settings.reflections = false;
+        let text = String::from_utf8(off.encode()).unwrap();
+        assert!(text.contains("setting reflections 0\n"));
+        assert_eq!(Profile::decode(text.as_bytes()).unwrap(), off);
+        let load = |body: &str| {
+            let text = format!("MBSAVE 1\n{body}");
+            let signed = format!("{text}crc {:08x}\n", fnv1a(text.as_bytes()));
+            Profile::decode(signed.as_bytes()).unwrap().settings
+        };
+        assert!(load("setting reflections 7\n").reflections);
+        assert!(!load("setting reflections 0\n").reflections);
+        assert!(load("setting reflections off\n").reflections);
+        assert!(load("setting reflections\n").reflections);
     }
 
     #[test]

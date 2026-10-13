@@ -1085,6 +1085,320 @@ fn an_srgb_frame_reflects_the_colours_it_shows() {
     srgb_on(wgpu::Backends::all());
 }
 
+// ---- surfaces that are only their reflection ----------------------------------------------------------
+
+fn surface_only_on(backends: wgpu::Backends) {
+    let Some(mut s) = Scene::new(backends) else {
+        return;
+    };
+    let model = floor_model(&mut s.r, [0.0, 1.0, 0.0], 255);
+    let floor = s.r.add_object(model, Layer::World, Mat4::IDENTITY);
+    let red = square(&mut s.r, 1.0, RED);
+    s.r.add_object(red, Layer::World, at(0.0, 2.0, 0.0));
+    // Under the floor: seen only when the floor is not drawn.
+    let blue = square(&mut s.r, 1.0, BLUE);
+    s.r.add_object(blue, Layer::World, at(4.0, -3.0, 0.0));
+    let (image, under, empty) = (
+        Vec3::new(0.0, -2.0, 0.0),
+        Vec3::new(4.0, -3.0, 0.0),
+        Vec3::new(-5.0, 0.0, 3.0),
+    );
+    s.render();
+    assert_eq!(s.r.stats.draws, 3);
+    let warm = s.r.counters();
+
+    // No mirror (reflections off): such a surface draws nothing at all.
+    s.r.set_mirror_surface_only(floor, true);
+    let frame = s.render();
+    assert_eq!(s.r.stats.draws, 2, "the floor has no draw of its own");
+    assert_eq!(s.r.stats.total_draws(), 2);
+    assert_eq!(frame.count(FLOOR, 40.0), 0);
+    assert_rgb(frame.at(under), BLUE, "nothing hides it");
+    assert_rgb(frame.at(empty), CLEAR, "no floor");
+    assert_eq!(s.r.counters(), warm);
+
+    // With the mirror: the overlay alone, showing the capture.
+    s.r.set_mirror(Some(Mirror::flat(Mat4::IDENTITY)));
+    let frame = s.render();
+    let stats = s.r.stats;
+    assert_eq!((stats.draws, stats.translucent_draws), (2, 0));
+    // The capture draws the red square (the blue one is below the plane), the overlay the floor.
+    assert_eq!((stats.mirror_draws, stats.mirror_surface_draws), (2, 1));
+    assert_eq!(stats.total_draws(), 4);
+    assert_rgb(frame.at(image), RED, "the reflection");
+    assert_rgb(frame.at(under), CLEAR, "the mirror is in front of it");
+    assert_eq!(frame.count(FLOOR, 40.0), 0, "never its own material");
+    assert_eq!(frame.count(BLUE, 40.0), 0);
+
+    // Half opacity: over what is behind it, not over a floor colour.
+    s.r.set_mirror(Some(Mirror {
+        alpha: 0.5,
+        ..Mirror::flat(Mat4::IDENTITY)
+    }));
+    let frame = s.render();
+    assert_rgb(frame.at(under), mix(BLUE, CLEAR, 0.5), "blended");
+    assert_rgb(frame.at(image), mix(CLEAR, RED, 0.5), "blended");
+    s.r.set_mirror(Some(Mirror::flat(Mat4::IDENTITY)));
+
+    // In the sorted pass it has no draw either.
+    s.r.set_alpha(floor, 0.5);
+    s.render();
+    assert_eq!((s.r.stats.draws, s.r.stats.translucent_draws), (2, 0));
+    assert_eq!(s.r.stats.mirror_surface_draws, 1);
+    s.r.set_alpha(floor, 1.0);
+
+    // Culled like any object: out of view there is no overlay and no capture.
+    s.r.set_transform(floor, at(0.0, 0.0, 500.0));
+    s.render();
+    assert_eq!((s.r.stats.draws, s.r.stats.mirror_draws), (2, 0));
+    assert_eq!(s.r.stats.culled_objects, 1);
+    s.r.set_transform(floor, Mat4::IDENTITY);
+
+    // An ordinary mirror surface again: its own material under the reflection.
+    s.r.set_mirror_surface_only(floor, false);
+    let frame = s.render();
+    assert_eq!(s.r.stats.draws, 3);
+    assert_eq!(
+        (s.r.stats.mirror_draws, s.r.stats.mirror_surface_draws),
+        (2, 1)
+    );
+    assert_rgb(frame.at(image), RED, "still a mirror");
+    assert_eq!(frame.count(BLUE, 40.0), 0, "the floor hides it");
+    // `set_mirror_surface(false)` undoes both.
+    s.r.set_mirror_surface_only(floor, true);
+    s.r.set_mirror_surface(floor, false);
+    let frame = s.render();
+    assert_eq!((s.r.stats.draws, s.r.stats.mirror_draws), (3, 0));
+    assert_rgb(frame.at(image), FLOOR, "a plain floor");
+}
+
+#[test]
+fn a_surface_can_be_its_reflection_alone() {
+    surface_only_on(wgpu::Backends::all());
+}
+
+// ---- many surfaces on one plane -----------------------------------------------------------------------
+
+fn many_surfaces_on(backends: wgpu::Backends) {
+    let Some(mut s) = Scene::new(backends) else {
+        return;
+    };
+    // The plane of an anim group that leans and moves: its +y is not the world's.
+    let pose = |i: usize| {
+        let t = i as f32 / 20.0;
+        at(0.3 * t, -1.0 - 0.5 * t, 0.0)
+            * Mat4::from_rotation_z(0.25 + 0.1 * t)
+            * Mat4::from_rotation_x(-0.2)
+    };
+    // 48 tiles of one model that meet edge to edge, every other one drawn by the overlay alone, and
+    // four more far outside the view.
+    let h = 0.5;
+    let corners = [[-h, 0.0, -h], [h, 0.0, -h], [-h, 0.0, h], [h, 0.0, h]];
+    let tile = nl_quad(&mut s.r, corners, [0.0, 1.0, 0.0], FLOOR, 255);
+    let mut tiles = Vec::new();
+    for i in 0..52 {
+        let local = if i < 48 {
+            at((i % 8) as f32 - 3.5, 0.0, (i / 8) as f32 - 2.5)
+        } else {
+            at(400.0 + i as f32, 0.0, 0.0)
+        };
+        let o = s.r.add_object(tile, Layer::World, pose(0) * local);
+        if i % 2 == 0 {
+            s.r.set_mirror_surface(o, true);
+        } else {
+            s.r.set_mirror_surface_only(o, true);
+        }
+        tiles.push((o, local));
+    }
+    let red = square(&mut s.r, 0.6, RED);
+    let local = Vec3::new(0.5, 1.0, 0.0);
+    let square = s.r.add_object(red, Layer::World, Mat4::IDENTITY);
+    s.r.set_mirror(Some(Mirror::flat(pose(0))));
+    s.render();
+    let warm = s.r.counters();
+    for i in 0..=20 {
+        let m = pose(i);
+        for (o, local) in &tiles {
+            s.r.set_transform(*o, m * *local);
+        }
+        s.r.set_transform(square, m * Mat4::from_translation(local));
+        s.r.set_mirror_plane(m);
+        let frame = s.render();
+        let stats = s.r.stats;
+        // The square and the 24 tiles that have a material; the four far ones are culled.
+        assert_eq!((stats.draws, stats.culled_objects), (25, 4), "frame {i}");
+        // The capture draws the square; the overlay every tile in view.
+        assert_eq!(
+            (stats.mirror_draws, stats.mirror_surface_draws),
+            (49, 48),
+            "frame {i}"
+        );
+        let own = m.transform_point3(local);
+        let image = m.transform_point3(local * Vec3::new(1.0, -1.0, 1.0));
+        assert_rgb(frame.at(own), RED, &format!("frame {i}"));
+        assert_rgb(frame.at(image), RED, &format!("frame {i}: reflection"));
+        assert_eq!(frame.count(FLOOR, 40.0), 0, "frame {i}: all tiles mirror");
+    }
+    assert_eq!(s.r.counters(), warm, "nothing is created");
+
+    // No surface in view (the camera turns to the sky): no capture pass, no overlay, no uniform of
+    // the mirror written, and that is decided anew every frame.
+    let toward = s.camera;
+    let away = Camera::look_at(
+        Vec3::new(0.0, 6.0, 10.0),
+        Vec3::new(0.0, 60.0, 0.0),
+        Vec3::Z,
+    );
+    for round in 0..3 {
+        s.camera = away;
+        s.render();
+        let stats = s.r.stats;
+        assert_eq!(
+            (stats.mirror_draws, stats.mirror_surface_draws, stats.draws),
+            (0, 0, 0),
+            "round {round}"
+        );
+        assert_eq!(stats.total_draws(), 0);
+        assert_eq!(stats.culled_objects, 53);
+        // The plane moves on while nobody sees the mirror: nothing to upload, nothing to redraw.
+        s.r.set_mirror_plane(pose(round));
+        let size = s.target.size();
+        assert!(!s.r.prepare(size, &s.camera), "round {round}");
+        assert_eq!(s.r.stats.upload_bytes, 0);
+        s.r.set_mirror_plane(pose(20));
+        s.camera = toward;
+        s.render();
+        assert_eq!(s.r.stats.mirror_draws, 49, "round {round}: in view again");
+    }
+    // Hidden surfaces are no reason for a capture either.
+    for (o, _) in &tiles {
+        s.r.set_visible(*o, false);
+    }
+    s.render();
+    assert_eq!((s.r.stats.mirror_draws, s.r.stats.draws), (0, 1));
+    // One small surface back in view brings the whole capture back.
+    s.r.set_visible(tiles[1].0, true);
+    s.render();
+    assert_eq!(
+        (s.r.stats.mirror_draws, s.r.stats.mirror_surface_draws),
+        (2, 1)
+    );
+    assert_eq!(s.r.counters(), warm);
+}
+
+#[test]
+fn dozens_of_surfaces_share_a_leaning_plane_and_none_in_view_costs_nothing() {
+    many_surfaces_on(wgpu::Backends::all());
+}
+
+// ---- the object buffer --------------------------------------------------------------------------------
+
+fn reserve_objects_on(backends: wgpu::Backends) {
+    let (Some(mut plain), Some(mut s)) = (
+        Scene::with_format(backends, UNORM),
+        Scene::with_format(backends, UNORM),
+    ) else {
+        return;
+    };
+    let fill = |s: &mut Scene, from: usize, to: usize| {
+        let model = square(&mut s.r, 0.3, GREEN);
+        for i in from..to {
+            let (x, y) = ((i % 12) as f32 * 0.8 - 4.4, (i / 12) as f32 * 0.3);
+            s.r.add_object(model, Layer::World, at(x, y, 0.0));
+        }
+    };
+    assert_eq!(s.r.object_capacity(), 0);
+    let fresh = s.r.counters();
+    s.r.reserve_objects(100);
+    assert_eq!(
+        delta(s.r.counters(), fresh),
+        GpuCounters {
+            buffers: 1,
+            bind_groups: 1,
+            ..GpuCounters::default()
+        },
+        "the buffer and its bind group, at load"
+    );
+    assert_eq!(s.r.object_capacity(), 128);
+    // Requests it already satisfies do nothing.
+    let reserved = s.r.counters();
+    for n in [0, 1, 100, 128] {
+        s.r.reserve_objects(n);
+    }
+    assert_eq!(s.r.counters(), reserved);
+
+    fill(&mut plain, 0, 100);
+    fill(&mut s, 0, 100);
+    let loaded = (plain.r.counters(), s.r.counters());
+    let (a, b) = (plain.render(), s.render());
+    assert_eq!(a.px, b.px);
+    assert_eq!(s.r.stats.draws, 100);
+    assert_eq!(plain.r.stats.upload_bytes, s.r.stats.upload_bytes);
+    let depth_only = GpuCounters {
+        textures: 1,
+        ..GpuCounters::default()
+    };
+    assert_eq!(
+        delta(s.r.counters(), loaded.1),
+        depth_only,
+        "the first frame creates the depth buffer and nothing for the objects"
+    );
+    assert_eq!(
+        delta(plain.r.counters(), loaded.0),
+        GpuCounters {
+            buffers: 1,
+            bind_groups: 1,
+            ..depth_only
+        },
+        "without the reservation it creates them"
+    );
+
+    // It outlives the scene: the next stage's first frame creates nothing at all.
+    s.r.clear_scene();
+    assert_eq!(s.r.object_capacity(), 128);
+    fill(&mut s, 0, 120);
+    let loaded = s.r.counters();
+    let frame = s.render();
+    assert_eq!(s.r.counters(), loaded);
+    assert_eq!(s.r.stats.draws, 120);
+    assert_rgb(frame.at(Vec3::new(-4.4, 0.0, 0.0)), GREEN, "first object");
+    assert_rgb(frame.at(Vec3::new(4.4, 2.7, 0.0)), GREEN, "last object");
+
+    // More objects than reserved still work: the buffer grows in the frame that needs it, as before.
+    fill(&mut s, 120, 150);
+    let loaded = s.r.counters();
+    s.render();
+    assert_eq!(
+        delta(s.r.counters(), loaded),
+        GpuCounters {
+            buffers: 1,
+            bind_groups: 1,
+            ..GpuCounters::default()
+        }
+    );
+    assert_eq!((s.r.stats.draws, s.r.object_capacity()), (150, 256));
+
+    // Reserving more while a scene is shown replaces the buffer; every object is sent to the new one.
+    s.r.reserve_objects(1000);
+    assert_eq!(s.r.object_capacity(), 1024);
+    let size = s.target.size();
+    assert!(s.r.prepare(size, &s.camera), "a new buffer: redraw");
+    assert!(s.r.stats.upload_bytes > 0);
+    s.r.draw(s.target.view());
+    let frame = s.render();
+    assert_eq!(s.r.stats.draws, 150);
+    assert_rgb(frame.at(Vec3::new(-4.4, 0.0, 0.0)), GREEN, "first object");
+    assert_rgb(frame.at(Vec3::new(-0.4, 3.6, 0.0)), GREEN, "last object");
+    let settled = s.r.counters();
+    s.render();
+    assert_eq!(s.r.counters(), settled);
+}
+
+#[test]
+fn a_reserved_object_buffer_makes_the_first_frame_create_nothing() {
+    reserve_objects_on(wgpu::Backends::all());
+}
+
 // ---- the browser's path -------------------------------------------------------------------------------
 
 #[test]
@@ -1101,4 +1415,7 @@ fn the_gl_backend_draws_the_same() {
     no_mirror_on(gl);
     target_on(gl);
     srgb_on(gl);
+    surface_only_on(gl);
+    many_surfaces_on(gl);
+    reserve_objects_on(gl);
 }

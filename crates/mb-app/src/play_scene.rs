@@ -15,6 +15,9 @@
 //! * The ball's shadow is projected onto the stage models from the blended ball (`drawProjectedShadow`), and
 //!   the particles ([`crate::particles`]) are queued for every frame by [`PlayScene::draw_particles`]. They
 //!   carry their own previous position, so they blend straight from the simulation.
+//! * A mirror floor ([`crate::mirror`], [`crate::stage_scene::SceneMirror`]) is set up with the stage.
+//!   Here its plane is posed when it rides on an anim group, blended like the group, and on a stage
+//!   with mirrors at two heights the one the camera is above is chosen.
 
 use glam::{Mat4, Quat, Vec3};
 use mb_engine::constants::ball_flags;
@@ -152,6 +155,8 @@ struct Pose {
     ball_visible: bool,
     /// The stage timer (`runtime.timer_frames`): what flipbooks and the bonus wave are timed by.
     timer: i32,
+    /// The plane of every level of the stage's mirror (none without one).
+    mirror_planes: Vec<Mat4>,
 }
 
 impl Pose {
@@ -240,6 +245,10 @@ pub struct PlayScene {
     particles_frozen: bool,
     /// The time-over sequence was running at the last recorded tick.
     time_over: bool,
+    /// The planes of the mirror's levels in the frame last posed, blended between ticks.
+    mirror_planes: Vec<Mat4>,
+    /// The level the mirror is in: the highest the camera is above.
+    mirror_level: usize,
     /// Goal tape anchor height from the tape model (`loadGoalTapeAnchorY`).
     pub goal_tape_anchor_y: Option<f64>,
     /// Bounds of the stage models for the fly-in camera (`loadStageModelBounds`).
@@ -301,10 +310,18 @@ fn tape_model(template: &mb_gma::NlModel, segments: usize) -> Option<mb_gma::NlM
 impl PlayScene {
     /// Upload everything the parsed `assets` need and create the objects. `timings` carries what reading
     /// and parsing cost; the GPU side is added and the whole is published for `mbPerf.lastLoad()`.
-    pub fn build(r: &mut Renderer, assets: StageAssets, mut timings: LoadTimings) -> Self {
+    ///
+    /// `reflections` is the player's option for the mirror floors (`mb_game::Settings::reflections`): it
+    /// is read here, so it takes effect with the next stage that is loaded.
+    pub fn build(
+        r: &mut Renderer,
+        assets: StageAssets,
+        mut timings: LoadTimings,
+        reflections: bool,
+    ) -> Self {
         let loaded = Instant::now();
         r.load_stats = Default::default();
-        let mut scene = StageScene::build(r, &assets);
+        let mut scene = StageScene::build(r, &assets, reflections);
 
         let mut common = |r: &mut Renderer, name: &str| -> Option<ModelId> {
             let model = assets.common.gma.model(name)?;
@@ -459,7 +476,15 @@ impl PlayScene {
         }
         let clouds = Clouds::new(scene.clouds.clone(), assets.id);
         clouds.apply(r, 1.0);
+        // A mirror with levels starts in the highest; the models of the others show when the camera
+        // goes below it (`PlayScene::face_camera`).
+        let lower = scene.mirror.iter().flat_map(|m| m.levels.iter().skip(1));
+        for object in lower.flat_map(|l| l.surfaces.iter()) {
+            r.set_visible(*object, false);
+        }
         let objects = r.object_count();
+        // Room for every object now, so that the first frame does not make the buffer they share.
+        r.reserve_objects(objects);
 
         let stats = r.load_stats;
         timings.texture_decode_ms = stats.texture_decode_ms;
@@ -498,6 +523,8 @@ impl PlayScene {
             particle_ticks: 0,
             particles_frozen: false,
             time_over: false,
+            mirror_planes: Vec::new(),
+            mirror_level: 0,
             goal_tape_anchor_y,
             bound_sphere,
         }
@@ -558,6 +585,7 @@ impl PlayScene {
             particles_frozen,
             time_over,
             clouds,
+            mirror_level,
             ..
         } = self;
         // The simulation leaves its particles alone in a tick that starts with the clock run out. The
@@ -581,7 +609,9 @@ impl PlayScene {
         for it in &scene.items {
             let g = group(it.group);
             match it.kind {
-                ItemKind::Model | ItemKind::Goal(_) => pose.set(it.object, g * it.local),
+                ItemKind::Model | ItemKind::Mirror | ItemKind::Goal(_) => {
+                    pose.set(it.object, g * it.local)
+                }
                 ItemKind::Bumper(i) => {
                     let m = match rt.bumpers.get(it.group).and_then(|b| b.get(i)) {
                         // The simulation's own pose: spin plus the squash when the ball hits it.
@@ -775,6 +805,20 @@ impl PlayScene {
         pose.xrot = sim.world.xrot;
         pose.zrot = sim.world.zrot;
         pose.timer = rt.timer_frames;
+        // `getMirrorPlaneMatrix`: a mirror on an anim group moves with it. Only the models of the level
+        // the mirror is in are shown.
+        pose.mirror_planes.clear();
+        if let Some(mirror) = &scene.mirror {
+            let planes = mirror.levels.iter().map(|l| l.plane.at(group));
+            pose.mirror_planes.extend(planes);
+            for (k, level) in mirror.levels.iter().enumerate() {
+                if k != *mirror_level {
+                    for object in &level.surfaces {
+                        pose.hide(*object);
+                    }
+                }
+            }
+        }
         // `BgSunset.update`: the clouds move with the stage timer (not during the fly-in, which holds it,
         // nor in the first record of an attempt, which is no tick).
         if !clouds.is_empty() {
@@ -836,6 +880,13 @@ impl PlayScene {
         }
         r.set_wave_time(anim_frames);
         self.clouds.apply(r, t);
+        // The planes are blended like the mirror models that lie in them (the same blend of the same
+        // matrices); `face_camera` hands the renderer the one the frame mirrors in.
+        self.mirror_planes.clear();
+        for (k, plane) in curr.mirror_planes.iter().enumerate() {
+            let from = prev.mirror_planes.get(k).unwrap_or(plane);
+            self.mirror_planes.push(lerp_mat(from, plane, t));
+        }
 
         let pivot = prev.pivot.lerp(curr.pivot, t);
         self.tilt = tilt_matrix_units(
@@ -896,8 +947,10 @@ impl PlayScene {
 
 impl PlayScene {
     /// Pose what depends on the camera the frame is drawn with: the fires of the storm background turn
-    /// to it about Y (`BgStorm.prepareToRender`). Call it after [`PlayScene::apply`].
+    /// to it about Y (`BgStorm.prepareToRender`), and a mirror is in the highest of its planes the
+    /// camera is above (`getMirrorPlaneMatrix` on stage 110). Call it after [`PlayScene::apply`].
     pub fn face_camera(&mut self, r: &mut Renderer, camera: &Camera) {
+        self.pose_mirror(r, camera);
         if self.scene.flipbooks.is_empty() {
             return;
         }
@@ -905,6 +958,44 @@ impl PlayScene {
         for book in &self.scene.flipbooks {
             book.face(r, rot_y);
         }
+    }
+
+    /// Hand the renderer the mirror's plane for the frame. Nothing to do for a mirror with one plane
+    /// that stands still, which is nearly all of them: the load set it.
+    fn pose_mirror(&mut self, r: &mut Renderer, camera: &Camera) {
+        let Some(mirror) = &self.scene.mirror else {
+            return;
+        };
+        let levels = &mirror.levels;
+        if levels.len() < 2 && !levels.iter().any(|l| l.plane.moves()) {
+            return;
+        }
+        let level = crate::mirror::level_for_eye(&self.mirror_planes, camera.position());
+        let Some(plane) = self.mirror_planes.get(level) else {
+            return;
+        };
+        r.set_mirror_plane(*plane);
+        if level != self.mirror_level {
+            // The models of the level left are hidden and those of the new one shown, now and in the
+            // poses the frames before the next tick are blended from.
+            for (k, l) in levels.iter().enumerate() {
+                for object in &l.surfaces {
+                    let shown = k == level;
+                    r.set_visible(*object, shown);
+                    for pose in &mut self.poses {
+                        if let Some(slot) = pose.slots.get_mut(object.index()) {
+                            slot.visible = shown;
+                        }
+                    }
+                }
+            }
+            self.mirror_level = level;
+        }
+    }
+
+    /// The level the mirror is in (tests): 0 unless the stage has mirrors at more than one height.
+    pub fn mirror_level(&self) -> usize {
+        self.mirror_level
     }
 
     /// Queue this frame's particles (sparks, stars, flash, sparkle, glow, confetti) from the simulation

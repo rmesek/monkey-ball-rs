@@ -151,6 +151,14 @@ impl Headless {
         self.size
     }
 
+    /// Draw into a target of another size from the next frame on, as after the window was resized: the
+    /// states get the new size and layout, and the renderer sees it with the next frame it draws.
+    pub fn resize(&mut self, size: (u32, u32)) {
+        let format = self.renderer.target_format();
+        self.target = OffscreenTarget::new(self.renderer.device(), size.0, size.1, format);
+        self.size = size;
+    }
+
     /// Steer with `pilot` for one frame if a stage is being played (the stick goes through `InputState`
     /// like a gamepad would). Returns false when no stage is running.
     pub fn pilot(&mut self, pilot: &mut Option<Autopilot>, goal_only: bool) -> bool {

@@ -645,3 +645,95 @@ fn backdrop_flipbooks_clouds_and_the_wave_load_from_the_pack() {
     }
     h.shutdown();
 }
+
+/// Mirror floors over the pack, the way the browser reads (the wave, the first two mirrors, a bonus
+/// floor, and floors with mirror models on many anim groups and at two heights): the mirror models are
+/// in the stage's own archive, which is prepared for the stage anyway, so nothing is read unprepared,
+/// nothing stays in memory and the pack is what it was (`the_import_copies_exactly_what_the_game_reads`
+/// holds its files and size). With the Reflections option off in the save, the same stages load
+/// without a mirror.
+#[test]
+fn mirror_floors_load_from_the_pack() {
+    use mb_app::menu::Autostart;
+    use mb_app::mirror::MirrorKind;
+    use mb_app::stage_scene::ItemKind;
+    let _gpu = GPU.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(bytes) = pack_bytes() else {
+        return;
+    };
+    let (content, _) = deferred(PackBytes::open(bytes.to_vec()).unwrap(), 2);
+    let Some(mut h) = start(&content) else {
+        return;
+    };
+    let save = |reflections: bool| {
+        let mut storage = MemoryStorage::new();
+        let mut profile = Profile::default();
+        profile.settings.unlock_all = true;
+        profile.settings.reflections = reflections;
+        profile.save(&mut storage).unwrap();
+        Box::new(storage)
+    };
+    // (stage, mode, mirror models among the stage's items); stage 1 has no mirror.
+    for (stage, kind, models) in [
+        (92u32, Some(MirrorKind::Wavy), 0usize),
+        (102, Some(MirrorKind::Flat), 1),
+        (103, Some(MirrorKind::Flat), 1),
+        (91, Some(MirrorKind::Flat), 1),
+        (106, Some(MirrorKind::Flat), 16),
+        (110, Some(MirrorKind::Flat), 2),
+        (121, Some(MirrorKind::Flat), 24),
+        (1, None, 0),
+    ] {
+        for reflections in [true, false] {
+            h.shutdown();
+            // A new menu reads the start-up files again, as a restarted page would.
+            prepare(&content, &boot_files()).expect("boot files");
+            let menu = Menu::new(save(reflections)).with_autostart(Some(Autostart::Stage(stage)));
+            h.push(Box::new(menu)).expect("menu");
+            run_until(&mut h, 60, "the stage", |h| playing(h).is_some());
+            assert_eq!(playing(&h).map(|p| p.0), Some(stage));
+            assert_eq!(content.prepared_bytes(), 0, "stage {stage}");
+            h.render().unwrap();
+            let created = h.renderer().counters();
+            let expect = kind.filter(|_| reflections);
+            {
+                let view = h.top().unwrap().play_view().unwrap();
+                let scene = &view.scene.scene;
+                assert_eq!(scene.mirror.as_ref().map(|m| m.kind), expect);
+                let found = scene.items.iter().filter(|it| it.kind == ItemKind::Mirror);
+                let wanted = if expect.is_some() { models } else { 0 };
+                assert_eq!(found.count(), wanted, "stage {stage}");
+                assert!(scene.missing_models.iter().all(|m| !m.contains("MIR")));
+            }
+            let set = h.renderer().mirror().copied();
+            assert_eq!(set.is_some(), expect.is_some(), "stage {stage}");
+            // No mirror is distorted: the wave's reads no texture for it.
+            assert!(set.is_none_or(|m| m.distortion.is_none()));
+            // Through the fly-in and into play, drawing now and then.
+            let mut mirrored = 0;
+            for frame in 0..420 {
+                assert!(h.step(FRAME).unwrap());
+                if frame % 30 == 0 {
+                    h.render().unwrap();
+                    mirrored += (h.renderer().stats.mirror_draws > 0) as u32;
+                }
+            }
+            h.render().unwrap();
+            if expect.is_some() {
+                assert!(mirrored >= 10, "stage {stage}: {mirrored} of 14 frames");
+                assert!(h.renderer().mirror_bytes() > 0);
+            } else {
+                assert_eq!(mirrored, 0, "stage {stage}");
+                assert_eq!(h.renderer().mirror_bytes(), 0);
+            }
+            assert_eq!(
+                h.renderer().counters(),
+                created,
+                "stage {stage} created something"
+            );
+            assert_eq!(content.misses(), Vec::<String>::new(), "stage {stage}");
+            assert_eq!(content.prepared_bytes(), 0, "stage {stage}");
+        }
+    }
+    h.shutdown();
+}
