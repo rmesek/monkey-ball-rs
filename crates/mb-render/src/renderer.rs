@@ -66,6 +66,10 @@ pub struct LoadStats {
     pub texture_upload_ms: f64,
     /// Display-list decoding, vertex packing, buffer and pipeline creation.
     pub mesh_ms: f64,
+    /// Most bytes of texture and mesh data that were handed to the queue and not yet submitted
+    /// ([`Renderer::STAGED_LIMIT`]): what a backend that stages uploads in ordinary memory (WebGL2)
+    /// holds at once while a stage loads.
+    pub staged_peak_bytes: usize,
 }
 
 /// GPU objects the renderer has created since it was made, never reset. Creating any of them costs a
@@ -133,6 +137,24 @@ struct GpuMesh {
     samples: u32,
 }
 
+/// A mesh of a model on its way to the GPU: packed vertices, and what it is drawn with.
+struct MeshPart {
+    verts: Vec<Vertex>,
+    indices: Vec<u32>,
+    key: PipelineKey,
+    /// Index into `Renderer::materials`, texture fetches, and whether its alpha is one everywhere.
+    material: (usize, u32, bool),
+    translucent: bool,
+    origin: Vec3,
+}
+
+impl MeshPart {
+    /// Drawn without blending, in no particular order.
+    fn solid(&self) -> bool {
+        self.material.2 && !self.translucent
+    }
+}
+
 /// Everything that tells two pipelines apart.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct PipelineVariant {
@@ -160,6 +182,8 @@ struct GpuModel {
     /// Bounding sphere of all vertices in model space, for frustum culling.
     center: Vec3,
     radius: f32,
+    /// Half the size of the vertices' bounding box around `center`: what a mirror surface covers.
+    half: Vec3,
     /// The bounding sphere the model file states (centre, radius): the specular tex gens use it.
     bound: [f32; 4],
 }
@@ -221,6 +245,9 @@ struct MirrorFrame {
     /// The mirror's plane as it was given (stage space) and as it is shown (after the tilt).
     stage: Plane,
     shown: Plane,
+    /// The part of the capture the mirror surfaces in view can show, in its clip space
+    /// (`[min x, min y, max x, max y]`).
+    window: [f32; 4],
 }
 
 /// Statistics of the last frame (the `?fps=1` overlay, tests).
@@ -288,6 +315,8 @@ struct MirrorState {
     /// Group 2 of the overlay: `uniform`, the capture and the gradient.
     uniform: wgpu::Buffer,
     uniform_data: Option<MirrorUniform>,
+    /// The pixels of the target this frame's capture is drawn into (`x, y, width, height`).
+    scissor: [u32; 4],
     group: Option<wgpu::BindGroup>,
 }
 
@@ -370,6 +399,10 @@ pub struct Renderer {
     tilt: Mat4,
     /// Bytes written outside `render` since the last frame (vertex re-poses).
     pending_upload_bytes: usize,
+    /// Texture and mesh bytes handed to the queue since the last submit ([`Renderer::stage`]).
+    staged_bytes: usize,
+    /// Capture the whole reflected view ([`Renderer::set_mirror_capture_whole`]).
+    mirror_whole: bool,
     /// The overlay pipeline and its layout, made the first time a mirror is set and kept.
     mirror_gpu: Option<MirrorGpu>,
     /// The mirror of the loaded stage with its target; `None` costs nothing.
@@ -451,6 +484,12 @@ fn sphere_outside(planes: &[Vec4; 6], center: Vec3, radius: f32) -> bool {
 
 /// Bounding sphere of a point set: centre of the bounding box, radius to the farthest point.
 fn bounding_sphere<'a>(points: impl Iterator<Item = &'a [f32; 3]> + Clone) -> (Vec3, f32) {
+    let (center, radius, _) = bounds_of(points);
+    (center, radius)
+}
+
+/// Bounding sphere of a point set and half the size of its bounding box, which has the same centre.
+fn bounds_of<'a>(points: impl Iterator<Item = &'a [f32; 3]> + Clone) -> (Vec3, f32, Vec3) {
     let mut lo = Vec3::splat(f32::INFINITY);
     let mut hi = Vec3::splat(f32::NEG_INFINITY);
     for p in points.clone() {
@@ -459,14 +498,14 @@ fn bounding_sphere<'a>(points: impl Iterator<Item = &'a [f32; 3]> + Clone) -> (V
         hi = hi.max(p);
     }
     if lo.x > hi.x {
-        return (Vec3::ZERO, 0.0);
+        return (Vec3::ZERO, 0.0, Vec3::ZERO);
     }
     let center = (lo + hi) * 0.5;
     let radius = points
         .map(|p| (Vec3::from(*p) - center).length_squared())
         .fold(0.0f32, f32::max)
         .sqrt();
-    (center, radius)
+    (center, radius, (hi - lo) * 0.5)
 }
 
 fn texture_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
@@ -656,6 +695,8 @@ impl Renderer {
             translucent: [Vec::new(), Vec::new()],
             tilt: Mat4::IDENTITY,
             pending_upload_bytes: 0,
+            staged_bytes: 0,
+            mirror_whole: false,
             mirror_gpu: None,
             mirror: None,
             mirror_scale: 0.5,
@@ -718,6 +759,26 @@ impl Renderer {
             .collect()
     }
 
+    /// Bytes of uploads the queue may hold before they are submitted. On WebGL2 `wgpu` keeps every
+    /// texture and buffer it is given in a staging copy in ordinary memory until the next submit, so a
+    /// stage load that submits only with its first frame holds all its textures and meshes twice over
+    /// at that moment (16.6 MB on the heaviest stage), and wasm memory never shrinks again. Submitting
+    /// as the uploads pass this mark keeps that to about one megabyte plus the largest single texture.
+    pub const STAGED_LIMIT: usize = 1 << 20;
+
+    /// Account for `bytes` about to be handed to the queue, submitting what is staged first when that
+    /// would pass [`Renderer::STAGED_LIMIT`]. An empty submit is all it takes: the queue's pending
+    /// writes go with it.
+    fn stage(&mut self, bytes: usize) {
+        if self.staged_bytes > 0 && self.staged_bytes + bytes > Self::STAGED_LIMIT {
+            self.queue.submit(std::iter::empty());
+            self.staged_bytes = 0;
+        }
+        self.staged_bytes += bytes;
+        self.load_stats.staged_peak_bytes =
+            self.load_stats.staged_peak_bytes.max(self.staged_bytes);
+    }
+
     /// The 1x1 white texture the renderer uses where a material has none (untextured quads).
     pub fn white_texture(&self) -> TextureId {
         self.white
@@ -762,6 +823,7 @@ impl Renderer {
             view_formats: &[],
         });
         for (level, (lw, lh, data)) in levels.iter().take(count as usize).enumerate() {
+            self.stage(data.len());
             self.queue.write_texture(
                 wgpu::TexelCopyTextureInfo {
                     texture: &texture,
@@ -961,23 +1023,55 @@ impl Renderer {
             .unwrap_or(self.white)
     }
 
-    fn make_mesh(
-        &mut self,
-        v: &mb_gma::Vertices,
-        indices: &[u32],
-        key: PipelineKey,
-        (material, samples, solid): (usize, u32, bool),
-        translucent: bool,
-        origin: Vec3,
-    ) -> GpuMesh {
+    /// Turn the meshes of one model into GPU meshes. Meshes that are drawn without blending, with the
+    /// same pipeline and the same material, become one mesh, in the place of the first of them: their
+    /// order among each other shows nowhere (the depth test decides), and every mesh less is a draw
+    /// call less in every pass the model is drawn in.
+    fn make_meshes(&mut self, parts: Vec<MeshPart>) -> Vec<GpuMesh> {
+        let mut merged: Vec<MeshPart> = Vec::with_capacity(parts.len());
+        for mut part in parts {
+            // A model file has each shape twice, once to be drawn with front faces culled and once
+            // with back faces culled. Turning the triangles of the first kind round shows the same
+            // faces under the other state, so the two halves can share a pipeline and a draw.
+            if part.key.cull == Some(wgpu::Face::Front) {
+                for triangle in part.indices.as_chunks_mut::<3>().0 {
+                    triangle.swap(1, 2);
+                }
+                part.key.cull = Some(wgpu::Face::Back);
+            }
+            let same = |m: &&mut MeshPart| {
+                m.solid() && part.solid() && m.key == part.key && m.material == part.material
+            };
+            match merged.iter_mut().find(same) {
+                Some(into) => {
+                    let base = into.verts.len() as u32;
+                    into.verts.extend_from_slice(&part.verts);
+                    into.indices.extend(part.indices.iter().map(|i| i + base));
+                }
+                None => merged.push(part),
+            }
+        }
+        merged.into_iter().map(|m| self.make_mesh(m)).collect()
+    }
+
+    fn make_mesh(&mut self, part: MeshPart) -> GpuMesh {
+        let MeshPart {
+            verts,
+            indices,
+            key,
+            material: (material, samples, solid),
+            translucent,
+            origin,
+        } = part;
+        let indices = indices.as_slice();
         let pipeline_blend = self.ensure_pipeline(key, samples);
         let pipeline = if solid {
             self.ensure_pipeline(PipelineKey { blend: None, ..key }, samples)
         } else {
             pipeline_blend
         };
-        let verts = pack_vertices(v);
         self.counters.buffers += 2;
+        self.stage(std::mem::size_of_val(verts.as_slice()) + std::mem::size_of_val(indices));
         let vertex = self
             .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -1019,7 +1113,7 @@ impl Renderer {
         let meshes = model.meshes()?;
         let mut material_groups: HashMap<usize, (usize, u32, Option<bool>)> = HashMap::new();
         let mut out = Vec::new();
-        let bounds = bounding_sphere(meshes.iter().flat_map(|m| m.vertices.positions.iter()));
+        let bounds = bounds_of(meshes.iter().flat_map(|m| m.vertices.positions.iter()));
         for mesh in &meshes {
             if mesh.indices.is_empty() || mesh.vertices.is_empty() {
                 continue;
@@ -1043,15 +1137,16 @@ impl Renderer {
                     Some(false) => true,
                     None => false,
                 };
-            out.push(self.make_mesh(
-                &mesh.vertices,
-                &mesh.indices,
+            out.push(MeshPart {
+                verts: pack_vertices(&mesh.vertices),
+                indices: mesh.indices.clone(),
                 key,
-                (material.0, material.1, solid),
-                mesh.translucent,
-                Vec3::from(shape.origin),
-            ));
+                material: (material.0, material.1, solid),
+                translucent: mesh.translucent,
+                origin: Vec3::from(shape.origin),
+            });
         }
+        let out = self.make_meshes(out);
         self.load_stats.mesh_ms += ms_since(started);
         let [x, y, z] = model.bound_sphere_center;
         Ok(self.push_model(out, bounds, [x, y, z, model.bound_sphere_radius]))
@@ -1067,7 +1162,7 @@ impl Renderer {
         let started = Instant::now();
         let kind_a = model.kind == mb_gma::VertexKind::A;
         let mut out = Vec::new();
-        let bounds = bounding_sphere(
+        let bounds = bounds_of(
             model
                 .meshes
                 .iter()
@@ -1089,16 +1184,17 @@ impl Renderer {
                 .map(|t| vec![(t, naomi_sampler_key(mesh))])
                 .unwrap_or_default();
             let material = self.make_material_group(&uniform, &layers);
-            out.push(self.make_mesh(
-                &mesh.vertices,
-                &mesh.indices,
-                naomi_pipeline_key(mesh),
+            out.push(MeshPart {
+                verts: pack_vertices(&mesh.vertices),
+                indices: mesh.indices.clone(),
+                key: naomi_pipeline_key(mesh),
                 // NaomiLib meshes never blend.
-                (material, tex.is_some() as u32, true),
-                false,
-                Vec3::from(model.bound_sphere_center),
-            ));
+                material: (material, tex.is_some() as u32, true),
+                translucent: false,
+                origin: Vec3::from(model.bound_sphere_center),
+            });
         }
+        let out = self.make_meshes(out);
         self.load_stats.mesh_ms += ms_since(started);
         let [x, y, z] = model.bound_sphere_center;
         self.push_model(out, bounds, [x, y, z, model.bound_sphere_radius])
@@ -1107,7 +1203,7 @@ impl Renderer {
     fn push_model(
         &mut self,
         meshes: Vec<GpuMesh>,
-        (center, radius): (Vec3, f32),
+        (center, radius, half): (Vec3, f32, Vec3),
         bound: [f32; 4],
     ) -> ModelId {
         self.models.push(GpuModel {
@@ -1115,6 +1211,7 @@ impl Renderer {
             meshes,
             center,
             radius,
+            half,
             bound,
         });
         ModelId(self.models.len() - 1)
@@ -1463,6 +1560,7 @@ impl Renderer {
         let reach = (center - gpu_model.center).length() + radius;
         if reach > gpu_model.radius {
             gpu_model.radius = reach;
+            gpu_model.half = Vec3::splat(reach);
             for o in self.objects.iter_mut().filter(|o| o.model == model) {
                 o.dirty = true;
             }
@@ -1955,11 +2053,12 @@ impl Renderer {
 
     /// Flag what the capture leaves out: mirror surfaces, objects taken out with
     /// [`Renderer::set_in_mirror`], spheres wholly behind the mirror's plane (the reference's test in
-    /// `Model.ts`) or outside the reflected view.
+    /// `Model.ts`) or outside the part of the reflected view that a mirror surface shows.
     fn cull_mirror(&mut self, frame: &MirrorFrame) {
-        let bg = frustum_planes(&frame.clip[0]);
-        let world = frustum_planes(&frame.clip[1]);
-        let tilted = frustum_planes(&(frame.clip[1] * self.tilt));
+        // Only what falls into the window of the capture that the mirror surfaces show.
+        let bg = mirror::window_planes(&frame.clip[0], frame.window);
+        let world = mirror::window_planes(&frame.clip[1], frame.window);
+        let tilted = mirror::window_planes(&(frame.clip[1] * self.tilt), frame.window);
         for o in &mut self.objects {
             if !o.visible {
                 continue;
@@ -2024,6 +2123,45 @@ impl Renderer {
                 uploaded += std::mem::size_of::<SceneUniform>();
             }
         }
+        // The overlay looks the capture up where each fragment of a mirror surface lands in it, so the
+        // capture is needed only inside the bounds of the surfaces in view, as the capture sees them.
+        let size = m.target.as_ref().map_or((1, 1), |t| t.size);
+        let mut window: Option<[f32; 4]> = None;
+        for i in &self.mirror_surfaces {
+            let o = &self.objects[*i as usize];
+            if !o.visible || o.culled || o.layer != Layer::World {
+                continue;
+            }
+            let model = &self.models[o.model.0];
+            // A waved surface rises and falls out of its model's box.
+            let lift = o.wave.map_or(0.0, |w| {
+                w.max_amplitude(model.center.x.hypot(model.center.z) + model.radius)
+            });
+            let half = model.half + Vec3::new(0.0, lift, 0.0);
+            let place = if o.tilted {
+                self.tilt * o.transform
+            } else {
+                o.transform
+            };
+            let bounds = mirror::projected_box(&(clip[1] * place), model.center, half);
+            window = match (window, bounds) {
+                (Some(a), Some(b)) => Some([
+                    a[0].min(b[0]),
+                    a[1].min(b[1]),
+                    a[2].max(b[2]),
+                    a[3].max(b[3]),
+                ]),
+                (a, b) => a.or(b),
+            };
+        }
+        // A distorted mirror looks the capture up beside the fragment, anywhere in it.
+        if m.mirror.distortion.is_some() || self.mirror_whole {
+            window = window.map(|_| [-1.0, -1.0, 1.0, 1.0]);
+        }
+        let Some((window, scissor)) = window.and_then(|w| mirror::capture_window(w, size)) else {
+            return (uploaded, None);
+        };
+        m.scissor = scissor;
         let d = m.mirror.distortion;
         let row = |r: Option<[f32; 3]>| r.map_or([0.0; 4], |[x, y, z]| [x, y, z, 0.0]);
         let u = MirrorUniform {
@@ -2046,6 +2184,7 @@ impl Renderer {
                 clip,
                 stage,
                 shown,
+                window,
             }),
         )
     }
@@ -2336,6 +2475,7 @@ impl Renderer {
             scene_data: [None, None],
             uniform,
             uniform_data: None,
+            scissor: [0, 0, 1, 1],
             group: None,
         });
         if let Some(size) = self.depth.as_ref().map(|d| d.2) {
@@ -2368,6 +2508,14 @@ impl Renderer {
         let scale = scale.clamp(0.0, 1.0);
         self.changed |= self.mirror_scale != scale;
         self.mirror_scale = scale;
+    }
+
+    /// Draw the capture over the whole reflected view instead of only the part the mirror surfaces in
+    /// view can show (off unless set). The picture is the same either way, which is what this is for:
+    /// tests draw a frame both ways and compare. It costs the draws the cut saves.
+    pub fn set_mirror_capture_whole(&mut self, whole: bool) {
+        self.changed |= self.mirror_whole != whole;
+        self.mirror_whole = whole;
     }
 
     /// Whether the object is a mirror model (`mirrorModelNames`, the bonus-wave floor on stage 92). It
@@ -2529,6 +2677,8 @@ impl Renderer {
                 multiview_mask: None,
             });
             pass.set_bind_group(0, &m.scene_groups[layer], &[]);
+            let [x, y, w, h] = m.scissor;
+            pass.set_scissor_rect(x, y, w, h);
             let mut bound = Bound::default();
             let items = &self.solid[layer];
             self.draw_items(&mut pass, items, (false, true), &mut bound, &mut capture);
@@ -2693,11 +2843,6 @@ impl Renderer {
             ..self.stats
         };
         let (_, depth_view, _) = self.depth.as_ref().unwrap();
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("mb-render frame"),
-            });
         let clear = wgpu::Color {
             r: self.clear_color[0],
             g: self.clear_color[1],
@@ -2705,8 +2850,21 @@ impl Renderer {
             a: self.clear_color[3],
         };
         if self.mirror_active {
-            self.draw_capture(&mut encoder, clear, &mut stats);
+            // The capture goes to the queue by itself, before the picture is encoded: a backend that
+            // keeps its commands in ordinary memory (WebGL2) then never holds both lists at once.
+            let mut capture = self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("mb-render mirror"),
+                });
+            self.draw_capture(&mut capture, clear, &mut stats);
+            self.queue.submit(Some(capture.finish()));
         }
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("mb-render frame"),
+            });
         for layer in 0..2 {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some(if layer == 0 { "background" } else { "world" }),
@@ -2761,6 +2919,7 @@ impl Renderer {
             }
         }
         self.queue.submit(Some(encoder.finish()));
+        self.staged_bytes = 0;
         self.stats = stats;
     }
 

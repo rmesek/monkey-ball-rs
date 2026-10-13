@@ -7,7 +7,7 @@
 //! as an oblique near plane) and the GPU objects; `renderer.rs` runs the passes.
 
 use bytemuck::{Pod, Zeroable};
-use glam::{Mat4, Vec3, Vec4};
+use glam::{Mat4, Vec2, Vec3, Vec4};
 
 use crate::gpu_types::Vertex;
 use crate::renderer::TextureId;
@@ -202,6 +202,103 @@ pub(crate) fn oblique_projection(proj: &Mat4, plane: Vec4) -> Option<Mat4> {
 pub(crate) fn target_size(size: (u32, u32), scale: f32) -> (u32, u32) {
     let side = |v: u32| ((v as f32 * scale).round() as u32).clamp(1, v.max(1));
     (side(size.0), side(size.1))
+}
+
+/// Texels the capture is drawn beyond the bounds of the mirror surfaces: the overlay reads it with a
+/// bilinear filter, which reaches one texel past the place it is asked for.
+pub(crate) const WINDOW_MARGIN: f32 = 2.0;
+
+/// The bounds, in clip space after the divide (`[min x, min y, max x, max y]`), of a box of half size
+/// `half` around `center` under `clip`; `None` when the box is wholly behind the eye. The part of the box
+/// behind the eye is cut off first, so a box the eye stands in gives bounds that cover what is seen of it
+/// (they then reach far out of the frame, which [`capture_window`] cuts back).
+pub(crate) fn projected_box(clip: &Mat4, center: Vec3, half: Vec3) -> Option<[f32; 4]> {
+    // In front of the eye by this much of a unit of `w`.
+    const FRONT: f32 = 1e-4;
+    let corner = |i: usize| {
+        let sign = |bit: usize| if i & bit != 0 { 1.0 } else { -1.0 };
+        let p = center + half * Vec3::new(sign(1), sign(2), sign(4));
+        *clip * p.extend(1.0)
+    };
+    let corners: [Vec4; 8] = std::array::from_fn(corner);
+    let mut bounds: Option<[f32; 4]> = None;
+    let mut add = |p: Vec4| {
+        let (x, y) = (p.x / p.w, p.y / p.w);
+        if x.is_finite() && y.is_finite() {
+            bounds = Some(match bounds {
+                Some(b) => [b[0].min(x), b[1].min(y), b[2].max(x), b[3].max(y)],
+                None => [x, y, x, y],
+            });
+        }
+    };
+    for (i, a) in corners.iter().enumerate() {
+        if a.w >= FRONT {
+            add(*a);
+        }
+        // The three edges that leave this corner towards a higher index.
+        for bit in [1, 2, 4] {
+            if i & bit != 0 {
+                continue;
+            }
+            let b = corners[i | bit];
+            if (a.w >= FRONT) != (b.w >= FRONT) {
+                let t = (FRONT - a.w) / (b.w - a.w);
+                add(*a + (b - *a) * t);
+            }
+        }
+    }
+    bounds
+}
+
+/// What of a capture of `size` texels has to be drawn for mirror surfaces with `bounds`
+/// ([`projected_box`]): the bounds widened by [`WINDOW_MARGIN`] texels and cut to the picture, in clip
+/// space and as a scissor rectangle (`x, y, width, height`, y down). `None` when nothing of the
+/// surfaces is in the picture.
+pub(crate) fn capture_window(bounds: [f32; 4], size: (u32, u32)) -> Option<([f32; 4], [u32; 4])> {
+    let (w, h) = (size.0.max(1) as f32, size.1.max(1) as f32);
+    let (mx, my) = (WINDOW_MARGIN * 2.0 / w, WINDOW_MARGIN * 2.0 / h);
+    let lo = Vec2::new(bounds[0] - mx, bounds[1] - my).max(Vec2::splat(-1.0));
+    let hi = Vec2::new(bounds[2] + mx, bounds[3] + my).min(Vec2::splat(1.0));
+    if !(lo.x < hi.x && lo.y < hi.y) {
+        return None;
+    }
+    // Whole texels that contain the window; clip space has y up, texels count down.
+    let x0 = ((lo.x * 0.5 + 0.5) * w).floor().clamp(0.0, w - 1.0);
+    let x1 = ((hi.x * 0.5 + 0.5) * w).ceil().clamp(x0 + 1.0, w);
+    let y0 = ((0.5 - hi.y * 0.5) * h).floor().clamp(0.0, h - 1.0);
+    let y1 = ((0.5 - lo.y * 0.5) * h).ceil().clamp(y0 + 1.0, h);
+    let scissor = [x0 as u32, y0 as u32, (x1 - x0) as u32, (y1 - y0) as u32];
+    // The window the culling uses is the one the scissor lets through.
+    let window = [
+        x0 / w * 2.0 - 1.0,
+        1.0 - y1 / h * 2.0,
+        x1 / w * 2.0 - 1.0,
+        1.0 - y0 / h * 2.0,
+    ];
+    Some((window, scissor))
+}
+
+/// The six planes (`n . p + d >= 0` inside, unit normals) of the part of the view volume of `clip`
+/// that lands in `window` (`[min x, min y, max x, max y]` after the divide): the whole volume for
+/// `[-1, -1, 1, 1]`.
+pub(crate) fn window_planes(clip: &Mat4, window: [f32; 4]) -> [Vec4; 6] {
+    let (r0, r1, r2, r3) = (clip.row(0), clip.row(1), clip.row(2), clip.row(3));
+    [
+        r0 - r3 * window[0],
+        r3 * window[2] - r0,
+        r1 - r3 * window[1],
+        r3 * window[3] - r1,
+        r2,
+        r3 - r2,
+    ]
+    .map(|p| {
+        let len = p.truncate().length();
+        if len > 0.0 {
+            p / len
+        } else {
+            p
+        }
+    })
 }
 
 /// Group 2 of the overlay: `MirrorParams` in mirror.wgsl.
@@ -497,6 +594,95 @@ mod tests {
         let lifted = p.equation(CLIP_LIFT);
         assert!(lifted.dot(Vec4::new(0.0, 1.0 + CLIP_LIFT, 0.0, 1.0)).abs() < 1e-6);
         assert!(lifted.dot(Vec4::new(0.0, 1.0, 0.0, 1.0)) < 0.0);
+    }
+
+    #[test]
+    fn the_window_is_the_bounds_of_the_surfaces_as_the_capture_sees_them() {
+        let proj = Mat4::perspective_rh(1.0, 1.0, 0.1, 100.0);
+        let view = Mat4::look_at_rh(Vec3::new(0.0, 0.0, 5.0), Vec3::ZERO, Vec3::Y);
+        let clip = proj * view;
+        // A flat tile ahead: its bounds are those of its four corners.
+        let half = Vec3::new(1.0, 0.0, 1.0);
+        let b = projected_box(&clip, Vec3::new(0.5, -1.0, 0.0), half).unwrap();
+        let mut expect = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
+        for (x, z) in [(-0.5, -1.0), (1.5, -1.0), (1.5, 1.0), (-0.5, 1.0)] {
+            let p = clip.project_point3(Vec3::new(x, -1.0, z));
+            expect = [
+                expect[0].min(p.x),
+                expect[1].min(p.y),
+                expect[2].max(p.x),
+                expect[3].max(p.y),
+            ];
+        }
+        for i in 0..4 {
+            assert!((b[i] - expect[i]).abs() < 1e-5, "{b:?} {expect:?}");
+        }
+        // Every point of the tile lands inside them.
+        for (x, z) in [(0.0, 0.0), (1.2, -0.7), (-0.4, 0.9)] {
+            let p = clip.project_point3(Vec3::new(x, -1.0, z));
+            assert!(b[0] <= p.x && p.x <= b[2] && b[1] <= p.y && p.y <= b[3]);
+        }
+        // Behind the eye there are none; a floor the eye stands over reaches out of the picture.
+        assert!(projected_box(&clip, Vec3::new(0.0, 0.0, 20.0), half).is_none());
+        let floor = projected_box(&clip, Vec3::new(0.0, -1.0, 0.0), Vec3::new(50.0, 0.0, 50.0));
+        let floor = floor.unwrap();
+        assert!(floor[0] < -1.0 && floor[2] > 1.0 && floor[1] < -1.0);
+        // It ends at the horizon: nothing of a floor below the eye is above the middle of the picture.
+        assert!(floor[3] <= 1e-3, "{floor:?}");
+
+        // The window: two texels wider, cut to the picture, on whole texels.
+        let (window, scissor) = capture_window([-0.505, -0.26, 0.505, 0.26], (100, 40)).unwrap();
+        assert_eq!(scissor, [22, 12, 56, 16]);
+        for (got, want) in window.iter().zip([-0.56, -0.4, 0.56, 0.4]) {
+            assert!((got - want).abs() < 1e-6, "{window:?}");
+        }
+        let (window, scissor) = capture_window(floor, (64, 32)).unwrap();
+        assert_eq!((window[0], window[1], window[2]), (-1.0, -1.0, 1.0));
+        assert_eq!((scissor[0], scissor[2]), (0, 64));
+        assert_eq!(scissor[1] + scissor[3], 32, "down to the bottom edge");
+        assert!(scissor[1] >= 13, "{scissor:?}");
+        // Out of the picture altogether.
+        assert!(capture_window([1.5, 0.0, 2.0, 0.5], (64, 32)).is_none());
+        assert!(capture_window([-0.2, -3.0, 0.2, -1.5], (64, 32)).is_none());
+        // A sliver still gets a texel.
+        let (_, scissor) = capture_window([0.0, 0.0, 0.0, 0.0], (64, 32)).unwrap();
+        assert!(scissor[2] >= 1 && scissor[3] >= 1);
+    }
+
+    #[test]
+    fn window_planes_keep_what_lands_in_the_window() {
+        let proj = Mat4::perspective_rh(1.0, 1.5, 0.1, 100.0);
+        let view = Mat4::look_at_rh(Vec3::new(1.0, 2.0, 5.0), Vec3::ZERO, Vec3::Y);
+        let clip = proj * view;
+        let inside =
+            |planes: &[Vec4; 6], p: Vec3| planes.iter().all(|pl| pl.dot(p.extend(1.0)) >= 0.0);
+        let whole = window_planes(&clip, [-1.0, -1.0, 1.0, 1.0]);
+        let window = [-0.2, -0.6, 0.5, 0.1];
+        let part = window_planes(&clip, window);
+        let mut seen = [0; 2];
+        for i in 0..2000 {
+            // Points scattered around the view.
+            let f = |k: f32| ((i as f32 * k).sin() * 43758.547).fract() * 2.0 - 1.0;
+            let p = Vec3::new(f(12.9898) * 6.0, f(78.233) * 6.0, f(37.719) * 6.0);
+            let c = clip * p.extend(1.0);
+            if c.w <= 0.0 {
+                assert!(!inside(&whole, p) && !inside(&part, p));
+                continue;
+            }
+            let (x, y, z) = (c.x / c.w, c.y / c.w, c.z / c.w);
+            let depth = (0.0..=1.0).contains(&z);
+            let in_whole = depth && x.abs() <= 1.0 && y.abs() <= 1.0;
+            let in_part =
+                depth && window[0] <= x && x <= window[2] && window[1] <= y && y <= window[3];
+            assert_eq!(inside(&whole, p), in_whole, "{p}");
+            assert_eq!(inside(&part, p), in_part, "{p}");
+            seen[0] += in_whole as u32;
+            seen[1] += in_part as u32;
+        }
+        assert!(seen[0] > seen[1] && seen[1] > 20, "{seen:?}");
+        for plane in part {
+            assert!((plane.truncate().length() - 1.0).abs() < 1e-5);
+        }
     }
 
     #[test]
