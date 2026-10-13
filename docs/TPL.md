@@ -25,4 +25,4 @@ level of the disc to a hash recorded before these checks.
 `test/preview/*.tpl` on the disc are raw RGB565 frame dumps, not TPL containers.
 
 Tests: `cargo test -p mb-tpl --release` (unit tests always; `tests/disc.rs` needs the disc, the comparison also
-needs `deno` and `../WebMonkeyBall`).
+needs `deno` and `../WebMonkeyBall`, and is optional: `tests/golden.rs` holds the decoders without them).

@@ -4,7 +4,7 @@ The static site built into `web/dist/` is the whole game for the browser. An And
 files in a `WebView`. This note is for whoever writes that app. Nothing in this repository builds an APK,
 and **nothing here was run on Android**: there is no Android SDK or device on the machine this was written
 on. (A native Android build of the Rust crates, without a web view, is a later target of the project and
-a different thing; `docs/PLAN.md`, "Targets", says what keeps it possible.) Each statement below is marked
+a different thing; `docs/ARCHITECTURE.md` says what it needs and compares the two.) Each statement below is marked
 
 * **[checked]**: verified here, in desktop Chrome 154, by `scripts/web-e2e.ts` or by reading the code;
 * **[platform]**: from the Android and Chromium documentation as remembered, to be confirmed on a device.

@@ -202,7 +202,7 @@ Closing the tab or killing the process at any moment leaves the old complete sta
 
 Tests: a unit test kills the save backend at every operation with every length of torn write (over 800
 crash points) and checks the value read afterwards is the old or the new one; a test replays the importer's writes
-and cuts them off after every one, checking the result is never accepted as a pack; `tests/kill.rs` kills the
+and cuts them off after every one, checking the result is never accepted as a pack; `crates/mb-desktop/tests/kill.rs` kills the
 real desktop program mid-run three times and reads its saves; the browser check closes the tab mid-play and
 mid-import and restarts.
 

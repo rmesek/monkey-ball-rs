@@ -223,5 +223,6 @@ Nothing here panics on bad bytes; every failure is an `Error`.
   disc is present. `tests/golden.rs`: a hash over every parsed model and decoded mesh of the disc, recorded
   before the hardening.
 - `crates/mb-gma/tests/disc.rs`: parses every GMA (incl. `.gma.lz`) and NaomiLib archive on the disc; compares triangle
-  counts and position checksums against the TypeScript reference (via `deno`, `tests/ref/gma_ref.ts`) for 9 files.
+  counts and position checksums against the TypeScript reference (via `deno`, `tests/ref/gma_ref.ts`) for 9 files,
+  when a checkout of it is there (optional; `tests/golden.rs` holds the parsers without it).
   Env: `MB_DISC`, `MB_REF`, `MB_SCRATCH`.

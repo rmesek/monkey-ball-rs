@@ -1,7 +1,8 @@
 # monkey-ball-rs
 
-A port of Super Monkey Ball (Nintendo GameCube, 2001) to Rust, following the TypeScript project
-WebMonkeyBall as closely as possible. It builds two things: a desktop program, and a static web site that runs
+Super Monkey Ball (Nintendo GameCube, 2001) in Rust. It began as a port of the TypeScript project
+WebMonkeyBall and now stands on its own: nothing needs that project to build, test or develop. It builds two
+things: a desktop program, and a static web site that runs
 the game in a browser as WebAssembly. It is fully offline: there is no network or multiplayer code. This
 repository contains code only. It never contains, downloads or links to game data; you play with your own
 copy of the game.
@@ -49,7 +50,7 @@ what it is and what is supported.
 
 | For | You need |
 |---|---|
-| Everything | Rust, stable, through [rustup](https://rustup.rs). `rust-toolchain.toml` makes rustup install the toolchain, `rustfmt`, `clippy` and the `wasm32-unknown-unknown` target on the first `cargo` command |
+| Everything | Rust, stable, through [rustup](https://rustup.rs). `rust-toolchain.toml` makes rustup install the toolchain, `rustfmt`, `clippy` and the `wasm32-unknown-unknown` and `aarch64-linux-android` targets on the first `cargo` command (the second is for a compile check only; no Android app is built). Edition 2024, Rust 1.88 or newer |
 | The web site | the `wasm-bindgen` command at exactly the version of the `wasm-bindgen` crate in `Cargo.lock`: `cargo install wasm-bindgen-cli --version 0.2.129 --locked` (the build checks the version and prints this command when it is missing or different) |
 | Serving the site locally | Python 3 (any static file server does) |
 | The browser test | [Deno](https://deno.com) and Chrome |
@@ -59,7 +60,7 @@ On Linux the desktop program also needs the development packages of ALSA and ude
 ## Build and run: desktop
 
 ```
-cargo run -p mb-app --release -- "path/to/Super Monkey Ball (USA).rvz"
+cargo run -p mb-desktop --release -- "path/to/Super Monkey Ball (USA).rvz"
 ```
 
 With no argument the program reopens the image used last time, or shows a file dialog. `--help` lists the
@@ -140,8 +141,9 @@ cargo xtask check
 ```
 
 runs the quality gates: `cargo fmt --all -- --check`, `cargo clippy` for the workspace, for the desktop
-program as shipped and for the browser build (`wasm32-unknown-unknown`), all with `-D warnings`, and
-`cargo test --workspace --release` (559 tests with the disc image).
+program as shipped, for the browser build (`wasm32-unknown-unknown`) and for the game library on Android
+(`aarch64-linux-android`, a compile check), all with `-D warnings`, and `cargo test --workspace --release`
+(562 tests with the disc image).
 
 Many tests read the real game. They look for your disc image in the `MB_DISC` environment variable, or for a
 file named `Super Monkey Ball*.rvz` (or `.iso`, `.gcm`) in the directory that contains this repository, and
@@ -178,8 +180,9 @@ frame time against version 0.1.0. The numbers are in [docs/PLAN.md](docs/PLAN.md
 | `crates/mb-engine` | deterministic simulation: physics, collision, stage objects, camera, particles |
 | `crates/mb-game` | courses, lives, score, unlocks, settings, crash-safe saves |
 | `crates/mb-render` | renderer on wgpu: GX material emulation, instanced particles, the ball's shadow, mirror floors; no windowing |
-| `crates/mb-app` | the game above all that: menus, loading, play, HUD, scene assembly (backgrounds, particles, mirrors), input, audio; the desktop program and the browser driver |
-| `crates/mb-web` | the browser target: import worker side, game data and saves in the browser, Web Audio |
+| `crates/mb-app` | the game as a library, the same on every platform: menus, loading, play, HUD, scene assembly (backgrounds, particles, mirrors), and the seams a platform plugs into (input, host, content, audio). No window, no event loop |
+| `crates/mb-desktop` | the desktop program (executable `mb-app`): window, gamepads, file dialog, command line |
+| `crates/mb-web` | the browser target: the canvas driver, import worker side, game data and saves in the browser, Web Audio |
 | `xtask` | the build tool behind `cargo xtask`: `build-web` (with the size budget of the module) and `check` (standard library only, the same command on every platform) |
 | `web/` | the page: `index.html`, `main.js`, `worker.js`, `guard.js`, service worker, manifest, icons |
 | `scripts/` | `web-e2e.ts`, the browser test (Deno, drives Chrome) |
@@ -189,16 +192,17 @@ frame time against version 0.1.0. The numbers are in [docs/PLAN.md](docs/PLAN.md
 
 | | |
 |---|---|
-| [docs/PLAN.md](docs/PLAN.md) | start here: the goal, what works and where, what is left for parity, budgets, open items, recorded decisions |
+| [docs/PLAN.md](docs/PLAN.md) | start here: the goal, what works and where, budgets, open items, recorded decisions |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | how it is put together: the crates, what a platform driver supplies, what each platform needs, what will cause trouble in a port, what every part is worth and what could be removed |
 | [docs/PARITY_PLAN.md](docs/PARITY_PLAN.md) | historical: the finished plan that brought 0.1.0 to parity with the reference (phases, limits, checkpoints) |
 | [CHANGELOG.md](CHANGELOG.md) | what each version contains |
 | [docs/WEB.md](docs/WEB.md) | the web site: build, hosting, storage model, browser requirements, measurements |
 | [docs/ANDROID_WEBVIEW.md](docs/ANDROID_WEBVIEW.md) | putting the site inside an Android app |
 | [docs/GAMEPLAY.md](docs/GAMEPLAY.md) | states, scene, particles, backgrounds, mirror floors, HUD, menus, controls |
-| [docs/ENGINE.md](docs/ENGINE.md) | the simulation, its particles and its parity tests against the reference |
+| [docs/ENGINE.md](docs/ENGINE.md) | the simulation, its particles, its golden tests and the optional parity tests against the reference |
 | [docs/AUDIO.md](docs/AUDIO.md) | sound: formats, backends, what plays when |
 | [docs/DISC_CONTENT.md](docs/DISC_CONTENT.md), [STAGEDEF.md](docs/STAGEDEF.md), [GMA.md](docs/GMA.md), [TPL.md](docs/TPL.md) | what is on the disc and the file formats; GMA.md also has how the renderer draws materials and mirrors |
-| [docs/REFERENCE_NOTES.md](docs/REFERENCE_NOTES.md) | notes on the reference project |
+| [docs/REFERENCE_NOTES.md](docs/REFERENCE_NOTES.md) | notes on WebMonkeyBall, the project this one was ported from |
 | [AGENTS.md](AGENTS.md) | rules and workflow for contributors and AI agents |
 
 ## Known gaps
@@ -216,12 +220,13 @@ frame time against version 0.1.0. The numbers are in [docs/PLAN.md](docs/PLAN.md
 - The warp bonus is shown but not added to the score.
 - The minigames.
 
-**Not verified:** nobody has yet played this version by hand or listened to it; nothing has been run on a
-real phone, in an Android web view, on iOS, in Firefox or Safari, or with a real gamepad; the Europe and
-Japan discs are accepted but untested; the Linux and macOS programs have never been built.
+**Not verified:** nothing has been run on a real phone, in an Android web view, on iOS, in Firefox or
+Safari, or with a real gamepad; the Europe and Japan discs are accepted but untested; the Linux and macOS
+programs have never been built. There is no Android app: the game library compiles for Android and that is
+all that was checked ([docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)).
 
-Where the port differs from the reference on purpose, and the full lists: [docs/PLAN.md](docs/PLAN.md),
-"What is left for parity".
+Where the game differs from the reference on purpose, and the full lists: [docs/PLAN.md](docs/PLAN.md),
+"Against the reference".
 
 ## Credits
 

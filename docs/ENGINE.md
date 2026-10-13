@@ -165,7 +165,18 @@ every particle still ends with its life, which is counted in ticks.
 sim tests (`tests/effects.rs` for the particles: spawn thresholds, lives, the pool limit, no allocation, the
 same simulation with particles on and off), and disc-backed tests that skip cleanly without a disc image /
 Deno / reference checkout
-(`MB_DISC`, `DENO`, `MB_REFERENCE`). `tests/parity.rs` runs the real reference `Game` headless under Deno
+(`MB_DISC`, `DENO`, `MB_REFERENCE`).
+
+`tests/golden.rs` is the guard that needs nothing but the disc: it runs each of the 200 stagedefs through a
+wandering first attempt (random directions held for random times, the action held now and then, so the
+fast-forwarded fly-in and the shortened fall-out are in it) and a retry with the stick held forward, and four
+autopilot goal runs, folding `Sim::hash`, `Sim::hash_visual` and the event count of every tick into one hash
+per stage, compared with a table. The table was recorded at 0.2.0, where the parity tests below last passed,
+so it carries their result forward for whoever has no checkout of the reference. The scripted inputs are
+integer arithmetic; the values are the same in debug and release builds. A failure names the stages that
+changed and prints the new table.
+
+`tests/parity.rs` (optional: it needs Deno and the reference) runs the real reference `Game` headless under Deno
 (`tests/ref/`, stubs for DOM/gl-matrix/fflate) with scripted stick feeds and compares per tick: ball
 position/velocity (raw f64 bits), state, flags, rotations, camera yaw, timers, tilt and the sim hash, and for
 the particles the `includeVisual` hash, both counts, a hash over every field of every effect and confetti

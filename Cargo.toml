@@ -15,14 +15,16 @@ members = [
 [workspace.package]
 version = "0.2.0"
 edition = "2024"
-# The oldest toolchain the code is built with; edition 2024 needs 1.85.
+# The lowest release clippy's MSRV lint accepts for the standard library calls in use. Only the stable
+# toolchain of rust-toolchain.toml has built the code.
 rust-version = "1.88"
 license = "MIT OR Apache-2.0"
 publish = false
 
 # Third-party dependencies are declared per crate, each with a one-line reason (AGENTS.md, hard rule 7).
-# The stack is recorded in docs/PLAN.md: wgpu, winit, glam, bytemuck, ruzstd, web-time; cpal, rfd, gilrs and
-# pollster on the desktop; wasm-bindgen, web-sys and js-sys in the browser. Nothing that talks to a network.
+# The stack is recorded in docs/PLAN.md and docs/ARCHITECTURE.md: wgpu, glam, bytemuck, ruzstd, web-time
+# everywhere; winit in the platform crates; cpal and pollster on native targets; rfd and gilrs on the desktop;
+# wasm-bindgen, web-sys and js-sys in the browser. Nothing that talks to a network.
 
 # Browser bundle (`cargo xtask build-web` builds mb-web with `--profile web`). Whole-program optimisation
 # pays here: the wasm is downloaded and compiled by every visitor and runs on phones. Measured against plain

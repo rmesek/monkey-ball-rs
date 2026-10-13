@@ -1,5 +1,8 @@
 # Reference notes (WebMonkeyBall, read-only)
 
+Notes on the project this one was ported from. The reference is no longer needed to work here
+(`docs/ARCHITECTURE.md`, "Standing without the reference"); this file is kept for provenance.
+
 ## Layout
 `src/` game + parsers, `src/noclip/` vendored renderer and Super Monkey Ball scene code, `tools/` Python pack
 builders (SMB2), `worker/` Cloudflare lobby (multiplayer signalling only, unrelated to assets).

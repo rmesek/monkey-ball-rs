@@ -406,7 +406,7 @@ Its sources, in priority order like the reference's `getStick`: the `TiltX`/`Til
 the browser target through `tilt::TiltSteering`), the `MoveX`/`MoveY` axes (gamepad or touch stick), then
 keys (unramped, as in the reference; the world tilt itself eases). `PlayState` applies the stick curve and
 `quantize_input`. A new input device only has to write actions and axes into `InputState` from its driver
-(`app.rs` on the desktop, the `Platform` hooks of `shell.rs` in the browser); nothing in the game states
+(`mb-desktop`'s `app.rs`, the `Platform` hooks of `mb-web`'s `shell.rs`); nothing in the game states
 changes. The pointer API (`set_pointer`, `set_pointer_down`, `add_scroll`) is documented at the top of
 `input.rs`; `ui::TouchControls` feeds it for touches.
 
@@ -463,8 +463,9 @@ Different from `hud.ts` here:
 - `cargo test -p mb-app`: `tests/gameplay.rs` drives the real states on an offscreen renderer (goal advances
   the course and saves, fall-out retries until game over and continue, pause / retry / quit in practice,
   pointer and stick input, every course stage loads and renders); `tests/pack.rs` does the same over an
-  imported game pack behind a deferred source, the way the browser reads; `tests/pause.rs`, `tests/rules.rs`,
-  `tests/kill.rs` (the real program killed mid-run). They skip without a disc or a GPU adapter.
+  imported game pack behind a deferred source, the way the browser reads; `tests/pause.rs`, `tests/rules.rs`;
+  `crates/mb-desktop/tests/kill.rs` (the real program killed mid-run). They skip without a disc or a GPU
+  adapter.
 - `tests/gameplay.rs` and `tests/pack.rs` also play floor 1 and compare every frame's particle instances and
   quads with what the simulation holds (streaks, landing burst, confetti, sparkles, the shadow on exactly
   while the ball is visible, a pause that changes nothing), and `gameplay.rs` holds the action button through
@@ -528,7 +529,7 @@ The tests run on developer support that the product does not contain: the window
 the waypoint autopilot (`autopilot.rs`) and a PNG writer (`image.rs`) are compiled only with the `dev` cargo
 feature, which `cargo test` switches on by itself. A `dev` build of the program also has two options:
 
-- `cargo run --release -p mb-app --features dev -- <disc> --autoplay <stage> [--screenshot-dir <dir>]`:
+- `cargo run --release -p mb-desktop --features dev -- <disc> --autoplay <stage> [--screenshot-dir <dir>]`:
   windowless; walks the real menu with key presses, plays the stage with the autopilot and, when asked,
   writes PNGs of the menu, fly-in, READY, GO, play, goal and result to a directory of your choice. Exit code
   1 if the goal is not reached.

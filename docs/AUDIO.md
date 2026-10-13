@@ -54,7 +54,7 @@ game states --(Sfx, roll, stage music, volumes)--> Audio --flush(), once per fra
 * No device, or a lost one: not an error. The backend stays silent, advances the mixer by wall-clock time
   so queued sounds end and the music is in the right place, and retries every two seconds.
 * Suspend (window minimized or occluded): the stream is paused, so no callbacks run.
-* Telemetry (a `dev` build prints it: `cargo run -p mb-app --features dev -- <disc> 1 --exit-after <s>`;
+* Telemetry (a `dev` build prints it: `cargo run -p mb-desktop --features dev -- <disc> 1 --exit-after <s>`;
   `--mute` opens no device): device name and
   format, stream opens and errors, callbacks, frames, peak and RMS of the rendered signal, clamped samples,
   messages applied / dropped, callbacks that found the mixer locked, and "late callbacks" (a gap of more
@@ -239,7 +239,7 @@ ids tile `0x000..=0x367`. The main game uses `allse` and `comn` only.
   softest impact tier (`0x12`, below the reference's threshold), the time-over explosion (`0x128`), the
   party-ball and goal-replay sounds, 1UP, continue / game-over lines and jingles, menu music, minigame
   banks. All of these are in the original game only: the reference plays none of them, so they are outside
-  parity and not planned (`docs/PLAN.md`, "What is left for parity"). Every call the reference's
+  parity and not planned (`docs/PLAN.md`, "Against the reference"). Every call the reference's
   `audio.ts` makes for SMB1 has its sound here ("What plays when"); its `playAnnouncerTimeBonus` is empty.
 * The announcer's `GO` has one take (the reference picks one of two files of its own at random).
 * The "FALL OUT" call is played when the fall-out starts; the original ties it to its banner sprite's

@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+Nothing new for a player; no version number yet. A cleaning pass that makes the project a base for more
+platforms ([docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)).
+
+- **Scope:** the instant replays after a fall-out and a goal are dropped, by the owner's decision. The plan
+  that had them as a version 0.3.0 is finished and kept as a record ([docs/PARITY_PLAN.md](docs/PARITY_PLAN.md)).
+- **Standalone:** the simulation of every stage on the disc is recorded as golden hashes
+  (`crates/mb-engine/tests/golden.rs`), taken where the comparison with WebMonkeyBall last passed. The
+  reference is no longer needed to develop; the tests that use it still run when a checkout is there.
+- **One crate per platform:** `mb-app` is the game as a library, without a window or an event loop. The
+  desktop program moved to the new crate `mb-desktop` (build it with `cargo run -p mb-desktop --release`;
+  the executable is still `mb-app`), the browser driver into `mb-web`.
+- **Android groundwork, no app:** the game library is compile-checked for `aarch64-linux-android` by
+  `cargo xtask check`; a disc image can be opened from an already-open file
+  (`content::open_disc_stream`), which is what a platform with file descriptors instead of paths needs; a GL
+  adapter gets the WebGL2 limits on every platform (`gpu::required_limits`).
+- **Rust edition 2024**, resolver 3, `rust-version` 1.88.
+- **Removed:** fog in the renderer (never switched on); seven copies of a test helper.
+- **Size and tests:** the wasm module is 4 014 488 bytes (0.2.0: 4 016 134); 562 tests (0.2.0: 559); the
+  browser test's 97 checks pass.
+
 ## 0.2.0
 
 Released 2026-10-13, after the project owner tried the release candidate by hand and confirmed it.
