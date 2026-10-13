@@ -14,7 +14,8 @@ Four things, in this order when they pull against each other.
 
 1. **Feature complete in the agreed scope.** Everything WebMonkeyBall shows and plays for Super Monkey Ball 1
    is in the port: all effects, sounds and levels from, and only from, SMB1. Not in scope, by decision:
-   multiplayer / netplay / lobby, the replay-file player, the map viewer, SMB2. What the original game has
+   multiplayer / netplay / lobby, the replay-file player, the instant replays after a fall-out and a goal,
+   the map viewer, SMB2. What the original game has
    and the reference lacks is outside parity (list below).
 2. **Portable between platforms.** Desktop and web browser now; a native Android app later.
 3. **Minimal footprint.** Download size, memory, storage and per-frame work are measured and held.
@@ -125,14 +126,9 @@ reference was not run in a browser beside it.
 
 ### Left, in the agreed scope
 
-| Item | In the reference | Planned |
-|---|---|---|
-| Result replays after a fall-out and after a goal | `game.ts`: the history of the last 720 ticks, `startResultReplay`, `stepResultReplay`; `camera.ts`: `FALLOUT_REPLAY`, `GOAL_REPLAY` | 0.3.0, phase 5 of [PARITY_PLAN.md](PARITY_PLAN.md) |
-| The goal-sequence skip (`canSkipGoal`) | can only become true after a goal replay ([ENGINE.md](ENGINE.md), "The action button after the intro") | with the replays |
-| The confetti's remaining life | pieces live 210 to 269 ticks; without a replay the goal sequence ends after about 150 | with the replays |
-| The HUD during a replay | `hud.ts` starts no `GOAL` or `FALL OUT` banner while a replay runs or in the tick it ends | with the replays |
-
-Nothing else was found: `hud.ts`, `audio.ts`, `Background.ts` (only the night, storm and sunset classes do
+Nothing. The one item that was left, the instant replays after a fall-out and after a goal, was dropped by
+the owner on 2026-10-13 ([PARITY_PLAN.md](PARITY_PLAN.md), "Dropped: result replays") and is now under
+"Out of scope by decision". Nothing else was found: `hud.ts`, `audio.ts`, `Background.ts` (only the night, storm and sunset classes do
 anything) and `World.ts` have no SMB1, single-player behaviour without a counterpart here. The one line of
 the reference's HUD that is not drawn is its netplay round-trip time, which is multiplayer.
 
@@ -147,7 +143,7 @@ reason, in the file named; this is the index.
 | The mirror's cut at the plane, target size and format, the wave floor in its own reflection, no capture when no mirror model is in view | [GMA.md](GMA.md), "Mirror floors" |
 | Particles are batched and drawn after the sorted objects; the sparkle uses the disc's `CROSS_LIGHT` texture; streak tails follow simulated time; 512 streaks and 928 instances a frame; the collision flash ported as it is, under the floor; no shadow on a fragment its material discards | [GAMEPLAY.md](GAMEPLAY.md), "Shadow and particles" |
 | The effect pool is capped at 1024; effect ids restart with every `Sim` | [ENGINE.md](ENGINE.md), "Particles (display only)" |
-| The confetti lives only for the goal sequence | [ENGINE.md](ENGINE.md), "Not modelled"; ends with the result replays |
+| A fall-out and a goal are shown once, without the reference's instant replay; the action cannot end a goal sequence; the confetti lives only for the goal sequence | [PARITY_PLAN.md](PARITY_PLAN.md), "Dropped: result replays"; [ENGINE.md](ENGINE.md), "Not modelled" |
 | Sunset clouds scroll visibly, from a seeded generator, hurried by the stage's own clock; flipbook windows drawn first among the blended meshes | [GAMEPLAY.md](GAMEPLAY.md), "Backgrounds and the bonus wave" |
 | `JUMP TO FLOOR n` names the destination floor; the line and its trails use their opacities; no jump line in practice; `FLOOR SCORE` on a warp goal shows a multiplier nobody awards (as in the reference) | [GAMEPLAY.md](GAMEPLAY.md), "HUD" |
 | The ball's shells are sorted by a thousandth of the reference's depth offsets; a stage model's blended meshes are sorted | [GAMEPLAY.md](GAMEPLAY.md), "Material switches" |
@@ -169,6 +165,8 @@ continues and a 1UP per 100 bananas (`mb-game/src/run.rs`; see "Continue rule" u
 ### Out of scope by decision
 
 Multiplayer, netplay, lobby, rollback, spectating and the chained mode; the replay-file player (`replay.ts`);
+the instant replays after a fall-out and a goal (`startResultReplay`, the `FALLOUT_REPLAY` and `GOAL_REPLAY`
+cameras), with the goal-sequence skip and the rest of the confetti's life that only exist with them;
 the map viewer and its free camera; SMB2 (stagedefs, courses, switches, wormholes, texture scroll, fog).
 
 ## Unverified
@@ -200,7 +198,7 @@ Small things known to be unfinished or resting on thin evidence. None blocks pla
 | Stage 110's two mirror levels | The switch between the floors is tested with cameras placed above and between them (`a_stage_with_two_mirror_floors_mirrors_in_the_one_under_the_camera`), not by a ball falling from one to the other in play. |
 | Timing limits in the browser check | Exercised at 165 and 240 Hz only (see "Unverified"). Long-frame counts are small numbers and are held to three times 0.1.0's share for that reason. |
 | Engine parity, parts not compared | The bonus-stage branch of the fall-out rule and the bonus clear (the headless reference has no course), and confetti from a goal on a moving anim group. `tests/synthetic.rs` covers the first two without the reference ([ENGINE.md](ENGINE.md), "Tests"). |
-| wasm size left | 111 164 bytes of the budget remain; the result replays have to fit or the budget is raised on purpose. |
+| wasm size left | 111 164 bytes of the budget remain. |
 | Figures not taken again for 0.2.0 | JS heap, the browser's memory during the import, stage load times in the browser, sound effect bytes ([WEB.md](WEB.md), "Measurements": the rows that say so). |
 | Phones | Nothing has run on a real phone. The project owner tried the 0.1.0 site on their own phone (Firefox for Android among the browsers); the touch, tilt and file-chooser fixes came from those reports and were not confirmed there afterwards. |
 | File chooser on phones | The input asks for `application/octet-stream` so Firefox for Android stops asking for camera and "record audio" permission (`web/main.js`, "picking the file"). Unconfirmed on a device; a file manager that reports the image under another type would grey it out, hence the "show all files" button. |
@@ -215,10 +213,11 @@ Small things known to be unfinished or resting on thin evidence. None blocks pla
 ## Decisions (recorded)
 
 - **Scope:** everything WebMonkeyBall has for Super Monkey Ball 1, from and only from SMB1. Not multiplayer /
-  netplay / lobby, not the replay-file player, not the map viewer, not SMB2. What only the original has
+  netplay / lobby, not the replay-file player, not the map viewer, not SMB2, and (decided 2026-10-13) not
+  the instant replays after a fall-out and a goal: the game is in a good enough state without them. What only the original has
   (the monkey, its voices, jingles, menu music) is not added.
 - **Versions:** 0.2.0 is phases 1 to 4 of [PARITY_PLAN.md](PARITY_PLAN.md) (effects, small items, materials,
-  mirrors). The fall-out and goal result replays (phase 5) are 0.3.0.
+  mirrors), and the end of that plan; phase 5 (result replays) was dropped.
 - **Release gate:** no release tag and no push before the project owner has tested the release candidate by
   hand and confirmed. Until then the version is "the 0.2.0 release candidate".
 - **Targets:** the desktop program and the static site now; a native Android app later, which current work
@@ -255,8 +254,7 @@ Small things known to be unfinished or resting on thin evidence. None blocks pla
 - **Developer support stays out of the product:** the windowless driver, the autopilot and test doubles are
   behind `mb-app`'s `dev` feature, which only `cargo test` and an explicit `--features dev` switch on.
 - **Strictly offline:** no multiplayer, lobbies, netplay, rollback, telemetry, update checks or online
-  leaderboards, and no networking crates. Deterministic simulation and state hashing stay (result replays,
-  tests).
+  leaderboards, and no networking crates. Deterministic simulation and state hashing stay (tests).
 
 ## Candidates for simplification
 

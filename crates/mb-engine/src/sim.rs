@@ -2,8 +2,8 @@
 //! (intro, tilt, stage objects, ball step, fall-out, banana pickup, goal entry, timers, gameplay camera),
 //! one fixed 60 Hz tick per [`Sim::step`].
 //!
-//! Not modelled (render/UI/meta only): result replays, audio triggers, course progression. A finished sequence
-//! is reported through [`Phase::Finished`] instead of loading the next stage.
+//! Not modelled: result replays (dropped by decision), audio triggers and course progression (other crates).
+//! A finished sequence is reported through [`Phase::Finished`] instead of loading the next stage.
 
 use crate::ball::{check_ball_entered_goal, Ball, GoalHit, PhysicsCtx};
 use crate::camera::GameplayCamera;

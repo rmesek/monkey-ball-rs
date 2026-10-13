@@ -537,8 +537,8 @@ feature, which `cargo test` switches on by itself. A `dev` build of the program 
 
 ## Not ported from the reference
 - Result replays: the reference replays the fall-out and the goal, and with them come the goal-sequence
-  skip and the rest of the confetti's life. They are version 0.3.0; `docs/PLAN.md`, "What is left for
-  parity", has the list and `docs/PARITY_PLAN.md`, "Phase 5", the brief.
+  skip and the rest of the confetti's life. Dropped by decision on 2026-10-13 (`docs/PARITY_PLAN.md`,
+  "Dropped: result replays").
 - Not in the reference either (original game only): the monkey inside the ball, its voice lines and the
   sounds listed under "Known gaps" in `docs/AUDIO.md`.
 - Multiplayer, netplay, lobby, the replay-file player, the map viewer, SMB2 content (out of scope by

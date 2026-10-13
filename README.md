@@ -10,8 +10,8 @@ This is version 0.2.0 ([CHANGELOG.md](CHANGELOG.md)).
 
 ## What the game has
 
-Everything WebMonkeyBall has for Super Monkey Ball 1, except the replays after a fall-out and a goal
-(planned for 0.3.0):
+Everything WebMonkeyBall has for Super Monkey Ball 1, except its instant replays after a fall-out and a
+goal, which were left out by decision:
 
 - Course Play (Beginner, Advanced, Expert, the Extra courses and Master) and Practice on the 109 course
   stages, with lives, score, continues and unlocks; the same simulation as the reference, tick for tick.
@@ -190,7 +190,7 @@ frame time against version 0.1.0. The numbers are in [docs/PLAN.md](docs/PLAN.md
 | | |
 |---|---|
 | [docs/PLAN.md](docs/PLAN.md) | start here: the goal, what works and where, what is left for parity, budgets, open items, recorded decisions |
-| [docs/PARITY_PLAN.md](docs/PARITY_PLAN.md) | the plan for reaching parity with the reference: phases, limits, checkpoints, and the brief for the result replays |
+| [docs/PARITY_PLAN.md](docs/PARITY_PLAN.md) | historical: the finished plan that brought 0.1.0 to parity with the reference (phases, limits, checkpoints) |
 | [CHANGELOG.md](CHANGELOG.md) | what each version contains |
 | [docs/WEB.md](docs/WEB.md) | the web site: build, hosting, storage model, browser requirements, measurements |
 | [docs/ANDROID_WEBVIEW.md](docs/ANDROID_WEBVIEW.md) | putting the site inside an Android app |
@@ -203,10 +203,10 @@ frame time against version 0.1.0. The numbers are in [docs/PLAN.md](docs/PLAN.md
 
 ## Known gaps
 
-**Left to match the reference (WebMonkeyBall):**
+**In the reference (WebMonkeyBall), left out by decision:**
 
-- The replays shown after a fall-out and after a goal, and what depends on them: skipping the end of the
-  goal sequence, and the confetti falling for its whole life. Planned for version 0.3.0.
+- The instant replays shown after a fall-out and after a goal, and what depends on them: skipping the end
+  of the goal sequence, and the confetti falling for its whole life.
 
 **In the original game but not in the reference, and not planned:**
 

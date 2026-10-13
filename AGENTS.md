@@ -9,8 +9,8 @@ pull against each other:
 
 1. **Feature complete in the agreed scope:** everything the reference shows and plays for Super Monkey
    Ball 1, with all effects, sounds and levels from and only from SMB1. Not multiplayer / netplay / lobby,
-   not the replay-file player, not the map viewer, not SMB2, and not what only the original game has (the
-   monkey in the ball, its voices, jingles, menu music).
+   not the replay-file player, not the instant replays after a fall-out and a goal, not the map viewer, not
+   SMB2, and not what only the original game has (the monkey in the ball, its voices, jingles, menu music).
 2. **Portable between platforms:** the desktop and the web browser now, a native Android app later.
 3. **Minimal footprint:** download size, memory, storage and per-frame work are measured and held by tests.
 4. **Minimal engine complexity,** using only portable and basic features. Prefer removing code to adding
@@ -66,7 +66,7 @@ user what is kept and lets them erase it; the game runs and survives a sudden ex
 5. **Strictly offline.** No network or multiplayer functionality and no networking crates. Skip the
    reference's `netplay`, `netcode_protocol`, `rollback` and lobby code. The page makes no request except for
    its own bundle files, and its Content-Security-Policy says so. Deterministic simulation and `sim_hash`
-   stay, for replays and tests.
+   stay, for the tests.
 6. **Rust only** for the game. The build tool is Rust too (`xtask`, standard library only; no shell scripts). The
    exceptions are the page (`web/*.html`, `web/*.js`) and the browser test (`scripts/web-e2e.ts`). Keep `mb-assets`, the parsers, `mb-audio`,
    `mb-engine` and `mb-game` free of GPU, windowing and browser code.
@@ -233,7 +233,7 @@ For work that splits cleanly, the lead agent hands workstreams to subagents by c
 | Audio | `src/audio.ts`, `src/audio/smb1_sfx_ids.ts` | `mb-audio`, `mb-app/src/audio.rs` |
 | Determinism | `src/determinism.ts`, `src/sim_hash.ts` | `mb-engine/src/{determinism,hash}.rs` |
 | Particles, confetti, shadow | `src/effects.ts`, `src/stage.ts` (confetti), `src/noclip/SuperMonkeyBall/World.ts` (`drawEffects`, `drawConfetti`, `drawProjectedShadow`) | `mb-engine/src/effects.rs`, `mb-render/src/{instances,quads,effects}.rs`, `mb-app/src/particles.rs` |
-| Result replays (not ported; version 0.3.0) | `src/game.ts` (`startResultReplay`, `stepResultReplay`), `src/camera.ts` (`FALLOUT_REPLAY`, `GOAL_REPLAY`) | `docs/PARITY_PLAN.md`, "Phase 5" |
+| Result replays (dropped by decision, not ported) | `src/game.ts` (`startResultReplay`, `stepResultReplay`), `src/camera.ts` (`FALLOUT_REPLAY`, `GOAL_REPLAY`) | `docs/PARITY_PLAN.md`, "Dropped: result replays" |
 | Not used (network, replay files, SMB2) | `src/netplay.ts`, `src/netcode_protocol.ts`, `src/rollback.ts`, `src/replay.ts`, `src/course_smb2.ts`, `src/course_mb2ws.ts`, `src/smb2_render.ts` | |
 
 Format and porting notes: `docs/REFERENCE_NOTES.md`, `docs/STAGEDEF.md`, `docs/GMA.md`, `docs/TPL.md`,

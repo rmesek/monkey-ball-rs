@@ -1,21 +1,24 @@
 # Plan: parity with WebMonkeyBall (SMB1)
 
 Written 2026-10-08 against commit `a1f1575` (version 0.1.0); brought in line with what happened on
-2026-10-13, when phases 1 to 4 were done. This file is the record of the plan: its phases, limits, budgets
-and checkpoints. The current state, what is left and the direction are in [PLAN.md](PLAN.md) and are not
-repeated here.
+2026-10-13, when phases 1 to 4 were done and the owner closed the plan. **The plan is finished: this file is
+a historical record** of its phases, limits, budgets and checkpoints, kept because the budget tests and
+several docs cite it. The current state and the direction are in [PLAN.md](PLAN.md) and are not repeated
+here.
 
 ## Goal
 
 Everything WebMonkeyBall shows and plays for Super Monkey Ball 1 is in this port: all effects, sounds and
-levels. Still out: multiplayer, the replay-file player, the map viewer, SMB2.
+levels. Out by decision: multiplayer, the replay-file player, the map viewer, SMB2, and (since 2026-10-13)
+the instant replays after a fall-out and a goal.
 
 The targets of this work are the two that exist and worked in 0.1.0: the desktop program and the static web
 site (which a phone's browser can open). Neither may regress. An Android app is a later goal and is not
 built here; this plan only makes sure nothing done now stands in its way (see "Keeping Android possible").
 
-Levels, physics and sound were at parity in 0.1.0. The work is visual (phases 1 to 4) and one gameplay
-item (phase 5).
+Levels, physics and sound were at parity in 0.1.0. The work was visual (phases 1 to 4). A fifth phase,
+the result replays, was planned for a version 0.3.0 and dropped by the owner on 2026-10-13: the game is good
+enough without them (see "Dropped: result replays" below).
 
 | Phase | What | State | Checkpoint |
 |---|---|---|---|
@@ -25,16 +28,16 @@ item (phase 5).
 | 3 | Material fidelity | done | `checkpoint/p3` (the same commit as p2) |
 | 4 | Mirror floors | done | `checkpoint/p4` (`1417840`) |
 | | Version 0.2.0: phases 1 to 4 | **released 2026-10-13**, after the owner's manual test | `v0.2.0` |
-| 5 | Result replays | not started | version 0.3.0, `checkpoint/p5` |
+| 5 | Result replays | **dropped 2026-10-13**, never started | none |
 
 ## Decisions this plan rests on
 
 | | Question | Decided |
 |---|---|---|
-| D1 | Port the fall-out and goal instant replays? | yes, in 0.3.0 (phase 5) |
+| D1 | Port the fall-out and goal instant replays? | first yes, in a 0.3.0; **reversed 2026-10-13: no**, the owner dropped them |
 | D2 | Add what the original has and the reference lacks (monkey in the ball, its voices, jingles, menu music)? | no; out of scope |
 | D3 | Push branches and tags to `origin`? | no, local only; `v0.2.0` is made and anything pushed only after the owner has tested the release candidate by hand and confirmed |
-| D4 | Which version is which? | 0.2.0 is phases 1 to 4; phase 5 is 0.3.0 |
+| D4 | Which version is which? | 0.2.0 is phases 1 to 4, and the end of this plan |
 | D5 | Reflections on by default? | yes, on every platform; Options -> Reflections turns them off |
 | D6 | May a budget be raised? | slightly, when necessary, and only with a measurement so that it does not creep; none was raised |
 
@@ -113,7 +116,7 @@ describes, and records the numbers there. A phase that breaks a budget is not me
 * `main` stays releasable. One branch per phase, `parity/p1-effects` and so on, merged into `main` with
   `--no-ff` when the gates are green, then an annotated tag `checkpoint/p1`. One logical change per commit.
 * `CHANGELOG.md` and the matching `docs/` file are updated in the phase that changes them.
-* Version 0.2.0 is phases 1 to 4. Phase 5 is left for 0.3.0. With phase 4 merged the version is set and
+* Version 0.2.0 is phases 1 to 4. With phase 4 merged the version is set and
   the release candidate is handed to the project owner to try by hand; the tag `v0.2.0` is made, and
   anything is pushed, only after the owner confirms.
 * Cargo workspace: no new crate. Effect state goes into `mb-engine`, drawing into `mb-render`, assembly
@@ -173,7 +176,7 @@ The intro fast-forward (planned as 2e) and the renderer side of phase 3 were don
 
 Where the outcome differs from the plan: the `GOAL` flash is the reference's solid white silhouette, not an
 additive blend, and `GO` has no flash in the reference (a tint, there since 0.1.0). The goal-sequence skip
-was looked at with the fall-out skip and left for phase 5, because without result replays it cannot
+was looked at with the fall-out skip and not ported, because without result replays it cannot
 trigger in the reference.
 
 ## Phase 3: material fidelity (done)
@@ -200,53 +203,26 @@ the mirror (`docs/GMA.md`, "Meshes, uploads and memory"), not by raising the bud
 from the reference were chosen on purpose (stage 92 without the distortion offset, the planes of stages
 103 and 74): `docs/GAMEPLAY.md`, "Mirror floors".
 
-## Phase 5: result replays (version 0.3.0, not started)
+## Dropped: result replays
 
-The one piece of the agreed scope that is left. What it needs, read from the reference:
+Phase 5 would have ported the reference's instant replays: 30 ticks into a fall-out, and at the end of a
+goal sequence, the reference rewinds its rollback history and shows the last seconds again from a replay
+camera (`game.ts` `startResultReplay` / `stepResultReplay`, `camera.ts` `FALLOUT_REPLAY` / `GOAL_REPLAY`).
+The owner dropped it on 2026-10-13, before any code was written. Nothing in the repository implements or
+reserves anything for it.
 
-**What the player sees.** 30 ticks into a fall-out (`FALLOUT_RESULT_REPLAY_START_DELAY_FRAMES`) the game
-cuts to a replay of the last 120 ticks before the fall, from a camera placed beside the ball's path; 90
-ticks in it cuts once more, to a closer camera on the last 90 ticks. At the end of a goal sequence it
-replays the approach to the goal (150 to 240 ticks, more for a faster entry) from one of four cameras
-chosen by where the ball came from and how fast. The action button ends either replay from its 30th tick. Not on
-bonus stages for the fall-out; never with more than one player.
+What stays different from the reference because of that, all of it on purpose now
+([PLAN.md](PLAN.md), "Deliberate differences"):
 
-| Piece | In the reference | Here |
-|---|---|---|
-| History | `pushResultReplayHistoryFrame`, `shouldCaptureResultReplayHistory`: a rollback state, the input and the camera yaw per tick, the last 720 ticks (`RESULT_REPLAY_HISTORY_FRAMES`), only during play and the armed tail of a goal sequence | `mb-engine`: `Sim` is `Clone`, but each carries its 320 KB particle pool, so 720 clones are out of the question inside the memory budget. Keep one snapshot and the inputs since, and re-simulate (the simulation is deterministic), or a ring of the fields a replay needs. Fixed capacity, no allocation per tick |
-| Starting | `startResultReplay('fallout' / 'goal')`: needs at least 30 ticks of history, rewinds to the first state, keeps a resume state | a replay state beside `Sim`, in `mb-engine` |
-| Stepping | `consumeResultReplayInputFrame`, `stepResultReplay`: feeds the recorded inputs, the fall-out's second cut at tick 90, the hand-back (a goal replay returns the rest of its `totalFrames` to the goal sequence, with `goalSkipTimerFrames = min(itself, the frames left)`), the skip | `mb-engine`; `play.rs` passes the action as it does today |
-| Cameras | `camera.ts`: `initGoalReplay` / `updateGoalReplay` (modes 0 to 3, the goal followed on its anim group), `updateFalloutReplay`; the fall-out camera is seeded in `game.ts` `initResultReplayCamera` | `mb-engine/src/camera.rs`: two new states beside the four there |
-| Goal skip | `canSkipGoal` in `update`: the action ends the goal sequence once its skip timer is at 0 and the ball has launched | `Sim` gets the goal skip timer it does not have (`docs/ENGINE.md`, "The action button after the intro") |
-| Confetti | lives on through the replay and the rest of the sequence | nothing to add: the pieces already carry their life; the sequence just lasts longer |
-| HUD | `hud.ts` starts no `GOAL` / `FALL OUT` banner while a replay runs or in the tick it ends | `mb-app/src/hud.rs` |
-| Sound | `suppressAudioEffects` and the event flags: sounds of replayed ticks | to be read before porting: which events sound again in a replay |
-| Drawing | the replayed ticks are ordinary ticks | nothing new in `mb-render`; particles are simulated again from the rewound state |
-
-Things to settle before the port, each found while reading:
-
-* **The replay cameras use `Math.random()`** (nine calls in `camera.ts`, three more in
-  `initResultReplayCamera`), not one of the reference's seeded generators. A bit-exact comparison needs the
-  harness (`crates/mb-engine/tests/ref/`) to replace `Math.random` with a scripted source, and the port
-  needs a generator of its own for them, as the sunset clouds have; it must not touch the simulation's or
-  the visual stream.
-* **A replay re-runs the simulation**, so the hash, the events and the particles of replayed ticks must not
-  leak into scoring, saves or sounds: the resume state is what the stage continues from.
-* **Budgets.** 111 164 bytes of the wasm budget and the 2 MB of memory are what the history and the two
-  cameras have to fit in; the allocation test (`stepping_with_particles_allocates_nothing`) must cover a
-  tick that records.
-* **Pause, retry and quit during a replay** have no counterpart in the reference's menu; `play.rs` has to
-  say what each does (`crates/mb-app/tests/pause.rs` has the tests for the sequences as they are).
-
-Verified by: a parity test for the replay flow and both cameras (`tests/parity.rs`, with the reference's
-result replays switched on, which `action_in_sequences_matches_reference` already does up to the cut);
-`tests/gameplay.rs` and `tests/pack.rs` for the flow in the real states; a check in `scripts/web-e2e.ts`.
-Then `checkpoint/p5`.
+* a fall-out and a goal are shown once, from the play camera;
+* the action button cannot end a goal sequence (the reference's `canSkipGoal` can only become true after a
+  goal replay: [ENGINE.md](ENGINE.md), "The action button after the intro");
+* the confetti lives for the goal sequence (about 150 ticks) and not for its own 210 to 269.
 
 ## Order and parallelism
 
 ```
-P0 -> P1 (1a || 1b -> 1c) -> P2 -> P3 -> P4 -> [0.2.0 release candidate, owner's test] -> P5
+P0 -> P1 (1a || 1b -> 1c) -> P2 -> P3 -> P4 -> [0.2.0 release candidate, owner's test]
 ```
 
 ## Not verified by this plan

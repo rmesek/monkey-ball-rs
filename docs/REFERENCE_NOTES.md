@@ -24,7 +24,7 @@ rollback and WebRTC netplay. Audio via the browser decoder from wav/ogg. HUD fro
 For SMB1 it draws the ball's shells and no monkey, particles (`effects.ts`), confetti, a projected ball
 shadow, three animated backgrounds (night, storm, sunset; the other classes of `Background.ts` only draw
 their objects), the bonus wave and mirror floors, and it replays a fall-out and a goal from its rollback
-states (`game.ts`, `startResultReplay`). Which of that is ported is in `docs/PLAN.md`.
+states (`game.ts`, `startResultReplay`). All of it is ported except the replays (`docs/PLAN.md`).
 
 ## What this port does differently
 The reference is given extracted files (stages, models, `.ogg` / `.wav` audio, HUD PNGs) at fixed paths. This

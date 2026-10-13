@@ -71,7 +71,7 @@ none looks for a press, and nothing has to be released first.
 | `fastForwardIntro` (`update`) | as above | ported |
 | `canSkip` in `updateRingout` | ends the fall-out sequence | ported |
 | `canSkipGoal` (`update`, goal timer) | can never be true: see below | not ported, nothing to port |
-| `canSkip` in `stepResultReplay` | exists only inside a result replay | not ported (Phase 5) |
+| `canSkip` in `stepResultReplay` | exists only inside a result replay | not ported (result replays were dropped) |
 
 **Fall-out.** `beginFalloutSequence` sets `ringoutTimerFrames` to 270 and `ringoutSkipTimerFrames` to 60
 (`Sim::ringout_timer`, `Sim::ringout_skip_timer`); on a bonus stage 120 and 0. `updateRingout` runs on every
@@ -140,7 +140,7 @@ which the reference counts across stage loads.
 
 ## Not modelled
 SMB2 (wormholes, switches, seesaws) and multiplayer: out of scope. Audio and course progression: other
-crates. Result replays: not yet, they are version 0.3.0 (`docs/PARITY_PLAN.md`, "Phase 5"). The reference
+crates. Result replays: dropped by decision (`docs/PARITY_PLAN.md`, "Dropped: result replays"). The reference
 starts one 30 ticks into a fall-out and at goal end; `Sim` just continues/finishes, as the reference does
 with replays switched off, so there is no skipping of a replay and no leaving of the goal sequence after
 one, and in a `Sim` the confetti is never older than the goal sequence, about 150 ticks of its 210 to 269.
