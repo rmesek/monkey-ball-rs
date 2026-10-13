@@ -5,7 +5,7 @@
 // It serves target/site with `python -m http.server` (the plain static server the bundle is meant for), starts
 // Chrome with a throw-away profile, and drives it over the DevTools protocol: the disc image is set on the
 // page's own <input type=file>, exactly as a user would pick it. No npm packages, nothing downloaded.
-// Needs: the bundle (cargo run --release -p xtask -- build-web), Chrome, Python 3, and your disc image (MB_DISC, or
+// Needs: the bundle (cargo xtask build-web), Chrome, Python 3, and your disc image (MB_DISC, or
 // "Super Monkey Ball*.rvz|iso|gcm" next to the repository). Missing any of them it says so and exits 0.
 //
 //   --lan   also open the page through this machine's network address (plain http, not a secure context):
@@ -26,7 +26,7 @@ function skip(why: string): never {
 const exists = (p: string) => { try { Deno.statSync(p); return true; } catch { return false; } };
 
 // ---- prerequisites ----------------------------------------------------------------------------------------
-if (!exists(`${dist}/index.html`)) skip("target/site is not built (run: cargo run --release -p xtask -- build-web)");
+if (!exists(`${dist}/index.html`)) skip("target/site is not built (run: cargo xtask build-web)");
 function findDisc(): string | null {
   const env = Deno.env.get("MB_DISC");
   if (env) return exists(env) ? env : null;

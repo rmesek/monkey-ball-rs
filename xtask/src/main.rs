@@ -1,10 +1,11 @@
 //! The project's build tool: one entry point on every platform, no shell scripts.
 //!
 //! ```text
-//! cargo run --release -p xtask -- build-web [--dev]   build the static web site into target/site/
-//! cargo run --release -p xtask -- check               run the quality gates (AGENTS.md)
+//! cargo xtask build-web [--dev]    build the static web site into target/site/
+//! cargo xtask ci                    run the quality gates (AGENTS.md)
 //! ```
-//! The tool builds; it serves nothing.
+//! `cargo xtask` is the alias of the cargo-xtask convention (`.cargo/config.toml`) for
+//! `cargo run --release -p xtask --`. The tool builds; it serves nothing.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -12,11 +13,11 @@ use std::process::Command;
 mod bundle;
 
 const USAGE: &str = "usage:
-  cargo run --release -p xtask -- build-web [--dev]
+  cargo xtask build-web [--dev]
       build the browser target and assemble the static site in target/site/, to be hosted by any static
       file server: python -m http.server -d target/site 8080
         --dev     unoptimised build (quick to compile, slow to run; keeps function names for stack traces)
-  cargo run --release -p xtask -- check
+  cargo xtask ci
       the quality gates: no game data tracked, cargo fmt, clippy (workspace, desktop program as shipped,
       browser build, the game library for Android) and cargo test --workspace --release";
 
@@ -183,7 +184,7 @@ fn tracked_game_data(listing: &str) -> Vec<&str> {
         .collect()
 }
 
-fn check() -> Result<(), String> {
+fn ci() -> Result<(), String> {
     // Not every checkout is a git repository (a source archive is not); then there is nothing tracked.
     if let Ok(out) = Command::new("git")
         .arg("ls-files")
@@ -261,7 +262,7 @@ fn main() {
             );
             Ok(())
         }),
-        Some("check") if args.next().is_none() => check(),
+        Some("ci") if args.next().is_none() => ci(),
         _ => {
             eprintln!("{USAGE}");
             std::process::exit(2);

@@ -46,15 +46,15 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev libgtk-3-dev libxkbcommon-dev libwayland-dev
       # The same gates as on a developer's machine. The runner has no disc image, so the tests that need the
       # game skip, and the browser check is not run: do both locally before tagging.
-      - run: cargo run --release -p xtask -- check
+      - run: cargo xtask ci
       # The desktop program as shipped; reuses the dependencies the release-mode tests just built.
       - run: cargo build -p mb-desktop --release --locked
-      - run: cargo run --release -p xtask -- build-web
+      - run: cargo xtask build-web
       - name: Attach the Linux executable and the web site
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          tar -czf "$RUNNER_TEMP/mb-app-$VERSION-linux-x86_64.tar.gz" -C target/release mb-app
+          tar -czf "$RUNNER_TEMP/mb-app-$VERSION-linux-x86_64.tar.gz" -C target/release monkey-ball
           # The static site as it is served: unpack it anywhere under a web server.
           tar -czf "$RUNNER_TEMP/monkey-ball-web-$VERSION.tar.gz" -C target/site .
           gh release upload "$TAG" "$RUNNER_TEMP/mb-app-$VERSION-linux-x86_64.tar.gz" "$RUNNER_TEMP/monkey-ball-web-$VERSION.tar.gz" --clobber
@@ -75,7 +75,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: ${{ matrix.timeout }}
     env:
-      ARCHIVE: mb-app-${{ needs.linux.outputs.version }}-${{ matrix.name }}
+      ARCHIVE: monkey-ball-${{ needs.linux.outputs.version }}-${{ matrix.name }}
     steps:
       - uses: actions/checkout@v4
       - run: rustup show
@@ -83,9 +83,9 @@ jobs:
       - name: Attach the executable
         run: |
           if [[ "$RUNNER_OS" == Windows ]]; then
-            (cd target/release && 7z a "$RUNNER_TEMP/$ARCHIVE.zip" mb-app.exe)
+            (cd target/release && 7z a "$RUNNER_TEMP/$ARCHIVE.zip" monkey-ball.exe)
             gh release upload "$TAG" "$RUNNER_TEMP/$ARCHIVE.zip" --clobber
           else
-            tar -czf "$RUNNER_TEMP/$ARCHIVE.tar.gz" -C target/release mb-app
+            tar -czf "$RUNNER_TEMP/$ARCHIVE.tar.gz" -C target/release monkey-ball
             gh release upload "$TAG" "$RUNNER_TEMP/$ARCHIVE.tar.gz" --clobber
           fi

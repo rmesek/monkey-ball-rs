@@ -34,7 +34,7 @@ fn killing_the_program_mid_run_leaves_the_saves_and_the_game_data_intact() {
     let dir = std::env::temp_dir().join(format!("mb-kill-test-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let run = |args: &[&str]| {
-        let mut c = Command::new(env!("CARGO_BIN_EXE_mb-app"));
+        let mut c = Command::new(env!("CARGO_BIN_EXE_monkey-ball"));
         c.args(args).arg("--mute");
         c.env("MB_SAVE_DIR", &dir);
         c.stdout(Stdio::null()).stderr(Stdio::null());
@@ -44,7 +44,7 @@ fn killing_the_program_mid_run_leaves_the_saves_and_the_game_data_intact() {
     let first = run(&["--exit-after", "1"])
         .arg(&disc)
         .status()
-        .expect("start mb-app");
+        .expect("start the program");
     if !first.success() {
         eprintln!("skipped: the game does not start here ({first})");
         let _ = std::fs::remove_dir_all(&dir);
@@ -68,7 +68,7 @@ fn killing_the_program_mid_run_leaves_the_saves_and_the_game_data_intact() {
     for wait_ms in [1500u64, 2500, 4000] {
         let mut child = run(&["--course", "beginner"])
             .spawn()
-            .expect("start mb-app");
+            .expect("start the program");
         std::thread::sleep(Duration::from_millis(wait_ms));
         assert!(
             child.try_wait().unwrap().is_none(),

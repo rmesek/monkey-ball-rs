@@ -28,9 +28,17 @@ publish = false
 # everywhere; winit in the platform crates; cpal and pollster on native targets; rfd and gilrs on the desktop;
 # wasm-bindgen, web-sys and js-sys in the browser. Nothing that talks to a network.
 
-# Browser bundle (`cargo run --release -p xtask -- build-web` builds mb-web with `--profile web`). Whole-program optimisation
+# Browser bundle (`cargo xtask build-web` builds mb-web with `--profile web`). Whole-program optimisation
 # pays here: the wasm is downloaded and compiled by every visitor and runs on phones. Measured against plain
 # `--release` in docs/WEB.md. Kept out of `release` so native builds stay quick to link.
+# Debug builds (plain `cargo run`, `cargo build`): the workspace lightly optimised and the dependencies
+# fully, which is what makes a game playable without `--release` at little cost in compile time.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
 [profile.web]
 inherits = "release"
 opt-level = 3

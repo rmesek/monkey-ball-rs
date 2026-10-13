@@ -1,6 +1,6 @@
 [toolchain]
 channel = "stable"
 components = ["rustfmt", "clippy"]
-# The browser target, and the Android one for the compile check of the game library (`cargo run --release -p xtask -- check`;
+# The browser target, and the Android one for the compile check of the game library (`cargo xtask ci`;
 # no Android app is built). rustup installs both with the toolchain, so neither needs an extra step.
 targets = ["wasm32-unknown-unknown", "aarch64-linux-android"]

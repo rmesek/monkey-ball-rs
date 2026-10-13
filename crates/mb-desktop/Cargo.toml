@@ -7,9 +7,9 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
-# The executable keeps the name it has had since 0.1.0.
+# The executable is named after the game, not after a crate.
 [[bin]]
-name = "mb-app"
+name = "monkey-ball"
 path = "src/main.rs"
 
 [features]

@@ -1,0 +1,3 @@
+# The cargo-xtask convention: `cargo xtask <task>` runs the build tool in xtask/ (build-web, ci).
+[alias]
+xtask = "run --release -p xtask --"

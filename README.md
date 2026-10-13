@@ -26,7 +26,7 @@ cargo run --release
 Web browser:
 
 ```
-cargo run --release -p xtask -- build-web
+cargo xtask build-web
 python -m http.server -d target/site 8080
 ```
 
@@ -65,7 +65,7 @@ previous save or the new one; an import that is interrupted leaves nothing behin
 ## Tests
 
 ```
-cargo run --release -p xtask -- check
+cargo xtask ci
 ```
 
 runs formatting, lints for every target and all tests. Tests that need the game look for your disc image in

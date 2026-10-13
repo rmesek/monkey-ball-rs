@@ -2,7 +2,7 @@
 //! `mb-app` (see `docs/ARCHITECTURE.md`). [`app`] is the window and its event loop; this file is the command
 //! line, the file dialog, and where the game data and the saves are kept.
 //!
-//! The executable is called `mb-app`. The first time it asks for the disc image and copies the files the
+//! The executable is called `monkey-ball`. The first time it asks for the disc image and copies the files the
 //! game uses out of it into one pack file beside the saves; from then on it starts from that pack and the
 //! image is not needed. Options are listed in [`USAGE`].
 
@@ -18,15 +18,16 @@ use mb_app::menu::{Autostart, Menu};
 use mb_assets::disc::FileStream;
 use mb_game::{Difficulty, FileStorage, MemoryStorage, SlotStorage, Storage};
 
-const USAGE: &str = "usage: mb-app [disc image] [stage] [options]
+const USAGE: &str = "usage: monkey-ball [disc image] [options]
 
 The disc image is your own copy of Super Monkey Ball (Nintendo GameCube, 2001): an RVZ or ISO/GCM file,
 for example 'Super Monkey Ball (USA).rvz'. It is needed once: the files the game uses (about 145 MB) are
 copied into the program's data folder, and later starts need no argument and no image. With no game data
-yet, a file dialog asks for the image. A stage number starts practice on that stage directly.
+yet, a file dialog asks for the image.
 
   --pick                   ask for a disc image and import it again
   --fullscreen             start in fullscreen (F11 or Alt+Enter toggles)
+  --stage <number>         start practice on that stage directly
   --course <name>          start course play directly (beginner, advanced, expert, ...)
   --mute                   do not open an audio device";
 
@@ -51,7 +52,6 @@ struct Args {
 }
 
 fn parse_args(args: impl Iterator<Item = String>) -> Result<Args, String> {
-    let mut positional = Vec::new();
     let mut out = Args {
         source: None,
         stage: None,
@@ -72,6 +72,18 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Args, String> {
                         .ok_or_else(|| format!("unknown course {v:?}"))?,
                 );
             }
+            "--stage" => {
+                let v = value("--stage")?;
+                let id = v
+                    .parse::<u32>()
+                    .map_err(|_| format!("bad stage number {v:?}"))?;
+                if !mb_game::stages::is_playable_stage(id) {
+                    return Err(format!(
+                        "stage {id} is not part of the game (no course uses it)"
+                    ));
+                }
+                out.stage = Some(id);
+            }
             "--mute" => out.mute = true,
             "--pick" => out.pick = true,
             "--fullscreen" => out.fullscreen = true,
@@ -86,26 +98,13 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Args, String> {
                 );
             }
             s if s.starts_with("--") => return Err(format!("unknown option {s}")),
-            _ => positional.push(a),
+            _ if out.source.is_none() => out.source = Some(PathBuf::from(a)),
+            _ => {
+                return Err(format!(
+                    "unexpected argument {a:?} (one disc image at most)"
+                ));
+            }
         }
-    }
-    let mut p = positional.into_iter().peekable();
-    // A lone number is a stage for the remembered disc.
-    if p.peek().is_some_and(|s| s.parse::<u32>().is_err()) {
-        out.source = p.next().map(PathBuf::from);
-    }
-    if let Some(s) = p.next() {
-        out.stage = Some(s.parse().map_err(|_| format!("bad stage number {s:?}"))?);
-    }
-    if p.next().is_some() {
-        return Err("too many positional arguments".into());
-    }
-    if let Some(id) = out.stage
-        && !mb_game::stages::is_playable_stage(id)
-    {
-        return Err(format!(
-            "stage {id} is not part of the game (no course uses it)"
-        ));
     }
     Ok(out)
 }

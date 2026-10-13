@@ -8,9 +8,9 @@ The same game, made smaller and easier to understand, port and change. Nothing n
 
 For a player:
 
-- **One plain cargo command per target:** `cargo run --release` runs the desktop program,
-  `cargo run --release -p xtask -- build-web` builds the site into `target/site/` (it used to be
-  `web/dist/`), to be hosted with any static file server such as
+- **One cargo command per target:** `cargo run --release` runs the desktop program, whose executable is
+  now called `monkey-ball` (it was `mb-app`) and takes the stage to start on as `--stage <n>`;
+  `cargo xtask build-web` builds the site into `target/site/` (it used to be `web/dist/`), to be hosted with any static file server such as
   `python -m http.server`. Nothing to install but Rust: the web build no longer needs the `wasm-bindgen`
   command.
 - **The desktop imports the game once**, like the browser: the files the game uses are copied into

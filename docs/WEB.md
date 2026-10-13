@@ -18,7 +18,7 @@ the version of the `wasm-bindgen` crate (both pinned; a test compares them).
 One command builds it into `target/site/`:
 
 ```
-cargo run --release -p xtask -- build-web [--dev]
+cargo xtask build-web [--dev]
 ```
 
 It runs `cargo build -p mb-web --target wasm32-unknown-unknown --profile web` and wasm-bindgen's

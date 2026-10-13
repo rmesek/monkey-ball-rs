@@ -78,7 +78,7 @@ Rules that keep this true:
 * Code for one platform lives in that platform's crate. No `cfg(target_os)` in shared code; the
   `cfg(target_arch = "wasm32")` there separates "may block" from "must await" and nothing else.
 * What a platform cannot do is a `host::Caps` flag the menus read, never a `cfg` in a state.
-* `cargo run --release -p xtask -- check` compiles `mb-app` and everything under it for `aarch64-linux-android`, so shared code
+* `cargo xtask ci` compiles `mb-app` and everything under it for `aarch64-linux-android`, so shared code
   cannot quietly become desktop-only. It is a compile check; nothing has run on a phone.
 
 ## Adding Android

@@ -2,7 +2,7 @@
 // network at all. Cache first, same origin only, GET only. It never sees the game data (that lives in the
 // Origin Private File System and is read by the page directly) and the page works the same without it.
 //
-// The build (cargo run --release -p xtask -- build-web) fills in the two constants: the version is a hash of the bundle, so a new build installs
+// The build (cargo xtask build-web) fills in the two constants: the version is a hash of the bundle, so a new build installs
 // a new cache and drops the old one.
 "use strict";
 
