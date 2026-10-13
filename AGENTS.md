@@ -38,7 +38,6 @@ The static site is a design constraint, not a packaging detail:
 - It must provide all functionality under a general-purpose static file server no more capable than
   `python -m http.server`: no server-side code, no custom headers (so no `SharedArrayBuffer` or threads), no
   required MIME types beyond what such a server guesses, relative paths only, any sub-path.
-- It must also work as the single file `web/dist/monkey-ball.html` opened from disk.
 - Nothing may be required that some supported environment lacks: service worker, private file system,
   `localStorage`, WebGPU, fullscreen, wake lock and the sensors are all optional (`docs/WEB.md` lists what the
   page does without each). WebGL2 is a first-class backend.
@@ -112,7 +111,7 @@ cargo clippy -p mb-desktop -- -D warnings
 cargo clippy -p mb-web --target wasm32-unknown-unknown --target-dir target/wasm -- -D warnings
 cargo clippy -p mb-app --target aarch64-linux-android --target-dir target/android -- -D warnings -A clippy::missing_const_for_thread_local
 cargo test --workspace --release
-cargo xtask build-web --single
+cargo xtask build-web
 deno run -A scripts/web-e2e.ts
 ```
 
@@ -121,8 +120,6 @@ build, the fourth the game library for a native Android target: a compile check 
 standard library only (no NDK), there so that shared code cannot quietly become desktop-only. The tests need
 the disc image to mean anything (set `MB_DISC`); the browser check needs it too, plus Chrome and Python 3.
 `cargo test` needs no flags: `mb-app` and `mb-desktop` switch their own `dev` feature on for their tests.
-The tests that compare with the reference run when a checkout and Deno are there and skip otherwise; the
-gates must pass either way.
 
 The workspace is Rust edition 2024 (`rust-version` 1.88).
 
@@ -137,7 +134,7 @@ What the gates hold beyond "it works" (the numbers are in `docs/PLAN.md`, "Budge
   plays (`crates/mb-app/tests/memory.rs`); the size of the game pack (`crates/mb-app/tests/pack.rs`).
 - **The wasm size budget** in `cargo xtask build-web`: the build fails, before `web/dist` is touched, when
   the optimised module is larger than `WASM_BUDGET_BYTES` in `xtask/src/main.rs`.
-- **The browser check** (`scripts/web-e2e.ts`, 97 checks, about eight minutes): besides import, storage,
+- **The browser check** (`scripts/web-e2e.ts`, 93 checks, about eight minutes): besides import, storage,
   play, saves and the degraded environments, it measures wasm memory and frame time at 6x CPU throttle on
   WebGL2 against 0.1.0, with Reflections on and off, sees the new drawing on WebGL2 and WebGPU through
   `window.mbPerf`, loads a save written by 0.1.0 and fails on a console error or a graphics driver warning
@@ -221,7 +218,7 @@ Rules of thumb:
 - **No paid services.** Nothing runs on a push, a tag or a schedule. `ci.yml` (the gates) is
   `workflow_dispatch` only; `release.yml` starts only when a release is published on the GitHub website and
   attaches that version's builds to it (the gates, then Linux, Windows and Apple-silicon executables and the
-  single-file page). Run the checks locally. No cloud or remote agents, no hosted builders.
+  site as an archive). Run the checks locally. No cloud or remote agents, no hosted builders.
 - Match the surrounding code's style; keep comments sparse and explain *why*.
 
 ## Subagent orchestration
@@ -266,5 +263,5 @@ be consulted to change the game.
 | Not used (network, replay files, SMB2) | `src/netplay.ts`, `src/netcode_protocol.ts`, `src/rollback.ts`, `src/replay.ts`, `src/course_smb2.ts`, `src/course_mb2ws.ts`, `src/smb2_render.ts` | |
 
 Format and porting notes: `docs/REFERENCE_NOTES.md`, `docs/STAGEDEF.md`, `docs/GMA.md`, `docs/TPL.md`,
-`docs/ENGINE.md`, `docs/AUDIO.md`, `docs/GAMEPLAY.md`. The parity tests compare against the reference's output
-on locally supplied content when a checkout is present; never commit that content or dumps of it.
+`docs/ENGINE.md`, `docs/AUDIO.md`, `docs/GAMEPLAY.md`. The harness that compared the port with the
+reference tick for tick is in the history up to the tag `v0.2.0`; its result lives on as the golden tables.

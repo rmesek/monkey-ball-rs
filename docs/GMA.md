@@ -82,8 +82,8 @@ state and how many layer textures it fetches.
   this data; `Renderer::set_tex_matrix_every_layer` applies the matrix to every diffuse and alpha layer
   of an object instead.
 - **Per object**, as in the reference's `RenderParams`: alpha, colour, texture matrix, specular off
-  (`set_specular_disabled`, its hack for the inner ball shells), world specular off
-  (`set_world_specular_disabled`, its background light groups), sort offset (`set_depth_offset`).
+  (`set_specular_disabled`, its hack for the inner ball shells), sort offset (`set_depth_offset`).
+  Not ported: world specular off for background light groups (no object of the disc is in one).
 - **State**: alpha test `> 0`, depth LEQUAL with writes, blend factors from the material. A mesh whose
   alpha is provably one is drawn without blending only when its factors are the default ones (or
   `One / Zero`): the several hundred `One / One`, `SrcAlpha / One`, `SrcClr / One` and `Zero / InvSrcClr`
@@ -134,14 +134,12 @@ render at the 99th percentile under a sixfold CPU throttle, where it took 16.9 t
 ### Mirror floors
 `crates/mb-render/src/mirror.rs`, `mirror.wgsl`, the mirror parts of `renderer.rs`; reference `Render.ts`
 ("Mirror Capture", "Mirror Overlay") and `World.ts` `prepareToRenderMirrors`. The caller sets one
-`Mirror` per stage (`Renderer::set_mirror`: a plane as a matrix, an alpha, optionally the wavy
-distortion), flags the mirror models (`set_mirror_surface`) and takes objects out of the reflection
+`Mirror` per stage (`Renderer::set_mirror`: a plane as a matrix and an alpha), flags the mirror models (`set_mirror_surface`) and takes objects out of the reflection
 (`set_in_mirror`). Without a mirror none of this exists: no target, no pass, no pipeline, and a frame has
 the draws, uploads and GPU objects it had (`tests/mirror.rs`, `without_a_mirror_a_frame_is_what_it_was`).
 Which stages have a mirror, where its plane is and what is left out of it is the game's business:
-`docs/GAMEPLAY.md`, "Mirror floors". The game uses the flat mirror on every one of its 37 stages; it sets
-no distortion on stage 92 either (the reason is there), so the wavy path below is exercised by
-`the_wavy_mirror_offsets_the_reflection_by_the_reference_formula` only.
+`docs/GAMEPLAY.md`, "Mirror floors". Every one of the 37 stages has a flat mirror; the reference's
+distortion of the reflection on stage 92 is not in the renderer (the reason is there).
 
 The capture is cut to what the mirror surfaces in view can show: their bounding boxes are projected
 through the capture's own clip matrix (`mirror::projected_box`, cut at the eye), the bounds are widened
@@ -170,13 +168,6 @@ A frame in which a mirror surface is in view:
    `uv = clip.xy / w * 0.5 + 0.5` (clamped) of the fragment's position through the capture's clip
    matrix.
 
-The wavy mirror (stage 92) adds the reference's indirect offset to that coordinate:
-`(dot(ind0, c), dot(ind1, c)) / 256` with `c = (255 * (1, blue, green) & 0xF8) - 128` of `gb_grad`
-addressed by `xz * 0.5 + 0.5` of the view-space normal, `ind0 = (0, 0.8, 0)`, `ind1 = (0.6, 0, 0)`
-(`Distortion`, the same formula on the CPU). The first component is one because the reference reads the
-alpha of its distortion target, which it always writes as one: the offset is `0.8 * (blue - 128) / 256`
-sideways and a constant `0.28` of the picture upwards.
-
 Cost: the capture's draws (at most those of the frame less mirrors and effects, usually fewer: nothing
 below the plane) plus one per mesh of a mirror surface, reported as `FrameStats::mirror_draws` beside
 `draws`; three small uniform uploads (880 bytes) in a frame whose camera moved. Made by `set_mirror`,
@@ -201,8 +192,6 @@ Where it differs from the reference:
 |---|---|---|---|
 | Cut at the plane | only the per-model sphere test, so a model that reaches through the mirror is reflected whole | also an oblique near plane in the capture's projection, 0.005 above the plane; the plain projection when the eye is behind the mirror | nothing from below a floor belongs in it; costs nothing per fragment and needs no clip distance (WebGL2 has none) |
 | Target | fixed sizes per stage (640 x 448 down to 160 x 112), `RGBA8` and `D24` | a fraction of the frame, the frame's colour format, `Depth32Float` | the scene's pipelines are compiled for the frame's format; a second set would double them |
-| Wavy mirror: the distortion | the waved floor drawn with `gb_grad` into a 256 x 256 target, read back at the fragment's place on the screen | one fetch of `gb_grad` in the overlay's fragment shader | the same texel for every fragment of the floor, without a target and a pass |
-| Wavy mirror: the overlay's geometry | the floor at rest, so the crests of the waved floor hide the reflection | the waved floor (the wave function of the stage shader), looked up at the fragment's own place on the screen | what the reference shows in the troughs, on the whole surface; needed for the row above |
 | What does not tilt (backdrop, ball) | drawn in the capture with the stage tilt applied to it | reflected in the mirror as it is shown | the picture does not tilt them either |
 | No mirror model in view | the capture is drawn all the same | no capture | saves the pass |
 | Overlay | writes the frame's alpha | colour only, and a depth bias of one step | the frame stays opaque; the surface was drawn at the same depth by another program |
@@ -223,6 +212,5 @@ Nothing here panics on bad bytes; every failure is an `Error`.
   disc is present. `tests/golden.rs`: a hash over every parsed model and decoded mesh of the disc, recorded
   before the hardening.
 - `crates/mb-gma/tests/disc.rs`: parses every GMA (incl. `.gma.lz`) and NaomiLib archive on the disc; compares triangle
-  counts and position checksums against the TypeScript reference (via `deno`, `tests/ref/gma_ref.ts`) for 9 files,
-  when a checkout of it is there (optional; `tests/golden.rs` holds the parsers without it).
-  Env: `MB_DISC`, `MB_REF`, `MB_SCRATCH`.
+  counts and position checksums against the TypeScript reference for 9 files until 0.2.0 (a Deno harness, removed
+  since; `tests/golden.rs` holds the parsers). Env: `MB_DISC`.

@@ -70,13 +70,12 @@ options (`--pick`, `--fullscreen`, `--course <name>`, `--mute`). The executable 
 ## Build and run: web site
 
 ```
-cargo xtask build-web --single
+cargo xtask build-web
 ```
 
 The site is written to `web/dist/`: plain files with relative paths (`index.html`, a few scripts, the 4.0 MB
-WebAssembly module). `--single` adds `web/dist/monkey-ball.html` (2.2 MB), the
-whole page in one file that can be copied anywhere and opened from disk. The build fails if the module
-grows past its size budget ([docs/WEB.md](docs/WEB.md), "Build").
+WebAssembly module). It has to be served; it does not open from disk. The build fails if the module grows
+past its size budget ([docs/WEB.md](docs/WEB.md), "Build").
 
 Serve the folder with any static file server and open it:
 
@@ -143,7 +142,7 @@ cargo xtask check
 runs the quality gates: `cargo fmt --all -- --check`, `cargo clippy` for the workspace, for the desktop
 program as shipped, for the browser build (`wasm32-unknown-unknown`) and for the game library on Android
 (`aarch64-linux-android`, a compile check), all with `-D warnings`, and `cargo test --workspace --release`
-(562 tests with the disc image).
+(547 tests with the disc image).
 
 Many tests read the real game. They look for your disc image in the `MB_DISC` environment variable, or for a
 file named `Super Monkey Ball*.rvz` (or `.iso`, `.gcm`) in the directory that contains this repository, and
@@ -155,8 +154,8 @@ The browser test drives the built site in Chrome through the real file picker:
 deno run -A scripts/web-e2e.ts
 ```
 
-It needs `web/dist` (build it first with `cargo xtask build-web --single`), Chrome, Python 3 and the
-disc image, and says what is missing otherwise. It makes 97 checks and takes about eight minutes: the
+It needs `web/dist` (build it first with `cargo xtask build-web`), Chrome, Python 3 and the
+disc image, and says what is missing otherwise. It makes 93 checks and takes about eight minutes: the
 import and storage, play, sound, saves (one written by 0.1.0 among them), the drawing on WebGL2 and WebGPU,
 touch, tilt, and what the page does in browsers that lack something ([docs/WEB.md](docs/WEB.md),
 "Checking it").

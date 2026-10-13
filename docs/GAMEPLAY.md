@@ -310,13 +310,13 @@ Different from the reference, on purpose:
     here.
 - **No distortion on the bonus wave.** The reference bends the wave floor's reflection by an offset
   read from a texture (`gb_grad`, through a second target). As it stands in the reference, and as
-  `mb-render` ports it, the offset is not a wobble about zero: it moves the whole reflection 0.28 of
+  `mb-render` ported it until 0.2.0, the offset is not a wobble about zero: it moves the whole reflection 0.28 of
   the picture's height down (the alpha it reads is always one) and, where the floor is level, about a
   tenth of its width sideways, so the bananas' reflections lie some 200 of 720 pixels below the bananas
   and the shifted horizon is a hard edge across the floor. Compared side by side, the undistorted
-  reflection is the one that is under its objects. Stage 92 therefore sets
-  `Mirror { distortion: None, .. }` with the reference's plane and opacity, and `gb_grad` is not
-  loaded.
+  reflection is the one that is under its objects. Stage 92 therefore has a plain mirror with the
+  reference's plane and opacity; the distortion was never switched on and its code was removed after
+  0.2.0.
 - **An option.** The reference always draws its mirrors.
 - The renderer's differences (the cut at the plane, the size of the target, the wave floor missing from
   its own reflection) are listed in `docs/GMA.md`.
@@ -338,7 +338,7 @@ What `World.ts`, `AnimGroup.ts`, `BgObject.ts` and `Background.ts` set per objec
 | `BallInst`: `depthOffset` 4, 3, 2, 1, 0 inside out, `RenderSort.Translucent` | unchanged from 0.1.0: `set_sort_bias` of a thousandth of those, which keeps the same inside-out order but sorts the ball against other blended objects by its true distance (with the reference's 4 units a blended object up to 4 units behind the ball is drawn between its shells) |
 | `BgObjectInst` (background and foreground objects): `depthOffset = 400` | `set_depth_offset(400)` |
 | `BgObjectInst`: `alpha = 1 - translucency`, `RenderSort.All` when translucent | `set_alpha` (an alpha below one sorts every mesh), since 0.1.0 |
-| `BgObjectInst`: `lightingGroups.getForBgFlags(flags)`, no specular scale for `flags >>> 28 != 0` | `set_world_specular_disabled` by the same rule. No background or foreground object of the 109 course stages is in such a group, so nothing changes on this disc |
+| `BgObjectInst`: `lightingGroups.getForBgFlags(flags)`, no specular scale for `flags >>> 28 != 0` | not ported: no background or foreground object of the 109 course stages is in such a group (a switch for it was in the renderer until 0.2.0, without effect) |
 | `BgObjectInst` / `AnimGroup`: `textureScroll` | SMB2 only; not parsed |
 | `BgSunset`: `texMtx` | `set_tex_offset`, above |
 | `BgNight`: `RenderSort.None` | a sort offset, above |

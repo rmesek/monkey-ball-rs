@@ -31,13 +31,13 @@ and from one thing that was run: the game library compiles for `aarch64-linux-an
 | `mb-assets` | 2 400 / 160 | `ruzstd` | disc image and RVZ readers, LZSS, the game pack format |
 | `mb-stage`, `mb-tpl`, `mb-gma` | 3 700 / 2 550 | none | parsers: stagedef, textures, models and display lists |
 | `mb-audio` | 2 800 / 290 | none | ADP and MusyX decoders, the PCM mixer |
-| `mb-engine` | 8 000 / 4 500 | none | the deterministic 60 Hz simulation |
+| `mb-engine` | 8 000 / 3 150 | none | the deterministic 60 Hz simulation |
 | `mb-game` | 3 700 / 490 | none | courses, lives, score, unlocks, settings, the `Storage` trait and the slot saves |
 | `mb-render` | 7 200 / 3 750 | `wgpu`, `glam`, `bytemuck`, `web-time` | GX materials, passes, particles, mirrors; takes a device and a target view |
 | `mb-app` | 15 750 / 4 850 | `wgpu`, `glam`, `web-time`; `cpal`, `pollster` off the web; `winit` only as an optional feature for key codes | the game as a library |
 | `mb-desktop` | 980 / 95 | `winit`, `wgpu`, `rfd`, `gilrs` | the desktop program (executable `mb-app`) |
 | `mb-web` + `web/` | 2 550 Rust, 1 360 JS and HTML | `winit`, `wgpu` (`webgl`), `wasm-bindgen`, `web-sys`, `js-sys`, `wasm-bindgen-futures`, `web-time`, `console_error_panic_hook` | the browser target |
-| `xtask` | 1 540 | none | build tool: the site bundle (with its own gzip), the gates |
+| `xtask` | 590 | none | build tool: the site bundle, the gates |
 
 Rules the layering rests on, each held by the build:
 
@@ -164,23 +164,34 @@ project makes (crash safety, budgets, parity) and could in principle go, at the 
 | Browser driver and glue | `mb-web`, `web/{index.html,main.js,worker.js}` | necessary for the browser | all of it | |
 | `web/guard.js` | | supporting | browser | says "unsupported" instead of hanging in an old browser |
 | `web/sw.js`, `manifest.webmanifest`, icons | | supporting | browser, hosted | offline start and installation; the page works without them and a WebView does not use them |
-| The single-file page | `xtask/src/{bundle,gzip}.rs` (1 200 lines, its own gzip) | supporting | browser | "open one file from disk" is a stated goal; it is also most of the build tool |
 | Budget tests | `mb-app/tests/{budgets,memory}.rs`, `mb-engine/tests/effects.rs`, `WASM_BUDGET_BYTES` | supporting | the figures are WebGL2's | they are why the port got faster than 0.1.0 instead of slower |
 | Browser check | `scripts/web-e2e.ts` (920 lines, Deno + Chrome) | supporting | browser | the only test of the page; eight minutes |
 | Frame statistics in the product | `mb-app/src/perf.rs`, `perf_*` in `mb-web`, `window.mbPerf` | supporting | browser | developer support inside the shipped wasm, kept so the check measures what ships |
 | Windowless driver, autopilot, PNG writer | `mb-app/src/{headless,autopilot,image}.rs` (`dev` feature) | supporting | native only | not in any product build; every state test stands on it |
 | Golden hashes | `mb-engine/tests/golden.rs`, `tests/golden.rs` of the parsers | supporting | no | what replaces the reference as the guard |
-| Parity harness | `mb-engine/tests/{parity.rs,ref/}`, `mb-gma/tests/ref/`, `mb-tpl/tests/ref_hash.ts` (1 590 Rust + TypeScript drivers) | **removable**, see below | needs Deno and a checkout of WebMonkeyBall | skips without them |
-| `nod` | dev-dependency of `mb-assets` | removable | | a second disc reader to compare the first with; one test |
-| The wavy mirror's distortion | `mb-render/src/{mirror.rs,mirror.wgsl}`, `Distortion`, `Mirror::wavy`; one test | removable | no | the game sets `distortion: None` on the one stage it was for. About 150 lines, a texture binding and a shader branch |
-| Renderer calls only tests use | `set_mirror_capture_whole`, `set_mirror_scale`, `set_color_mul`, `set_tex_matrix`, `SpriteBlend::Additive`, `mirror_size`, `object_capacity` | removable with their tests | no | each small |
-| Switches with no effect on this disc | `set_world_specular_disabled` + `stage_scene::bg_light_group`; the `ENABLE_UV_SCROLL` branch | removable | no | the reference's rules, ported, and met by no data |
+| Renderer calls only tests use | `set_mirror_capture_whole`, `set_mirror_scale`, `set_color_mul`, `set_tex_matrix`, `mirror_size`, `object_capacity` | removable with their tests | no | each small; the first proves that cutting the mirror's capture changes no pixel |
+| The UV-scroll flag | `LayerInfo::uv_scroll`, a bit per layer in the material uniform, a branch in `shader.wgsl` | removable | no | the reference's rule, ported; no layer on the disc has the flag |
 | 0.1.0 baseline tables | `DRAWS_0_1_0`, `DRAWS_ADDED` in `budgets.rs`; `WASM_BYTES_0_1_0`; the 0.1.0 columns of the docs | removable once 0.2.0 is the baseline | no | `DRAWS` and `MIRROR_DRAWS` are what is asserted exactly |
 | `docs/PARITY_PLAN.md` | | removable (history) | | the budget tests and docs cite it; fold what is still true into PLAN.md first |
 | Local branches `parity/*`, tags `checkpoint/*` | git | removable (history) | | merged; `v0.1.0` and `v0.2.0` are the releases |
 
-Removed in this pass: fog (`Renderer::fog`, never switched on), seven identical copies of the tests' disc
-finder. The longer list of what 0.2.0 added beyond its effect, with what each removal would cost, is in
+Removed since 0.2.0:
+
+* from the renderer: fog, the wavy mirror's distortion, additive sprites (a pipeline made at every start
+  and never used), the world-specular switch for background light groups;
+* **the single-file page** (`monkey-ball.html`): 700 lines of build tool with their own gzip compressor
+  and SHA-256, the inlining paths of the page and worker, four checks of the browser test. The site now
+  has to be served; to play without a server there is the desktop program. This is the one removal a
+  player can notice;
+* the parity harness against the reference (1 600 lines of Rust and six Deno scripts) and the `nod`
+  dev-dependency, both replaced by recorded hashes;
+* seven identical copies of the tests' disc finder.
+
+What was looked at and kept: the service worker, manifest and icons (44 lines of script; they are what
+makes the hosted site start offline and installable), `guard.js` (30 lines; an old browser gets a message
+instead of a blank page), the frame statistics in the wasm (the browser check measures the build that
+ships), and the 0.1.0 baseline tables (the budget tests and a dozen doc passages are phrased against
+them). The longer list of what 0.2.0 added beyond its effect, with what each removal would cost, is in
 [PLAN.md](PLAN.md), "Candidates for simplification".
 
 ## Standing without the reference
@@ -191,9 +202,9 @@ reference". Whether it still needs it:
 | Use of the reference | Needed to build or run? | Needed to develop? | Now |
 |---|---|---|---|
 | The game, the site, the desktop program | no, never was | | nothing at build or run time reads `../WebMonkeyBall` |
-| `cargo xtask check`, the browser check | no | | the seven tests that want the reference skip without it (run with the checkout hidden: all skip, nothing fails) |
-| Simulation parity (`mb-engine/tests/parity.rs`: 5 tests, Deno) | | until now the only guard of the simulation on the disc's stages | **replaced** by `tests/golden.rs`: all 200 stagedefs through fixed inputs, plus four goal runs, against hashes recorded where parity last passed. The parity tests were run once more on the final code of this pass, and passed |
-| Parser parity (`mb-gma`, `mb-tpl` against the TypeScript parsers; `mb-stage`'s table) | | | already doubled by `tests/golden.rs` in each parser (hashes over every file on the disc) |
+| `cargo xtask check`, the browser check | no | | no test reads the reference any more |
+| Simulation parity (`mb-engine/tests/parity.rs`: 5 tests, Deno) | | until 0.2.0 the only guard of the simulation on the disc's stages | **replaced** by `tests/golden.rs`: all 200 stagedefs through fixed inputs, plus four goal runs, against hashes recorded where parity last passed. The harness passed once more on edition 2024 and was then removed |
+| Parser parity (`mb-gma`, `mb-tpl` against the TypeScript parsers; `mb-stage`'s table) | | | held by `tests/golden.rs` in each parser (hashes over every file on the disc); the Deno comparisons were removed |
 | Renderer, HUD, audio | | never compared by machine: read and reimplemented | unit tests and pixels of this renderer only |
 | Understanding why the code is the way it is | | useful | the porting notes ([ENGINE.md](ENGINE.md), [GMA.md](GMA.md), [GAMEPLAY.md](GAMEPLAY.md)) carry the reasoning; comments name the reference's functions |
 
@@ -202,9 +213,8 @@ alone. With the result replays dropped there is nothing left to port from it. Wh
 
 * "Correct" becomes "what the golden tables and the tests say". A change of behaviour is a decision recorded
   in a commit, no longer a divergence to be explained.
-* The parity harness can be deleted whenever convenient (the "removable" row above). Until the first
-  deliberate change to the simulation it costs nothing and still works for anyone who has the checkout; after
-  it, the harness would report the change as a failure and should go.
+* The parity harness is gone from the tree. It is in the history up to the tag `v0.2.0` for anyone who
+  wants to run the comparison again against that version.
 * Comments and docs keep naming reference functions. They are provenance, not instructions.
 * One thing is not a technical question: this code is a port, a derived work of WebMonkeyBall and through it
   of the SMB decompilation, whatever happens to the checkout. The reference's repository carries no licence

@@ -33,7 +33,7 @@ What each means as a rule that can be checked against the code:
 
 | | Rule | Checked by |
 |---|---|---|
-| Complete | Nothing is left to port ("Against the reference" below). The simulation of every stage is held by recorded hashes, every other behaviour by a test on the real game states | `crates/mb-engine/tests/golden.rs`, `crates/mb-app/tests/gameplay.rs`; with a checkout of the reference also `crates/mb-engine/tests/parity.rs` |
+| Complete | Nothing is left to port ("Against the reference" below). The simulation of every stage is held by recorded hashes, every other behaviour by a test on the real game states | `crates/mb-engine/tests/golden.rs`, `crates/mb-app/tests/gameplay.rs` |
 | Portable | One renderer, `mb-render`, on `wgpu`. Every driver asks for `wgpu::Features::empty()` and for the limits of `mb_app::gpu::required_limits`: a GL adapter (WebGL2, OpenGL ES, desktop OpenGL) gets `downlevel_webgl2_defaults()`, the other backends their adapter's own. So the browser build and the OpenGL tests are what catch a step beyond WebGL2 | `scripts/web-e2e.ts` on WebGL2 (`?gl=1`); `the_gl_backend_draws_the_same` in `crates/mb-render/tests/{effects,materials,mirror}.rs` |
 | Portable | No compute shader, no float colour target, no clip distance, no WebGPU-only feature. Targets are the frame's colour format and `Depth32Float` | reading `crates/mb-render/src/*.wgsl` and `renderer.rs`; the WebGL2 run above |
 | Portable | The game runs on one thread: states, simulation, drawing. The only others are the audio device's callback on the desktop (`audio_cpal.rs`, it mixes and nothing else) and the browser's import worker (its own instance of the module, no shared memory). Nothing needs `SharedArrayBuffer` | the site runs under `python -m http.server`, which sends no COOP/COEP headers (`scripts/web-e2e.ts`) |
@@ -41,7 +41,7 @@ What each means as a rule that can be checked against the code:
 | Portable | The format, simulation and rules crates are std-only and free of GPU, window and browser code: `mb-stage`, `mb-tpl`, `mb-gma`, `mb-audio`, `mb-game` have no dependency, `mb-engine` only `mb-stage`, `mb-assets` only `ruzstd` | their `Cargo.toml` |
 | Portable | Game files are read through `mb_app::content` and its file lists, saves through `mb_game::Storage` | `the_import_copies_exactly_what_the_game_reads`, `every_course_stage_prepares_and_loads_from_the_pack` (`crates/mb-app/tests/pack.rs`) |
 | Footprint | The budgets below. They are recorded constants; a test or the build fails when one is passed | see the table |
-| Complexity | Every third-party dependency has a one-line reason in its `Cargo.toml`. There are 5 in the shared crates (`wgpu`, `glam`, `bytemuck`, `web-time`, `ruzstd`), `cpal` and `pollster` on native targets, `winit` in both platform crates, `rfd` and `gilrs` on the desktop, 5 more in the browser, and `nod` for one test | `AGENTS.md`, hard rule 7 |
+| Complexity | Every third-party dependency has a one-line reason in its `Cargo.toml`. There are 5 in the shared crates (`wgpu`, `glam`, `bytemuck`, `web-time`, `ruzstd`), `cpal` and `pollster` on native targets, `winit` in both platform crates, `rfd` and `gilrs` on the desktop, and 5 more in the browser | `AGENTS.md`, hard rule 7 |
 | Complexity | No new crate, pass, pipeline family or shader without a thing on the SMB1 disc that needs it. Four WGSL files: `shader.wgsl` (every material), `sprite.wgsl`, `quad.wgsl`, `mirror.wgsl` | "Candidates for simplification" below lists where this does not hold yet |
 | Complexity | Prefer removing code to adding it. Developer and test support is behind `mb-app`'s `dev` feature and not in the product | `cargo clippy -p mb-desktop -- -D warnings` builds the product without it |
 
@@ -82,7 +82,7 @@ the new figure here and in the file that measures it.
 
 The site is plain files with relative paths, no server-side component and no dependency on a service
 worker, with WebGL2 as a first-class backend. It must keep working under a static server no more capable
-than `python -m http.server`, and as the single file `monkey-ball.html` opened from disk. A phone's browser
+than `python -m http.server`. A phone's browser
 opens the same site; that is how the game reaches a phone today. The same files can be shown in an Android
 `WebView` by someone else ([ANDROID_WEBVIEW.md](ANDROID_WEBVIEW.md)).
 
@@ -112,7 +112,7 @@ Nobody adds the Android target, or any other, without the owner asking for it.
 |---|---|---|
 | The user's own disc image: RVZ (none, Zstandard), ISO / GCM; USA tested, Europe and Japan accepted by id. Read in place on the desktop; in the browser the 144 MB the game uses are copied once into one pack, or served from the picked file where the page cannot store | `mb-assets` (`rvz.rs`, `disc.rs`, `gamepack.rs`), `mb-app/src/{content,import}.rs`, `mb-web` | `mb-assets/tests/disc.rs`, `mb-app/tests/pack.rs`, `scripts/web-e2e.ts` |
 | Formats: stagedef, TPL, GMA and NaomiLib, ADP music, MusyX banks; corrupt input never panics or over-allocates | `mb-stage`, `mb-tpl`, `mb-gma`, `mb-audio` | each crate's `tests/disc.rs`, and `tests/{golden,robust}.rs` in the three parsers |
-| Simulation at 60 Hz, bit-identical to the reference on every stage of the USA disc for the scripted runs tried: physics, collision, stage objects, camera, fly-in, goal, fall-out, time over, bonus stages | `mb-engine` | `tests/golden.rs` (every stagedef against recorded hashes), `tests/synthetic.rs`, `tests/robust.rs`; with the reference at hand `tests/parity.rs` (`matches_reference_game_loop`) ([ENGINE.md](ENGINE.md)) |
+| Simulation at 60 Hz, bit-identical to the reference on every stage of the USA disc for the scripted runs tried: physics, collision, stage objects, camera, fly-in, goal, fall-out, time over, bonus stages | `mb-engine` | `tests/golden.rs` (every stagedef against hashes recorded where the comparison with the reference last passed), `tests/synthetic.rs`, `tests/robust.rs` ([ENGINE.md](ENGINE.md)) |
 | Ball effects (sparks, collision stars, flash, post-goal sparkle) and goal confetti as display-only state on the reference's visual random stream; `Sim::hash` unchanged, `Sim::hash_visual` added | `mb-engine/src/effects.rs` | `effects_match_reference`, `tests/effects.rs` |
 | The action button: fly-in at double speed on a first attempt, a fall-out cut short from its 60th tick | `mb-engine/src/sim.rs` (`Sim::step_with_buttons`), `mb-app/src/{input,play}.rs` | `intro_fast_forward_matches_reference`, `action_in_sequences_matches_reference`; `the_action_button_fast_forwards_the_first_fly_in_only`, `the_action_button_cuts_a_fall_out_short_at_the_same_cost` (`mb-app/tests/gameplay.rs`) |
 | Courses (Beginner, Advanced, Expert, the Extra courses, Master), Practice, lives, score, continues, unlocks, settings; saves in two checksummed slots that survive a kill at any moment | `mb-game` | its unit tests and `tests/robust.rs`; `mb-app/tests/{rules,kill,pause}.rs` |
@@ -124,13 +124,13 @@ Nobody adds the Android target, or any other, without the owner asking for it.
 | Title menu, Course Play, Practice, Options, pause and in-place retry; a stage that fails to load returns to the menu | `mb-app/src/{menu,loading,play,widgets,ui}.rs` | `mb-app/tests/{gameplay,pack,pause}.rs` ([GAMEPLAY.md](GAMEPLAY.md)) |
 | Sound effects and stage music from the disc's own banks and streams; cpal on the desktop, Web Audio in the browser | `mb-audio`, `mb-app/src/{audio,audio_cpal}.rs`, `mb-web/src/audio.rs` | `mb-audio`'s tests, `mb-app/tests/audio.rs` ([AUDIO.md](AUDIO.md)) |
 | Keyboard, gamepad, mouse, touch (on-screen stick, touch-only menus), device tilt | `mb-app/src/{input,ui,tilt}.rs`, the drivers `mb-desktop/src/app.rs` and `mb-web/src/shell.rs` | `analog_stick_and_pointer_drive_the_same_states`; `scripts/web-e2e.ts` (touch at 412 x 915, an emulated sensor) |
-| The static site and the single file; storage the user can see and erase | `mb-web`, `web/`, `xtask` | `scripts/web-e2e.ts`, `cargo test -p xtask` ([WEB.md](WEB.md)) |
+| The static site; storage the user can see and erase | `mb-web`, `web/`, `xtask` | `scripts/web-e2e.ts`, `cargo test -p xtask` ([WEB.md](WEB.md)) |
 
 Last run of everything, 2026-10-13 on the branch described under "State", with the USA disc (Windows 11):
-`cargo xtask check` all gates, `cargo test --workspace --release` 562 passed, 0 failed, 5 ignored (0.2.0:
-559; 0.1.0: 406), the tests against the reference among them; `deno run -A scripts/web-e2e.ts` 97 checks in
-Chrome 154 with WebGPU available, about eight minutes. Without the disc the disc-backed tests skip; without
-a checkout of the reference the seven tests that use it skip.
+`cargo xtask check` all gates, `cargo test --workspace --release` 547 passed, 0 failed, 5 ignored (0.2.0:
+559; 0.1.0: 406; fewer since the tests against the reference and of removed code went);
+`deno run -A scripts/web-e2e.ts` 93 checks in Chrome 154 with WebGPU available (0.2.0: 97, four were the
+single file's), about eight minutes. Without the disc the disc-backed tests skip.
 
 ## Against the reference
 
@@ -217,8 +217,7 @@ Small things known to be unfinished or resting on thin evidence. None blocks pla
 | Stage 110's two mirror levels | The switch between the floors is tested with cameras placed above and between them (`a_stage_with_two_mirror_floors_mirrors_in_the_one_under_the_camera`), not by a ball falling from one to the other in play. |
 | Timing limits in the browser check | Exercised at 165 and 240 Hz only (see "Unverified"). Long-frame counts are small numbers and are held to three times 0.1.0's share for that reason. |
 | Engine parity, parts not compared | The bonus-stage branch of the fall-out rule and the bonus clear (the headless reference has no course), and confetti from a goal on a moving anim group. `tests/synthetic.rs` covers the first two without the reference ([ENGINE.md](ENGINE.md), "Tests"). |
-| wasm size | 4 014 488 bytes since the fog went and the edition changed (0.2.0: 4 016 134); 112 810 bytes of the budget remain. |
-| The parity harness | `mb-engine/tests/{parity.rs,ref/}`, `mb-gma/tests/ref/`, `mb-tpl/tests/ref_hash.ts` still compare with the reference when a checkout and Deno are there. They are no longer the guard (`tests/golden.rs` is) and will fail on the first deliberate change to the simulation; delete them then, or sooner ([ARCHITECTURE.md](ARCHITECTURE.md), "Standing without the reference"). |
+| wasm size | 4 011 275 bytes after the slimming since 0.2.0 (4 016 134 then); 116 023 bytes of the budget remain. |
 | Licence | `Cargo.toml` declares `MIT OR Apache-2.0`; there is no `LICENSE` file, and the reference this code was ported from carries no licence statement. For the owner to settle before publishing more widely. |
 | `rust-version` | 1.88 is what clippy's MSRV lint accepts; only the current stable toolchain has built the code. |
 | Figures not taken again for 0.2.0 | JS heap, the browser's memory during the import, stage load times in the browser, sound effect bytes ([WEB.md](WEB.md), "Measurements": the rows that say so). |
@@ -229,7 +228,7 @@ Small things known to be unfinished or resting on thin evidence. None blocks pla
 | Largest music track | About 54 MB of float samples in the browser (computed, not measured). 16-bit or segment-streamed music would cut it; not done because a sample-exact loop could not be verified. |
 | Desktop: dropping the image on the window | Not implemented (dialog and command line only). |
 | Pack version | `mb_assets::gamepack::VERSION` must be raised when the list of copied files changes. `tests/pack.rs` fails when the count or the bytes change, which is the reminder; nothing checks that the version was raised with them. |
-| CI workflows | `.github/workflows/ci.yml` (manual only) runs `cargo xtask check`. `release.yml` starts when a release is published on GitHub: it checks that the tag is `v` + the version in `Cargo.toml`, runs `cargo xtask check`, then attaches the Linux, Windows and Apple-silicon executables and the single-file page to the release. Neither has ever run, and their Linux package list is unverified; the first released Linux and macOS executables are unverified (the macOS one is also unsigned). |
+| CI workflows | `.github/workflows/ci.yml` (manual only) runs `cargo xtask check`. `release.yml` starts when a release is published on GitHub: it checks that the tag is `v` + the version in `Cargo.toml`, runs `cargo xtask check`, then attaches the Linux, Windows and Apple-silicon executables and the site as an archive to the release. Neither has ever run, and their Linux package list is unverified; the first released Linux and macOS executables are unverified (the macOS one is also unsigned). |
 | 32-bit overflow fixes in the parsers | Made by inspection; no 32-bit test runner was available (the browser check exercises wasm32 on valid data only). |
 
 ## Decisions (recorded)
@@ -261,10 +260,10 @@ Small things known to be unfinished or resting on thin evidence. None blocks pla
   or all three become one is open ([ARCHITECTURE.md](ARCHITECTURE.md), "What will cause trouble", 2).
 - **Disc reading:** the project's own readers in `mb-assets` on every target: `rvz.rs` (RVZ, none and
   Zstandard via `ruzstd`) and `disc.rs` (GameCube header, file table, `main.dol`), plain ISO/GCM included.
-  The `nod` crate is a dev-dependency of `mb-assets`' comparison test only. Other containers are refused with
+  What they return for the USA disc is held by recorded hashes (`mb-assets/tests/disc.rs`). Other containers are refused with
   a message that says what the file is and what is supported.
 - **Browser:** `wasm-bindgen` + `web-sys`, built with `wasm-bindgen-cli --target no-modules` (classic
-  scripts, so the same glue runs in the page, in the import worker and inlined in the single file). The disc
+  scripts, so the same glue runs in the page and in the import worker). The disc
   image is never held in memory: a worker copies the files the game uses into one pack in the Origin Private
   File System (or serves them from the picked file where that is unavailable); the game prepares files
   asynchronously before each state that needs them ([WEB.md](WEB.md)). rustc's default WebAssembly feature
@@ -289,22 +288,23 @@ Small things known to be unfinished or resting on thin evidence. None blocks pla
 
 What 0.2.0 added, read against goal 4. Nothing here is a fault in what the player sees; each is machinery
 that is larger than its effect, duplicates something, or serves nothing on this disc. It is for the owner to
-decide. Done since the list was written: fog removed, the tests' disc finder shared within `mb-app`.
+decide. Done since the list was written (the rows are gone from the table): fog, the wavy mirror's
+distortion, additive sprites and the world-specular switch removed; the tests' disc finder shared within
+`mb-app`. Outside this list the single-file page, the parity harness against the reference and the `nod`
+dependency went too.
 [ARCHITECTURE.md](ARCHITECTURE.md), "The elements, by importance", ranks everything in the repository, not
 only what 0.2.0 added. Sizes are lines of the file as 0.2.0 had it.
 
 | Candidate | Where | What could go, and what that costs |
 |---|---|---|
-| The wavy mirror's distortion is never used | `mb-render/src/mirror.rs` (765), `mirror.wgsl` (165): `Distortion`, `Mirror::wavy`, the `gb_grad` fetch; `the_wavy_mirror_offsets_the_reflection_by_the_reference_formula` in `tests/mirror.rs` | The game sets `distortion: None` on stage 92, the only stage it was for ([GAMEPLAY.md](GAMEPLAY.md)). The path is exercised by one test and by nothing a player can reach. Removing it loses the record of the reference's formula. |
 | Two kinds of mirror surface | `Renderer::set_mirror_surface` and `set_mirror_surface_only` (`renderer.rs`, 2998) | The first (a surface drawn with its own material and the reflection over it) has one user, stage 92's wave floor; the 36 other stages use the second. And a third way hides a surface: stage 110 switches its two levels with `set_visible` (`play_scene.rs`, `pose_mirror`). One flag with a "draw own material" bit would do. |
 | Two ways to order blended objects | `Renderer::set_sort_bias` (ball shells, goal bags) and `set_depth_offset` (background and foreground objects, flipbook windows) | Both add a number to a sort distance; they differ in whether opaque meshes move to the sorted pass and whether the object's or the mesh's origin is used. One call with those two switches would carry both. |
 | An instanced path beside the object path | `mb-render/src/instances.rs` (174), `effects.rs` (264), the instance pipelines in `renderer.rs`; against objects with a shared uniform buffer | Instances exist for the confetti (160 pieces), stars, glows and flashes. They are what keeps particles at 11 draws, so they earn their place on WebGL2; the cost is a second vertex layout, a second set of pipelines and the specular difference noted in [GMA.md](GMA.md). Listed for completeness, not as a recommendation. |
-| Renderer calls that only tests use | `set_mirror_capture_whole` (one test in `mb-app/tests/gameplay.rs`), `set_mirror_scale` (the game always uses the default 0.5), `set_color_mul` and `set_tex_matrix` (the game calls `set_tex_offset`), `SpriteBlend::Additive` (the HUD uses `Solid` and `Alpha`), `mirror_size`, `object_capacity` | Each is small. `set_mirror_capture_whole` exists to prove the scissored capture changes no pixel; it could be a `#[cfg]`-gated hook or the comparison could be dropped once trusted. |
-| A switch that does nothing on this disc | `Renderer::set_world_specular_disabled` and `stage_scene::bg_light_group` | The reference's rule for background light groups is ported and applied; no background or foreground object of the 109 course stages is in a group other than 0 ([GAMEPLAY.md](GAMEPLAY.md), "Material switches"). |
+| Renderer calls that only tests use | `set_mirror_capture_whole` (one test in `mb-app/tests/gameplay.rs`), `set_mirror_scale` (the game always uses the default 0.5), `set_color_mul` and `set_tex_matrix` (the game calls `set_tex_offset`), `mirror_size`, `object_capacity` | Each is small. `set_mirror_capture_whole` exists to prove the scissored capture changes no pixel; it could be a `#[cfg]`-gated hook or the comparison could be dropped once trusted. |
 | A texture matrix where an offset is used | `set_tex_matrix`, `set_tex_matrix_every_layer`, the `ENABLE_UV_SCROLL` branch of `shader.wgsl` (430) | No layer on the disc has the flag ([GMA.md](GMA.md)); the only user is the sunset clouds, through `set_tex_offset` and the every-layer switch. A two-float offset per object would be enough. |
 | Four draw-count tables | `crates/mb-app/tests/budgets.rs` (737): `DRAWS_0_1_0`, `DRAWS_ADDED`, `DRAWS`, `MIRROR_DRAWS` | `DRAWS` is what is asserted exactly; the first two only prove it never exceeds 0.1.0, which the merged meshes put 15 to 50 % out of reach. They could be reduced to `DRAWS` and `MIRROR_DRAWS` once 0.1.0 stops being the baseline. |
 | Accessors for tests in product code | `hud.rs` (`jump_text`, the warp factor), `play_scene.rs` (shadow drawn, cloud layers, mirror level), `menu.rs` (the run in progress); marked "(tests)" in their comments | A few lines each; they could sit behind the `dev` feature like the rest of the test support. |
 | Frame counters in the shipped wasm | `mb-app/src/perf.rs` (239), `perf_*` exports of `mb-web/src/lib.rs`, `window.mbPerf` in `web/main.js` | They are what the browser check reads and cost nothing until enabled, but they are developer support inside the product, which `AGENTS.md` otherwise forbids. Kept because the check must measure the build that ships. |
-| Developer helpers that grew | `mb-app/src/headless.rs` (365), `autopilot.rs` (222), `image.rs` (120), all behind `dev`; `mb-app/tests/gameplay.rs` (1975), `mb-render/tests/mirror.rs` (1542), `mb-engine/tests/parity.rs` (1588) | Not in the product. The test files are now longer than most of what they test; starting a stage is still set up separately in `budgets.rs`, `memory.rs`, `mirrors.rs`, `gameplay.rs` and `pack.rs` (finding the disc is shared since, `tests/common/mod.rs`). |
+| Developer helpers that grew | `mb-app/src/headless.rs` (365), `autopilot.rs` (222), `image.rs` (120), all behind `dev`; `mb-app/tests/gameplay.rs` (1975), `mb-render/tests/mirror.rs` (1542) | Not in the product. The test files are now longer than most of what they test; starting a stage is still set up separately in `budgets.rs`, `memory.rs`, `mirrors.rs`, `gameplay.rs` and `pack.rs` (finding the disc is shared since, `tests/common/mod.rs`). |
 | `renderer.rs` itself | 2998 lines (0.1.0: 1633) | One file holds uploads, mesh merging, objects, sorting, culling, the mirror passes and the frame. Splitting changes no behaviour; listed because it is where the next feature will be hardest to add simply. |
 | Mirror planes derived instead of looked up | `mb-app/src/mirror.rs` (675) | The reference has one short function of fixed choices (`getMirrorPlaneMatrix`); the port derives every plane from the mirror models (flatness, shared planes over the animation loop, levels). It is why stages 103 and 74 are right, and it is the largest piece of logic the mirrors added to `mb-app`. `tests/mirrors.rs` already records the resulting plane of every stage to check the rule; reading the planes from such a table would be much shorter, at the price of numbers that nothing derives any more. |

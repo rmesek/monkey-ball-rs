@@ -9,7 +9,7 @@ platforms ([docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)).
   that had them as a version 0.3.0 is finished and kept as a record ([docs/PARITY_PLAN.md](docs/PARITY_PLAN.md)).
 - **Standalone:** the simulation of every stage on the disc is recorded as golden hashes
   (`crates/mb-engine/tests/golden.rs`), taken where the comparison with WebMonkeyBall last passed. The
-  reference is no longer needed to develop; the tests that use it still run when a checkout is there.
+  reference is no longer needed to develop.
 - **One crate per platform:** `mb-app` is the game as a library, without a window or an event loop. The
   desktop program moved to the new crate `mb-desktop` (build it with `cargo run -p mb-desktop --release`;
   the executable is still `mb-app`), the browser driver into `mb-web`.
@@ -18,9 +18,17 @@ platforms ([docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)).
   (`content::open_disc_stream`), which is what a platform with file descriptors instead of paths needs; a GL
   adapter gets the WebGL2 limits on every platform (`gpu::required_limits`).
 - **Rust edition 2024**, resolver 3, `rust-version` 1.88.
-- **Removed:** fog in the renderer (never switched on); seven copies of a test helper.
-- **Size and tests:** the wasm module is 4 014 488 bytes (0.2.0: 4 016 134); 562 tests (0.2.0: 559); the
-  browser test's 97 checks pass.
+- **The single-file page is gone.** `cargo xtask build-web` no longer has `--single` and writes no
+  `monkey-ball.html`; the site has to be served (to play without a server, use the desktop program). With
+  it went the build tool's own gzip compressor and SHA-256: `xtask` is 590 lines, from 1 540. A release
+  now carries the site as an archive instead.
+- **Removed from the renderer:** fog, the wavy mirror's distortion, additive sprites, the world-specular
+  switch for background light groups. None was reachable in play; no pixel changes.
+- **Removed from the tests:** the harness that compared the simulation and the parsers with WebMonkeyBall
+  under Deno (its result is in the golden tables), and the `nod` dev-dependency (the disc reader is held
+  by recorded hashes; `Cargo.lock` is 384 lines shorter). Seven copies of a test helper became one.
+- **Size and tests:** the wasm module is 4 011 275 bytes (0.2.0: 4 016 134); 547 tests (0.2.0: 559); the
+  browser test makes 93 checks (0.2.0: 97, four were the single file's).
 
 ## 0.2.0
 

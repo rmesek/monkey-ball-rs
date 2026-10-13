@@ -23,7 +23,7 @@ cargo install wasm-bindgen-cli --version 0.2.129 --locked
 One command builds the site into `web/dist/` (git-ignored):
 
 ```
-cargo xtask build-web [--single] [--dev]
+cargo xtask build-web [--dev]
 ```
 
 It checks the CLI version, runs `cargo build -p mb-web --target wasm32-unknown-unknown --profile web`,
@@ -38,7 +38,6 @@ platform: it is a small Rust program (`xtask/`, standard library only; `cargo xt
 | `main.js`, `worker.js` | the page's script and the import worker (classic scripts, no modules) |
 | `pkg/mb_web.js`, `pkg/mb_web_bg.wasm` | the engine: 4.0 MB wasm (1.45 MB gzipped), 0.19 MB glue |
 | `sw.js`, `manifest.webmanifest`, `icon*.{svg,png}` | offline start and installation (optional at run time) |
-| `monkey-ball.html` | with `--single`: everything in one file, 2.2 MB (1.54 MB gzipped) |
 
 `-Dev` / `--dev` builds unoptimised and keeps the function names in the module. The `web` profile (workspace
 `Cargo.toml`) is `release` plus fat LTO, one codegen unit and `panic = "abort"`; the optimised build also
@@ -56,7 +55,7 @@ held to it.
 |---|---|---|
 | `pkg/mb_web_bg.wasm` | 3 877 298 bytes (1.39 MB gzipped) | 4 016 134 bytes (1.45 MB gzipped): +138 836, 111 164 bytes of the budget left |
 | `pkg/mb_web.js` | 192 362 bytes | 193 611 bytes |
-| `monkey-ball.html` | 2 107 204 bytes | 2 185 866 bytes |
+| `monkey-ball.html` (the single file, removed after 0.2.0) | 2 107 204 bytes | 2 185 866 bytes |
 
 ## Run
 
@@ -80,18 +79,12 @@ What `python -m http.server` implies, and how the page copes:
   old script is never paired with a new engine, and the service worker's cache is named by the same hash.
 * No COOP/COEP headers: nothing here needs `SharedArrayBuffer` or threads. No range requests are needed.
 
-### The single file
+### Not from disk
 
-`web/dist/monkey-ball.html` (built with `--single`) has the scripts inlined as classic scripts, the wasm
-embedded as gzipped base64 (unpacked with `DecompressionStream`), the import worker started from a Blob, and the
-icon inlined. No service worker, no manifest. Its policy lists the three inline scripts by SHA-256 hash and has
-`connect-src 'none'`. Copy the one file anywhere and open it.
-
-What a page opened from disk may do depends on the browser. Measured in Chrome 154 on Windows: it is treated as
-a secure context and gets WebGPU, but no private file system, so the session plays from the picked file and
-saves go to `localStorage`. Not verified: Android, where opening a local `.html` from a file manager gives the
-browser a `content://` address (whether Blob workers and `FileReaderSync` work there is untested), and iOS.
-If the single file does not work somewhere, host `web/dist/` instead.
+The site has to be served. A page opened from a `file://` address may not fetch the module or start the
+worker from the files next to it, and says so. Until 0.2.0 the build could also write the whole page into
+one file that did open from disk (`monkey-ball.html`); it was removed with its 700 lines of build tool
+(a gzip compressor among them). To play without a server, use the desktop program.
 
 ### Page parameters
 
@@ -131,10 +124,11 @@ truncated or damaged files), and the picker stays usable.
 Reading is done by the project's own code on every target (`crates/mb-assets`): `rvz.rs` (the RVZ container)
 and `disc.rs` (GameCube boot header, file table, `main.dol`). Sizes and offsets from the file are checked
 against the format and the file before anything is allocated or read; tests feed truncated, bit-flipped and
-hostile-size inputs under an allocation-counting allocator. `crates/mb-assets/tests/disc.rs` compares the
-readers with the `nod` crate: a sample in every test run, and the whole image with
-`cargo test --release -p mb-assets --test disc -- --ignored whole_image_matches_nod` (identical on the tested
-file: 1,459,978,240 disc bytes, 897 files, `main.dol`). `nod` is a dev-dependency of that test only.
+hostile-size inputs under an allocation-counting allocator. `crates/mb-assets/tests/disc.rs` holds what the
+readers return for the USA disc by recorded hashes: a sample in every test run, and the whole image with
+`cargo test --release -p mb-assets --test disc -- --ignored the_whole_image_reads_as_recorded`
+(1,459,978,240 disc bytes, 897 files, `main.dol`). The hashes were recorded in a run in which a second
+reader, the `nod` crate, returned the same bytes for the whole image; `nod` is no longer a dependency.
 
 ## Storage model
 
@@ -280,7 +274,6 @@ run; the other numbers are derived from what the build uses and the browsers' do
 | running at all | WebGL2, or WebGPU; `Worker` with `FileReaderSync`; `Blob.arrayBuffer` | 76 | 15 | 69 |
 | keeping the game data | Origin Private File System with `createSyncAccessHandle` | 102 | 15.2 | 111 |
 | saves as files | `createWritable` (else `localStorage`, else memory) | 86 | 26 | 111 |
-| the single file | `DecompressionStream` | 80 | 16.4 | 113 |
 
 The module is deliberately not built for an older WebAssembly feature level (`-C target-cpu=mvp`): the policy
 already sets the floor at Chrome 97, above every WebAssembly feature used, so it would buy nothing.
@@ -465,7 +458,7 @@ deno run -A scripts/web-e2e.ts [--lan]
 serves `web/dist` with `python -m http.server`, starts the installed Chrome with a throw-away profile and
 drives it over the DevTools protocol, setting the real disc image on the page's real file input. It needs the
 bundle, Chrome, Python and the image (`MB_DISC`, or `Super Monkey Ball*.rvz` next to the repository) and says
-what is missing otherwise. 97 checks (100 with `--lan`; 87 where Chrome gives the page no WebGPU), about
+what is missing otherwise. 93 checks (96 with `--lan`; 83 where Chrome gives the page no WebGPU), about
 eight minutes: wrong, empty, random and truncated files; import and
 storage contents; play floor 1 into floor 2; in-place retry; audio; wasm memory against 0.1.0; the page hidden
 and shown again; a save written by 0.1.0 (read, Reflections on, written back whole); the new drawing on
@@ -478,5 +471,5 @@ emulated sensor; remove data; cancel; play without storage; the picked file dele
 view (the private file system, `localStorage`, service worker, WebGPU, fullscreen, wake lock, device
 orientation, gamepads and streaming compilation taken away before the page loads); browsers that cannot run
 the game (no workers, no WebGL2, an engine that rejects the module, no WebAssembly); the bundle served from a
-sub-path; the network address (with `--lan`); the single file opened from disk; start with the server
+sub-path; the network address (with `--lan`); start with the server
 stopped (service worker).

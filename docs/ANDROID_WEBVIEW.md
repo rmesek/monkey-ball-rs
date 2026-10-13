@@ -20,7 +20,6 @@ that folder).
 |---|---|
 | `index.html`, `guard.js`, `main.js`, `worker.js`, `pkg/mb_web.js`, `pkg/mb_web_bg.wasm` | yes |
 | `sw.js`, `manifest.webmanifest`, `icon*.png`, `icon.svg` | no (offline start and installation for browsers); harmless if left in |
-| `monkey-ball.html` (only built with `--single`) | no; it is the alternative to all of the above, see the end |
 
 There is no native code: no NDK, no `.so` files, no ABI splits, nothing affected by the 16 KB page size
 requirement. The game is one 4.0 MB WebAssembly module and about 250 KB of script and markup.
@@ -163,7 +162,6 @@ stopping silently (**[checked]** by simulating engines that lack a feature). Wha
 | WebAssembly bulk memory, non-trapping conversions, sign extension, multi-value | 75 / 75 / 74 / 85 | 15 / 15 / 14.1 / 13.1 | 79 / 64 / 62 / 78 |
 | WebGL2 | 56 | 15 | 51 |
 | Storing the game data (Origin Private File System with synchronous access handles) | 102 (108 for the all-synchronous form; the code awaits the calls, so both shapes work) | 15.2 | 111 |
-| The single file only: `DecompressionStream` | 80 | 16.4 | 113 |
 
 The version numbers in this table are from the browsers' documentation, not from tests.
 **[platform]** WebView updates through the Play Store on Android 5 and later, but the last version for
@@ -209,11 +207,3 @@ Applies to `file://` and to plain `http://` on a network address.
 * Saves go to `localStorage` (if DOM storage is enabled), otherwise they last until the page closes.
 * No service worker (irrelevant in an app), no WebGPU (WebGL2 is used anyway).
 * Device tilt may be unavailable.
-
-## The single file instead
-
-`web/dist/monkey-ball.html` (built with `--single`) contains everything, including the wasm module, and
-starts its worker from a Blob. It makes no request at all. It is the only form of the site that can work
-from `file:///android_asset/` (**[checked]** on desktop Chrome from `file://`; untested in a web view), but
-there it runs without a secure context, with the limits above. Served through the asset loader it behaves
-like the folder build. Prefer the folder build.
