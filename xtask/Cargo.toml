@@ -1,6 +1,6 @@
 [package]
 name = "xtask"
-description = "Build tool behind `cargo web` and `cargo xtask`: builds the static web site (target/site) and runs the quality gates. Not part of the game."
+description = "Build tool: builds the static web site (target/site) and runs the quality gates. Not part of the game."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

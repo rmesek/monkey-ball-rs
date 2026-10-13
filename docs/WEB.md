@@ -15,16 +15,15 @@ Needs Rust and nothing else: the `wasm32-unknown-unknown` target comes with the 
 (`rust-toolchain.toml` names it), and the build tool links wasm-bindgen's post-processing as a library at
 the version of the `wasm-bindgen` crate (both pinned; a test compares them).
 
-`cargo web` (an alias of `cargo xtask build-web`) builds it into `target/site/`:
+One command builds it into `target/site/`:
 
 ```
-cargo xtask build-web [--dev]
+cargo run --release -p xtask -- build-web [--dev]
 ```
 
 It runs `cargo build -p mb-web --target wasm32-unknown-unknown --profile web` and wasm-bindgen's
 `no-modules` output, holds the module to its size budget (below), and assembles the directory. The same command works in any shell on any
-platform: it is a small Rust program (`xtask/`; `cargo xtask` is an alias in
-`.cargo/config.toml`), so there are no shell scripts and nothing else to install:
+platform: it is a small Rust program (`xtask/`), so there are no shell scripts and nothing else to install:
 
 | File | What |
 |---|---|

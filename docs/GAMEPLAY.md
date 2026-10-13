@@ -527,7 +527,7 @@ Different from `hud.ts` here:
 The tests run on developer support that the product does not contain: the windowless driver (`headless.rs`),
 the waypoint autopilot (`autopilot.rs`) and a PNG writer (`image.rs`) are compiled only with the `dev` cargo
 feature, which `cargo test` switches on by itself. A `dev` build of the program also has one option:
-`cargo desktop --features dev -- [stage] --exit-after <s>` closes the window after that long and prints frame
+`cargo run --release --features dev -- [stage] --exit-after <s>` closes the window after that long and prints frame
 pacing and simulation ticks against the 60 Hz target, and what the audio device played (stream, callbacks,
 peak / RMS, late callbacks). To look at pictures of a run, `MB_SHOT_DIR=<dir> cargo test -p mb-app --release
 --test gameplay` writes PNGs of what the state tests draw.

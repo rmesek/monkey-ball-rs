@@ -39,7 +39,7 @@ its voices, jingles, menu music, minigames).
 | The desktop program | `mb-desktop` | the kill test |
 | The static site | `mb-web`, `web/` | `scripts/web-e2e.ts` |
 
-Last run of everything, 2026-10-13, Windows 11, USA disc: `cargo xtask check` passes with 548
+Last run of everything, 2026-10-13, Windows 11, USA disc: `cargo run --release -p xtask -- check` passes with 548
 tests; `deno run -A scripts/web-e2e.ts` passes its 93 checks in Chrome 154.
 
 ## Budgets
@@ -114,7 +114,8 @@ Each is a statement about where the evidence stops.
 - **One crate per platform** on a game library without a window; the next platform is another crate.
 - **Game data is imported once on every platform** into one pack: a file on the desktop (and later on
   Android), the private file system in the browser. The image is not needed afterwards.
-- **One command per target:** `cargo desktop` runs the program, `cargo web` builds the site into
+- **One plain cargo command per target, no aliases:** `cargo run --release` runs the desktop program (it is
+  the workspace's default member), `cargo run --release -p xtask -- build-web` builds the site into
   `target/site/`. The build tool builds and serves nothing: hosting is the user's own static file server.
   No shell scripts, nothing to install but Rust.
 - **The browser target works where a page may not store data** (private windows, plain-http addresses):

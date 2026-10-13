@@ -11,6 +11,8 @@ members = [
     "crates/mb-desktop", "crates/mb-web",
     "xtask",
 ]
+# What plain `cargo run --release` builds and runs: the desktop program.
+default-members = ["crates/mb-desktop"]
 
 [workspace.package]
 version = "0.3.0"
@@ -26,7 +28,7 @@ publish = false
 # everywhere; winit in the platform crates; cpal and pollster on native targets; rfd and gilrs on the desktop;
 # wasm-bindgen, web-sys and js-sys in the browser. Nothing that talks to a network.
 
-# Browser bundle (`cargo xtask build-web` builds mb-web with `--profile web`). Whole-program optimisation
+# Browser bundle (`cargo run --release -p xtask -- build-web` builds mb-web with `--profile web`). Whole-program optimisation
 # pays here: the wasm is downloaded and compiled by every visitor and runs on phones. Measured against plain
 # `--release` in docs/WEB.md. Kept out of `release` so native builds stay quick to link.
 [profile.web]

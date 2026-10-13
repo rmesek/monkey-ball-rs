@@ -46,10 +46,10 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev libgtk-3-dev libxkbcommon-dev libwayland-dev
       # The same gates as on a developer's machine. The runner has no disc image, so the tests that need the
       # game skip, and the browser check is not run: do both locally before tagging.
-      - run: cargo xtask check
+      - run: cargo run --release -p xtask -- check
       # The desktop program as shipped; reuses the dependencies the release-mode tests just built.
       - run: cargo build -p mb-desktop --release --locked
-      - run: cargo xtask build-web
+      - run: cargo run --release -p xtask -- build-web
       - name: Attach the Linux executable and the web site
         env:
           VERSION: ${{ steps.version.outputs.version }}

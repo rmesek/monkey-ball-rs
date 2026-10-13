@@ -1,5 +1,5 @@
 # Manual-only on purpose: pushes and pull requests must not consume paid Actions minutes.
-# It runs `cargo xtask check`, the same gates as on a developer's machine. The runner has no disc image, so
+# It runs `cargo run --release -p xtask -- check`, the same gates as on a developer's machine. The runner has no disc image, so
 # the tests that need the game skip; the browser check (scripts/web-e2e.ts) needs one and is not run here.
 name: ci
 on:
@@ -13,4 +13,4 @@ jobs:
       - run: rustup show
       # Headers for the desktop crates' Linux backends (audio, gamepads, the file dialog, windowing).
       - run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev libgtk-3-dev libxkbcommon-dev libwayland-dev
-      - run: cargo xtask check
+      - run: cargo run --release -p xtask -- check

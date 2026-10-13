@@ -1,8 +1,0 @@
-# One command per thing, the same in every shell on every platform.
-[alias]
-# Build and run the desktop program:  cargo desktop [options]
-desktop = "run --release -p mb-desktop --"
-# Build the web site into target/site (host that folder yourself):  cargo web
-web = "run --quiet --release -p xtask -- build-web"
-# The build tool (xtask/src/main.rs):  cargo xtask check | build-web
-xtask = "run --quiet --release -p xtask --"

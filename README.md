@@ -20,18 +20,18 @@ sounds and music.
 Desktop:
 
 ```
-cargo desktop
+cargo run --release
 ```
 
 Web browser:
 
 ```
-cargo web
+cargo run --release -p xtask -- build-web
 python -m http.server -d target/site 8080
 ```
 
-and open `http://localhost:8080`. `cargo web` builds the site into `target/site/` as plain files and serves
-nothing; any static file server can host that folder, from any path. The commands work the same in every
+and open `http://localhost:8080`. The first command builds the site into `target/site/` as plain files and
+serves nothing; any static file server can host that folder, from any path. The commands work the same in every
 shell on Windows, Linux and macOS.
 
 The first time, the game asks for the disc image and copies the files it uses (about 145 MB) into its own
@@ -65,7 +65,7 @@ previous save or the new one; an import that is interrupted leaves nothing behin
 ## Tests
 
 ```
-cargo xtask check
+cargo run --release -p xtask -- check
 ```
 
 runs formatting, lints for every target and all tests. Tests that need the game look for your disc image in

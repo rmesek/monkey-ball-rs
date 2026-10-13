@@ -11,8 +11,9 @@ the user's own disc image on the device, plays the game as it is, never leaves a
 has the tests that keep it so. Prefer removing code to adding it. Do not invent game content, and add no
 feature, option, tool or abstraction that the four aims in PLAN.md do not need.
 
-Targets: the desktop program (`cargo desktop`) and the static web site (`cargo web`). Android is later, in
-a WebView and natively; do not start it, or any other target, unless the owner asks.
+Targets: the desktop program (`cargo run --release`) and the static web site
+(`cargo run --release -p xtask -- build-web`). Android is later, in a WebView and natively; do not start it,
+or any other target, unless the owner asks.
 
 ## Hard rules
 
@@ -57,7 +58,7 @@ a WebView and natively; do not start it, or any other target, unless the owner a
 
 ## Gates
 
-All must hold at every commit. `cargo xtask check` runs the first six.
+All must hold at every commit. `cargo run --release -p xtask -- check` runs the first six.
 
 ```
 cargo fmt --all -- --check
@@ -66,7 +67,7 @@ cargo clippy -p mb-desktop -- -D warnings
 cargo clippy -p mb-web --target wasm32-unknown-unknown --target-dir target/wasm -- -D warnings
 cargo clippy -p mb-app --target aarch64-linux-android --target-dir target/android -- -D warnings -A clippy::missing_const_for_thread_local
 cargo test --workspace --release
-cargo xtask build-web
+cargo run --release -p xtask -- build-web
 deno run -A scripts/web-e2e.ts
 ```
 

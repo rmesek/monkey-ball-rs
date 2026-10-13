@@ -16,7 +16,7 @@ The state of the project (what works, what is open) is in [PLAN.md](PLAN.md).
                            mb-engine   the 60 Hz simulation          mb-game   courses, score, saves
                            mb-assets   disc image reader, game pack  mb-stage, mb-tpl, mb-gma, mb-audio
                                                                      the game's file formats
- tooling                   xtask (cargo web, cargo xtask check)      scripts/web-e2e.ts (browser test)
+ tooling                   xtask (builds the site, runs the gates)   scripts/web-e2e.ts (browser test)
 ```
 
 Dependencies point downwards only. Nothing below the platform crates names a window, an event loop or an
@@ -78,7 +78,7 @@ Rules that keep this true:
 * Code for one platform lives in that platform's crate. No `cfg(target_os)` in shared code; the
   `cfg(target_arch = "wasm32")` there separates "may block" from "must await" and nothing else.
 * What a platform cannot do is a `host::Caps` flag the menus read, never a `cfg` in a state.
-* `cargo xtask check` compiles `mb-app` and everything under it for `aarch64-linux-android`, so shared code
+* `cargo run --release -p xtask -- check` compiles `mb-app` and everything under it for `aarch64-linux-android`, so shared code
   cannot quietly become desktop-only. It is a compile check; nothing has run on a phone.
 
 ## Adding Android
