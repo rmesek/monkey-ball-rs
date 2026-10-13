@@ -34,6 +34,32 @@ fn root() -> PathBuf {
         .to_path_buf()
 }
 
+/// Size of `pkg/mb_web_bg.wasm` as version 0.1.0 shipped it (the optimised build, name section removed).
+const WASM_BYTES_0_1_0: u64 = 3_877_298;
+/// The most the optimised module may weigh: what `docs/PARITY_PLAN.md` ("Limits every phase works
+/// inside", Size) allows over 0.1.0. Every phone downloads and compiles these bytes, so they are not to
+/// grow by accident: `cargo xtask build-web` fails above this.
+///
+/// To raise it on purpose: change the allowance here in a commit of its own that says what the bytes buy,
+/// and put the new figure into `docs/PARITY_PLAN.md` and the size table of `docs/WEB.md`. First look for
+/// what brought the bytes in (a new dependency, a generic instantiated many times, formatting code).
+const WASM_BUDGET_BYTES: u64 = WASM_BYTES_0_1_0 + 250_000;
+
+/// The line `build-web` prints about the module's size, or the error when it is over `budget`.
+fn wasm_size_report(size: u64, budget: u64) -> Result<String, String> {
+    let growth = size as i64 - WASM_BYTES_0_1_0 as i64;
+    if size > budget {
+        return Err(format!(
+            "pkg/mb_web_bg.wasm is {size} bytes, {} over its budget of {budget} ({growth:+} against the              {WASM_BYTES_0_1_0} of 0.1.0). Find what grew, or raise WASM_BUDGET_BYTES in xtask/src/main.rs              on purpose (its comment says how). web/dist was left as it was.",
+            size - budget
+        ));
+    }
+    Ok(format!(
+        "wasm module: {size} bytes ({growth:+} against 0.1.0), budget {budget}, {} bytes of headroom",
+        budget - size
+    ))
+}
+
 /// The cargo that is running this tool, so nested builds use the same toolchain.
 fn cargo() -> Command {
     let mut c = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
@@ -152,6 +178,17 @@ fn build_web(args: impl Iterator<Item = String>) -> Result<(), String> {
     );
     run(bindgen)?;
 
+    // The size budget holds for the build that ships; an unoptimised module is several times the size.
+    let wasm = pkg.join("mb_web_bg.wasm");
+    let size = std::fs::metadata(&wasm)
+        .map_err(|e| format!("{}: {e}", wasm.display()))?
+        .len();
+    if dev {
+        println!("wasm module: {size} bytes (unoptimised: the size budget is not applied)");
+    } else {
+        println!("{}", wasm_size_report(size, WASM_BUDGET_BYTES)?);
+    }
+
     let out = root.join("web").join("dist");
     bundle::run(bundle::Options {
         web: root.join("web"),
@@ -159,9 +196,6 @@ fn build_web(args: impl Iterator<Item = String>) -> Result<(), String> {
         out: out.clone(),
         single,
     })?;
-    let size = std::fs::metadata(out.join("pkg").join("mb_web_bg.wasm"))
-        .map(|m| m.len())
-        .unwrap_or(0);
     println!(
         "built web/dist ({} KiB wasm). Serve it with any static file server, for example:\n  \
          cd web/dist\n  python -m http.server 8080",
@@ -265,6 +299,28 @@ mod tests {
         // The real lock file has it.
         let real = std::fs::read_to_string(root().join("Cargo.lock")).unwrap();
         assert!(locked_wasm_bindgen(&real).is_some());
+    }
+
+    #[test]
+    fn the_wasm_module_is_held_to_its_size_budget() {
+        // The plan's figure: a quarter of a megabyte over 0.1.0.
+        assert_eq!(WASM_BUDGET_BYTES, 4_127_298);
+        let line = wasm_size_report(4_006_367, WASM_BUDGET_BYTES).unwrap();
+        assert!(line.contains("4006367 bytes"), "{line}");
+        assert!(line.contains("+129069 against 0.1.0"), "{line}");
+        assert!(line.contains("120931 bytes of headroom"), "{line}");
+        // Exactly the budget passes with nothing left; one byte more fails and says by how much.
+        let line = wasm_size_report(WASM_BUDGET_BYTES, WASM_BUDGET_BYTES).unwrap();
+        assert!(line.contains(" 0 bytes of headroom"), "{line}");
+        let e = wasm_size_report(WASM_BUDGET_BYTES + 1, WASM_BUDGET_BYTES).unwrap_err();
+        assert!(
+            e.contains("4127299 bytes, 1 over its budget of 4127298"),
+            "{e}"
+        );
+        assert!(e.contains("WASM_BUDGET_BYTES"), "{e}");
+        // A module smaller than 0.1.0 is reported as such.
+        let line = wasm_size_report(3_800_000, WASM_BUDGET_BYTES).unwrap();
+        assert!(line.contains("-77298 against 0.1.0"), "{line}");
     }
 
     #[test]

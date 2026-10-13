@@ -27,7 +27,7 @@ cargo xtask build-web [--single] [--dev]
 ```
 
 It checks the CLI version, runs `cargo build -p mb-web --target wasm32-unknown-unknown --profile web`,
-`wasm-bindgen --target no-modules`, and assembles the directory. The same command works in any shell on any
+`wasm-bindgen --target no-modules`, holds the module to its size budget (below), and assembles the directory. The same command works in any shell on any
 platform: it is a small Rust program (`xtask/`, standard library only; `cargo xtask` is an alias in
 `.cargo/config.toml`), so there are no shell scripts and nothing else to install:
 
@@ -36,15 +36,27 @@ platform: it is a small Rust program (`xtask/`, standard library only; `cargo xt
 | `index.html` | the page (stamped with a version hash of the bundle) |
 | `guard.js` | a few lines of old-style script loaded first: says so when a later script cannot load or parse (a browser below the supported versions) |
 | `main.js`, `worker.js` | the page's script and the import worker (classic scripts, no modules) |
-| `pkg/mb_web.js`, `pkg/mb_web_bg.wasm` | the engine: 3.9 MB wasm (1.39 MB gzipped), 0.19 MB glue |
+| `pkg/mb_web.js`, `pkg/mb_web_bg.wasm` | the engine: 4.0 MB wasm (1.45 MB gzipped), 0.19 MB glue |
 | `sw.js`, `manifest.webmanifest`, `icon*.{svg,png}` | offline start and installation (optional at run time) |
-| `monkey-ball.html` | with `--single`: everything in one file, 2.1 MB (1.45 MB gzipped) |
+| `monkey-ball.html` | with `--single`: everything in one file, 2.2 MB (1.54 MB gzipped) |
 
 `-Dev` / `--dev` builds unoptimised and keeps the function names in the module. The `web` profile (workspace
 `Cargo.toml`) is `release` plus fat LTO, one codegen unit and `panic = "abort"`; the optimised build also
 drops the module's name section (1.1 MB; a panic still reports its message and source line). `wasm-opt` is
 not used (not required; not installed on the build machine). The module is built with rustc's default
 feature set for `wasm32-unknown-unknown` (see "Browser requirements").
+
+**Size budget.** Every visitor downloads and compiles the module, so it may not grow by accident: the build
+prints its size and fails, before `web/dist` is touched, when the optimised module is larger than
+`WASM_BUDGET_BYTES` in `xtask/src/main.rs` (the 3 877 298 bytes of 0.1.0 plus 250 000, the allowance of
+`docs/PARITY_PLAN.md`). The comment on the constant says how to raise it on purpose. `--dev` builds are not
+held to it.
+
+| | 0.1.0 | 0.2.0 |
+|---|---|---|
+| `pkg/mb_web_bg.wasm` | 3 877 298 bytes (1.39 MB gzipped) | 4 015 934 bytes (1.45 MB gzipped): +138 636, 111 364 bytes of the budget left |
+| `pkg/mb_web.js` | 192 362 bytes | 193 611 bytes |
+| `monkey-ball.html` | 2 107 204 bytes | 2 185 974 bytes |
 
 ## Run
 
@@ -94,7 +106,9 @@ If the single file does not work somewhere, host `web/dist/` instead.
 
 For the console and for automated checks: `window.mbStats` holds what happened at start-up (mode, import
 time, pack size, save mode, why nothing is stored), `window.mbPerf` frame timings and load breakdowns
-(`summary()`, `lastLoad()`, `status()`, `preparedBytes()`, `wasmMemoryBytes()`, `audio()`), and
+(`summary()`, `frames()`, `counts()`, `total()`, `lastLoad()`, `status()`, `preparedBytes()`,
+`wasmMemoryBytes()`, `audio()`; nothing is recorded until `enable()` or `?fps=1`, and a row is only built when
+one of them is called), and
 `window.mbBack()` takes one step back inside the game (false at the title menu).
 
 ## The game file
@@ -243,8 +257,12 @@ page (main.js + wasm)
 * A hidden page (another tab or app in front) produces no frames, stops its audio clock and pauses the stage;
   nothing runs on a timer while the game is up.
 * Options: fullscreen (with an attempt to lock landscape), controls by device tilt (calibrated to the pose
-  the device is held in when a stage starts; iOS asks for permission at the next tap), remove game data,
-  erase save data.
+  the device is held in when a stage starts; iOS asks for permission at the next tap), reflections, remove
+  game data, erase save data.
+* **Reflections** (on by default on every platform; kept in the save, so it survives a reload and comes
+  out as on from a save 0.1.0 wrote) draws the mirror floors of the 37 stages that have one, with one more
+  pass over what the mirror shows. "Mirror floors in the browser" below has what it costs; a player whose
+  device is too slow for it turns it off here.
 * The screen is kept awake while the page is visible (Screen Wake Lock, re-acquired on return).
 * Portrait and landscape both work; no rotate hint is shown.
 * A lost graphics context or a fatal error shows a dialog with one button that restarts the page, which is
@@ -285,38 +303,152 @@ What the page does where something is missing:
 
 ## Measurements
 
-Chrome 154, Windows 11, RTX 4080, 165 Hz display, the tested RVZ; `scripts/web-e2e.ts` prints most of these.
+Chrome 154, Windows 11, RTX 4080, the tested RVZ, a window of 1100 x 860 (canvas 1084 x 765).
+`scripts/web-e2e.ts` takes and prints the 0.2.0 column on every run; the figures are those of three runs in
+a row on 2026-10-13, with their spread where there was one. The display ran at 240 Hz (a frame every 4.2 ms)
+for the 0.2.0 column and at 165 Hz for 0.1.0, which changes how many frames a stretch has and what a frame's
+p99 is, not the update and render times.
 
-| | Before (image held in the tab) | Now |
-|---|---|---|
-| JS heap with the game running | 509 MB | 2 MB |
-| wasm memory while playing | (plus the above) | 22 to 23 MB (Beginner), 28 MB (Expert 50); it was 32 and 40 MB while music was decoded to 16-bit PCM inside it first |
-| Music of the current stage (float samples held by the browser, outside wasm memory) | | 24 MB (`st1`) to 54 MB (`st2`) |
-| Textures on the GPU (RGBA8 with mip levels), heaviest stage | | 16.6 MB (stage 109, 78 textures); 6 to 15 MB typical |
-| Game files held in memory between loads | all | 0 bytes (largest single stage fetch: 10.6 MB, released after the load) |
-| First run: pick to menu | read 475 MB every visit | 1.3 s import (copy 144 MB, verify), once |
-| Later runs: page load to first frame | same as first | 0.1 s after the engine is compiled; no picker |
-| Whole browser during import (12 processes, private bytes) | | +132 MB at the peak, back to baseline after |
-| Stage load, Beginner 1 / Expert 50, WebGL2 | 176 ms / 432 ms at 6x CPU throttle | 82 ms / 28 ms unthrottled; Expert 50 at 6x: 137 ms |
-| Frames, 30 s of steering, Expert 50, WebGL2, 6x throttle | 2 long of 4963 | 2 long of 4917, p99 6.6 ms |
-| Frames, 30 s, Beginner 2, WebGPU | 0 of 5783, p99 6.6 ms | 1 of 4997, p99 6.5 ms |
-| A still menu | | 1.5 % of one core (no redraw without change) |
-| Play, 165 fps | | 21 % of one core on the main thread |
-| Play, Beginner 1, WebGL2, 6x CPU throttle | | update 0.16 ms + render 5.1 ms per frame (275 draws) |
+| | Before 0.1.0 (image held in the tab) | 0.1.0 | 0.2.0 | How it is taken |
+|---|---|---|---|---|
+| JS heap with the game running | 509 MB | 2 MB | not taken again | DevTools, by hand |
+| wasm memory after floors 1 and 2 of Beginner | (plus the above) | 22 to 23 MB | 19.1 MB | `mbPerf.wasmMemoryBytes()` in the page that did the import, after Course Play floor 1, the goal and a fall on floor 2. Checked: at most 2 MB over 0.1.0 |
+| wasm memory with Expert 50 loaded | | 28 MB | 23.5 MB | the same, in a page started from the stored data that loaded Practice floor 2 and then Expert 50. Checked: at most 2 MB over 0.1.0 |
+| wasm memory, one stage in a fresh page, six seconds into play | | stage 89: 26.1 MB, 76: 22.2 MB, 21: 28.1 MB, 90: 25.3 MB | 19.1 MB on each of them (89, 76 and 21 with Reflections on and off) | a page that loaded only that stage; 0.1.0 from a build of the `v0.1.0` tag, measured the same way. Checked for stages 89, 76 and 21 with Reflections on: at most 2 MB over 0.1.0 |
+| Music of the current stage (float samples held by the browser, outside wasm memory) | | 24 MB (`st1`) to 54 MB (`st2`) | 24 MB and 33 MB measured, the same tracks | `mbPerf.audio().musicBytes` |
+| Textures on the GPU (RGBA8 with mip levels), heaviest stage | | 16.6 MB (stage 109, 78 textures); 6 to 15 MB typical | 16.7 MB (stage 109, 82 textures: the four particle textures) | counted by the loader; `crates/mb-app/tests/budgets.rs` holds it |
+| Mirror target (colour and depth, half the frame each way), on the 37 mirror stages with Reflections on | | none | 2 bytes per pixel of the frame: 1.7 MB under this canvas, 1.84 MB under 1280 x 720 | `Renderer::mirror_bytes`; not in wasm memory |
+| Game files held in memory between loads | all | 0 bytes (largest single stage fetch: 10.6 MB, released after the load) | 0 bytes | `mbPerf.preparedBytes()`, checked |
+| First run: pick to menu | read 475 MB every visit | 1.3 s import (copy 144 MB, verify), once | 1.4 s | `mbStats.importMs` |
+| Later runs: page load to first frame | same as first | 0.1 s after the engine is compiled; no picker | 0.1 s | `mbStats.firstFrameMs` |
+| Whole browser during import (12 processes, private bytes) | | +132 MB at the peak, back to baseline after | not taken again | Task Manager, by hand |
+| Stage load, Beginner 1 / Expert 50, WebGL2 | 176 ms / 432 ms at 6x CPU throttle | 82 ms / 28 ms unthrottled; Expert 50 at 6x: 137 ms | not taken again | `mbPerf.lastLoad()` |
+| A still menu | | 1.5 % of one core (no redraw without change) | 1.5 to 2.0 % | DevTools `TaskDuration` over 4 s, checked below 5 % |
+| Play, at the display's rate | | 21 % of one core on the main thread (165 fps) | 15 to 17 % (240 fps) | the same over 3 s of Beginner 1 |
+| Play, Beginner 1, WebGL2, 6x CPU throttle | | update 0.16 + render 5.1 ms per frame (275 draws) | update 0.11 to 0.12 + render 3.09 to 3.32 ms (183 draws) | Practice, the ball standing where it is put down, 8 s from 1.5 s after GO. Checked: the sum within 1.5 times 0.1.0, no more draws than 0.1.0's 275 plus the particles' 12 |
+| The same on WebGPU | | not taken | update 0.18 + render 0.87 ms; 0 long of 1930 frames, p99 of the frame 4.5 to 4.6 ms | the same without `?gl=1`. Checked: p99 and long frames as for Expert 50 |
+| Frames, 30 s of steering, Expert 50, WebGL2, 6x throttle | 2 long of 4963 | 2 long of 4917, p99 6.6 ms (165 Hz) | 1 to 4 long of 7202 to 7213, p99 4.5 ms (240 Hz) | Practice, the keys W, D, S, A held 0.7 s each in turn (falls and restarts included). A frame is long above 1.5 times the median. Checked: p99 within 1.5 times 0.1.0, long frames within three times its share |
+| Frames, 30 s, Beginner 2, WebGPU | 0 of 5783, p99 6.6 ms | 1 of 4997, p99 6.5 ms | not taken again | by hand |
 
 Not measured: any real phone, iOS, an Android web view, Firefox, Safari.
+
+How the frame figures are taken, since they depend on it:
+
+* `?gl=1&autoscale=0`, a fresh page per scenario, `mbPerf.enable()`, DevTools `Emulation.setCPUThrottlingRate`
+  with rate 6 from the stage's first frame (Beginner 1 and Expert 50: from GO). Update and render are the
+  engine's own clocks around the game update and around acquire, encode, submit and present
+  (`mb_app::perf::FrameSample`); every frame of the stretch is read (`mbPerf.frames()`, `counts()`,
+  `total()`), not a sample.
+* The throttle is coarser than its number, and it is not the same in every tab: with rate 6 the first tab of
+  a browser session ran Beginner 1 about 6.7 times slower than unthrottled, a tab opened later in the session
+  8.6 times (measured before the meshes were merged: render 0.68 ms became 4.5 ms and 6.0 ms). The script
+  therefore measures in the session's first tab, where a build of the `v0.1.0` tag gives 0.10 to 0.14 + 4.5
+  to 4.9 ms today, against the recorded 0.16 + 5.1 ms.
+* A check takes a failed timing a second time before it fails. Over the three runs none needed it.
+* The limits scale with the display: the p99 limit of Expert 50 is 1.5 times 0.1.0's 6.6 ms, stretched by
+  the display's frame over 0.1.0's 6.06 ms where the display is slower.
+* Long frames in Expert 50: 0.1.0's figure is 2 of 4917, and a build of the `v0.1.0` tag gives 2 and 3 today.
+  A count that small cannot be held to 1.5 times itself without failing by chance, so the limit is three
+  times its share of the frames (9 of 7200).
+
+### Why 0.2.0 needs less wasm memory and less time than 0.1.0
+
+0.2.0 draws more than 0.1.0 (particles, flipbooks, mirror floors) and its first builds needed more of both:
+the mirror stages took up to 36.6 MB of wasm memory against a budget of 2 MB over 0.1.0, and stage 89 with
+its mirror did not fit a 60 Hz frame at 6x throttle (16.9 to 17.2 ms at p99). What changed that is in
+`docs/GMA.md`, "Meshes, uploads and memory"; as far as the page is concerned:
+
+* **Memory.** wasm memory never shrinks, so a page is as large as the largest moment of its heaviest load.
+  On WebGL2 `wgpu` keeps a copy of every texture and buffer it is handed until the next submit, and frees
+  what a submission used only when the browser reports its fence as passed. A stage load used to hand over
+  everything and submit once, so the stage's textures and meshes were in wasm memory twice at that moment.
+  Loads now submit whenever a megabyte is staged, and the engine waits for the driver at its own fences
+  (`GlFenceBehavior::AutoFinish`, `mb_app::gpu::instance_descriptor`). Every page measured here now stays
+  at 19.1 MB, which is below what 0.1.0 needed for the same stage (22.2 to 28.1 MB).
+* **Time.** The models' meshes are merged per pipeline and material at upload, so a frame has 15 to 50 %
+  fewer draw calls than in 0.1.0 (Beginner 1: 183 instead of 275), and the cost of a frame on WebGL2 is its
+  calls. The mirror's second pass is cut to what the mirror models in view can show.
+
+### Mirror floors in the browser
+
+Reflections are on by default on every platform. The three mirror stages that drew the most in 0.1.0, WebGL2
+at 6x CPU throttle, nobody steering, from the first frame of the fly-in to six seconds after GO (the
+simulation is deterministic, so every run draws the same frames). "0.1.0" is a build of the `v0.1.0` tag
+measured the same way (two runs, of which the second shared the machine with a compiler for a moment: its
+p99 figures are the upper ends). Draws are the median of the stretch and, in brackets, the most in a frame.
+
+| Stage | | Update + render, fly-in | in play | p99 of update + render | Draws, fly-in | in play | wasm memory |
+|---|---|---|---|---|---|---|---|
+| 89 (Expert 49) | 0.1.0 | 0.11 to 0.13 + 6.1 to 6.7 ms | 0.15 + 4.0 to 4.2 ms | 9.1 to 12.0 ms | (598) | (312) | 26.1 MB |
+| | 0.2.0, Reflections off | 0.11 to 0.12 + 3.4 to 3.6 ms | 0.16 to 0.17 + 2.9 to 3.0 ms | 5.8 to 5.9 ms | 288 (398) | (413) | 19.1 MB |
+| | 0.2.0, Reflections on | 0.14 to 0.15 + 6.1 to 6.6 ms | 0.17 to 0.20 + 3.9 to 4.1 ms | **9.8 to 10.1 ms** | 286 (398) + 216 to 220 (323) for the mirror | (412) + (381) | 19.1 MB |
+| 76 (Expert 36) | 0.1.0 | 0.16 + 5.1 ms | 0.19 to 0.21 + 6.7 to 6.9 ms | 7.9 to 10.3 ms | (448) | 506 | 22.2 MB |
+| | 0.2.0, Reflections off | 0.13 to 0.14 + 3.3 to 3.5 ms | 0.16 to 0.19 + 4.1 to 4.4 ms | 5.1 to 5.6 ms | 220 to 226 (350) | 320 (323) | 19.1 MB |
+| | 0.2.0, Reflections on | 0.16 to 0.18 + 5.4 to 5.5 ms | 0.22 to 0.25 + 7.3 to 7.8 ms | **9.4 to 10.4 ms** | 204 to 207 (350) + 170 (312) | 320 (323) + 315 | 19.1 MB |
+| 21 (Advanced 11) | 0.1.0 | 0.12 to 0.13 + 5.0 ms | 0.16 + 6.7 to 6.9 ms | 9.7 to 10.0 ms | (402) | 501 | 28.1 to 29.7 MB |
+| | 0.2.0, Reflections off | 0.13 to 0.15 + 4.0 to 4.1 ms | 0.18 + 5.4 to 5.6 ms | 6.7 to 7.3 ms | 207 to 213 (403) | 365 (368) | 19.1 MB |
+| | 0.2.0, Reflections on | 0.17 to 0.18 + 6.8 to 7.1 ms | 0.23 to 0.26 + 9.5 to 10.3 ms | **12.2 to 12.5 ms** | 193 to 201 (403) + 145 (298) | 365 (368) + 289 (291) | 19.1 MB |
+
+(For 0.1.0 only the largest count of a stretch was recorded, so its draw columns are in brackets. In play on
+stage 89 the ball falls off after a few seconds with nobody steering, so the median is of little use there.)
+
+What follows from it:
+
+* **With Reflections on, the heaviest mirror stages fit a 60 Hz frame at this throttle** with 4 ms and more
+  to spare (checked on stages 89, 76 and 21: p99 of update + render at most 16.6 ms; measured 9.4 to 12.5 ms),
+  and are about as fast as 0.1.0 was without any mirror. The mirror costs 3.9 to 5.8 ms at p99 on them.
+* **Without Reflections** the same stages take 5.1 to 7.3 ms (checked against the same 16.6 ms).
+* **The mirror costs no wasm memory**: 19.1 MB with and without it (checked on the three stages against
+  0.1.0's figure for the stage plus 2 MB, the plan's budget: 28.1, 24.2 and 30.1 MB).
+* Stage 21 is now the slowest of the three: its mirror is a strip of the floor, but most of the night
+  backdrop can be seen in it.
+* Not measured: a phone. The throttle slows the page's main thread only; a phone's GPU also has to fill the
+  second, half-size target, which nothing here shows. A player whose device is too slow turns the option
+  off (Options -> Reflections).
+
+### What the browser check sees of the new drawing
+
+`mbPerf.counts()` gives, for every frame of play, the draw calls of the picture and of the mirror, binds,
+uploaded bytes, the particles' instances and quads, and whether the ball's shadow was drawn
+(`mb_app::perf::FrameSample`). The check asserts, on WebGL2 and on WebGPU:
+
+* floor 1 of Course Play, before the goal: instances or quads in a frame (the landing's sparks and star;
+  seen: up to 16 instances and 19 quads);
+* from the goal on: instances (the confetti; seen: up to 168, with up to 148 quads);
+* the shadow drawn in every frame from GO to the goal (seen: 483 of 483);
+* no mirror draw in any frame of floor 1, which has no mirror floor;
+* stage 89: mirror draws in the fly-in with Reflections on (seen: 298 to 307 a frame beside 344 of the
+  picture) and exactly none with it off, after a reload;
+* stage 92 (the waved floor), a night stage (21) and a storm stage (81) load and run;
+* no error in the console and no warning in the browser's log from the graphics driver, in any of it and
+  in the timed runs.
+
+**The fences on WebGL2.** `AutoFinish` makes the engine wait for the driver after a submission instead of
+polling a sync object later. What was looked for in Chrome: any entry of the browser's log from its
+rendering side or naming WebGL, a fence, a sync object, a finish or a lost context (none in three runs, in
+any section of the check); frame pacing on WebGL2 at 6x throttle (Expert 50: 1 to 4 long frames of 7200,
+p99 4.5 ms at a display frame of 4.2 ms); and frame pacing on WebGPU, which the setting does not touch (0 long
+frames, p99 4.5 to 4.6 ms). **Not verified:** Firefox, Safari and Android WebView, where a blocking finish
+may cost differently or be reported differently; nothing but Chrome 154 on Windows (ANGLE on Direct3D 11)
+was run.
+
+One notice is let pass: Chrome on Windows writes "The powerPreference option is currently ignored" on every
+WebGPU start, because the page asks for the low-power adapter (`mb-web`, `power_preference`), which other
+platforms honour.
 
 ### Where the frame time goes, and what is left to gain
 
 On WebGL2 a frame of play is almost all render calls: update 0.16 ms against render 5.1 ms at 6x CPU
-throttle for the 275 draws of Beginner 1. The renderer already uploads only what changed (one buffer with
+throttle for the 275 draws of Beginner 1 in 0.1.0 (0.2.0: 0.11 against 3.2 ms for 183 draws; the same frame
+on WebGPU: 0.9 ms). The renderer already uploads only what changed (one buffer with
 dynamic offsets for all objects), sorts opaque draws by pipeline and material, skips redundant binds, culls
 by bounding sphere, compiles each pipeline with only the texture fetches its material uses, renders at most
 two device pixels per CSS pixel and lowers the resolution by itself when frames stay slow. A still menu or a
 pause screen is not drawn again at all. Not done, because the gain could not be measured without a phone:
 
-* **Fewer draws.** Background and stage meshes that never move and share a material could be merged at load
-  into one vertex buffer each; the draw count would fall to roughly the number of materials.
+* **Fewer draws still.** Since 0.2.0 the meshes of one model that share a pipeline and a material are one
+  draw (`docs/GMA.md`). Meshes of different models that never move and share a material could be merged as
+  well; the draw count would fall towards the number of materials, and on a mirror stage twice.
 * **One render pass instead of two.** The backdrop and the world are separate passes so the depth buffer can
   be cleared between them; on a tile-based phone GPU the second pass has to load the colour buffer back.
   Splitting the depth range between the two layers in one pass would avoid that.
@@ -333,8 +465,14 @@ deno run -A scripts/web-e2e.ts [--lan]
 serves `web/dist` with `python -m http.server`, starts the installed Chrome with a throw-away profile and
 drives it over the DevTools protocol, setting the real disc image on the page's real file input. It needs the
 bundle, Chrome, Python and the image (`MB_DISC`, or `Super Monkey Ball*.rvz` next to the repository) and says
-what is missing otherwise. 60 checks (63 with `--lan`): wrong, empty, random and truncated files; import and
-storage contents; play floor 1 into floor 2; in-place retry; audio; the page hidden and shown again; closing
+what is missing otherwise. 97 checks (100 with `--lan`; 87 where Chrome gives the page no WebGPU), about
+eight minutes: wrong, empty, random and truncated files; import and
+storage contents; play floor 1 into floor 2; in-place retry; audio; wasm memory against 0.1.0; the page hidden
+and shown again; a save written by 0.1.0 (read, Reflections on, written back whole); the new drawing on
+WebGL2 and WebGPU (sparks, confetti, the shadow, stage 92, a night and a storm stage, the mirror's draws
+with Reflections on and none with it off, the Reflections row by touch and across a reload, no graphics
+error); frame times at 6x CPU throttle against 0.1.0 and, with Reflections on and off, against a 60 Hz
+frame, and the wasm memory of the mirror stages (see "Measurements"); closing
 the tab mid-play and mid-import; touch-only menus at 412x915; the back gesture; idle cost; tilt with an
 emulated sensor; remove data; cancel; play without storage; the picked file deleted mid-session; a bare web
 view (the private file system, `localStorage`, service worker, WebGPU, fullscreen, wake lock, device

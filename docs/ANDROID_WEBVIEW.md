@@ -22,7 +22,7 @@ that folder).
 | `monkey-ball.html` (only built with `--single`) | no; it is the alternative to all of the above, see the end |
 
 There is no native code: no NDK, no `.so` files, no ABI splits, nothing affected by the 16 KB page size
-requirement. The game is one 3.9 MB WebAssembly module and about 250 KB of script and markup.
+requirement. The game is one 4.0 MB WebAssembly module and about 250 KB of script and markup.
 
 ## Serve the assets with `WebViewAssetLoader`, not `file://`
 
@@ -171,16 +171,30 @@ and, with the awaited calls, to store. Only Chrome 154 was run here.
 
 ## Memory, for small devices
 
-Measured in desktop Chrome 154 (WebGL2), so indicative only.
+**[checked]** in desktop Chrome 154 on WebGL2 (version 0.2.0, `scripts/web-e2e.ts`) unless a row says
+otherwise, so indicative only; nothing was measured in a web view.
 
 | | Size |
 |---|---|
-| WebAssembly memory while playing (it grows on demand from 1.4 MB and never shrinks) | 22 to 23 MB (Beginner), 28 MB (Expert 50) |
+| WebAssembly memory while playing (it grows on demand from 1.4 MB and never shrinks) | 19.1 MB with one stage loaded, whichever it is and with Reflections on or off; 23.5 MB after several loads in one session (0.1.0: 22 to 28 MB) |
 | Music of the current stage, held by the browser as float samples | 24 MB (`st1`, measured) to 54 MB (water stages, computed from the stream sizes) |
-| Sound effects, as float samples | 3.3 MB |
-| Textures on the GPU, heaviest stage (stage 109, space background: 78 textures, RGBA8 with mip levels) | 16.6 MB; typical 6 to 15 MB |
-| JavaScript heap | 2 MB |
-| Extra memory during the one-time import | about 130 MB at the peak, released afterwards |
+| Sound effects, as float samples | 3.3 MB (measured for 0.1.0; not taken again) |
+| Textures on the GPU, heaviest stage (stage 109, space background: 82 textures, RGBA8 with mip levels) | 16.7 MB; typical 6 to 15 MB (counted by the loader in the desktop tests) |
+| Mirror floors (37 stages, only with Options -> Reflections on, which is the default): one more render target, colour and depth at half the frame's size each way | 2 bytes per pixel of the frame: 1.84 MB under 1280 x 720 (computed) |
+| JavaScript heap | 2 MB (measured for 0.1.0; not taken again) |
+| Extra memory during the one-time import | about 130 MB at the peak, released afterwards (measured for 0.1.0; not taken again) |
+
+**Reflections on a weak device.** The mirror floors draw what they show a second time. **[checked]** in
+desktop Chrome with the CPU slowed six times, on WebGL2 (the only backend in a web view): the heaviest
+mirror stages take 9.4 to 12.5 ms of a 16.6 ms frame at the 99th percentile, 4 to 6 ms of it for the mirror,
+and no WebAssembly memory beyond the figure above (`docs/WEB.md`, "Mirror floors in the browser"). The
+player turns it off in Options -> Reflections; the choice is saved. **[platform]** How a phone's GPU copes
+with the second target was not measured.
+
+**WebGL2 in a web view.** **[platform]** The engine waits for the graphics driver after each submission
+(`glFinish` in place of polling a sync object) so that memory used by a load is given back during the load.
+That was run in desktop Chrome only (no warning in its log, frame pacing unchanged); how Android WebView's
+driver takes it has to be seen on a device.
 
 The largest single allocations inside the WebAssembly memory are the files of the stage being loaded (up to
 10.6 MB, released after the load) and one music stream (up to 4.9 MB, released once decoded).
