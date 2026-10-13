@@ -93,6 +93,14 @@ impl FileStream {
     }
 }
 
+/// A file that is already open: where the platform hands out a file descriptor instead of a path (a
+/// document the user picked on Android), `File::from(descriptor)` goes in here.
+impl From<std::fs::File> for FileStream {
+    fn from(file: std::fs::File) -> Self {
+        Self(file)
+    }
+}
+
 impl DiscStream for FileStream {
     fn read_exact_at(&mut self, buf: &mut [u8], offset: u64) -> io::Result<()> {
         use std::io::Seek;

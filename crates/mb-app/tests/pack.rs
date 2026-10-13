@@ -73,6 +73,25 @@ fn prepare(content: &Content, wanted: &[Wanted]) -> Result<u32, String> {
     Err("prepare did not finish".into())
 }
 
+/// Where the platform hands the app an open file instead of a path, the image is read the same way.
+#[test]
+fn a_disc_image_opens_from_an_open_file_as_from_its_path() {
+    let Some(path) = find_disc() else {
+        eprintln!("skipped: no disc image (set MB_DISC)");
+        return;
+    };
+    let by_path = mb_app::content::open_disc_image(&path).unwrap();
+    let file = std::fs::File::open(&path).unwrap();
+    let by_file = mb_app::content::open_disc_stream(Box::new(FileStream::from(file))).unwrap();
+    assert!(!by_file.is_deferred());
+    for wanted in boot_files() {
+        let name = wanted.resolve(&|p| by_path.contains(p)).unwrap();
+        assert!(by_file.contains(&name), "{name}");
+        assert_eq!(by_file.read(&name).unwrap(), by_path.read(&name).unwrap());
+    }
+    assert_eq!(by_file.main_dol(), by_path.main_dol());
+}
+
 #[test]
 fn the_import_copies_exactly_what_the_game_reads() {
     let Some(bytes) = pack_bytes() else {

@@ -18,7 +18,7 @@ use std::io;
 use std::path::Path;
 use std::rc::Rc;
 
-use mb_assets::disc::MAIN_DOL_PATH;
+use mb_assets::disc::{DiscStream, MAIN_DOL_PATH};
 use mb_assets::pack::{disc_path, PackProvider};
 use mb_game::course::stage_list;
 use mb_game::Difficulty;
@@ -88,8 +88,13 @@ pub struct Content {
 
 /// Open a disc image (RVZ none/Zstandard, ISO/GCM) of Super Monkey Ball for direct reading.
 pub fn open_disc_image(path: impl AsRef<Path>) -> io::Result<Content> {
-    let path = path.as_ref();
-    let disc = mb_assets::disc::DiscPack::open(path)?;
+    open_disc_stream(Box::new(mb_assets::disc::FileStream::open(path)?))
+}
+
+/// [`open_disc_image`] for an image that is not reached by a path: a file the platform opened for the app
+/// (`FileStream::from(file)`), or any other source of its bytes.
+pub fn open_disc_stream(stream: Box<dyn DiscStream + Send>) -> io::Result<Content> {
+    let disc = mb_assets::disc::DiscPack::from_stream(stream)?;
     if disc.smb1_region().is_none() {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
