@@ -5,7 +5,10 @@
 //! Needs the user's own disc image (`MB_DISC`, or `Super Monkey Ball*.rvz|iso|gcm` next to the repository);
 //! the tests that draw also need a GPU adapter. Without either they skip. The pack lives in memory only.
 
-use std::path::PathBuf;
+mod common;
+
+use common::find_disc;
+
 use std::rc::Rc;
 use std::sync::{Mutex, OnceLock};
 
@@ -24,18 +27,6 @@ use mb_engine::Phase;
 use mb_game::{MemoryStorage, Profile};
 
 static GPU: Mutex<()> = Mutex::new(());
-
-fn find_disc() -> Option<PathBuf> {
-    if let Some(p) = std::env::var_os("MB_DISC") {
-        return Some(PathBuf::from(p));
-    }
-    let parent = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
-    std::fs::read_dir(parent).ok()?.flatten().find_map(|entry| {
-        let name = entry.file_name().to_string_lossy().to_lowercase();
-        let image = [".rvz", ".iso", ".gcm"].iter().any(|e| name.ends_with(e));
-        (name.starts_with("super monkey ball") && image).then(|| entry.path())
-    })
-}
 
 /// The imported pack of the available disc image (imported once per test run), or `None` without one.
 fn pack_bytes() -> Option<&'static [u8]> {

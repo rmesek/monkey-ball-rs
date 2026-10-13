@@ -27,8 +27,11 @@
 //! measured instead of comparing them. Like the other tests this needs the developer's own disc image
 //! and a GPU adapter with OpenGL, and skips without either.
 
+mod common;
+
+use common::find_disc;
+
 use std::alloc::{GlobalAlloc, Layout, System};
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use mb_app::content::open_disc_image;
@@ -83,18 +86,6 @@ fn quiet_storage(reflections: bool) -> Box<mb_game::MemoryStorage> {
     profile.settings.reflections = reflections;
     profile.save(&mut storage).unwrap();
     Box::new(storage)
-}
-
-fn find_disc() -> Option<PathBuf> {
-    if let Some(p) = std::env::var_os("MB_DISC") {
-        return Some(PathBuf::from(p));
-    }
-    let parent = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
-    std::fs::read_dir(parent).ok()?.flatten().find_map(|entry| {
-        let name = entry.file_name().to_string_lossy().to_lowercase();
-        let image = [".rvz", ".iso", ".gcm"].iter().any(|e| name.ends_with(e));
-        (name.starts_with("super monkey ball") && image).then(|| entry.path())
-    })
 }
 
 /// What a stage needed, in bytes above the heap of the idle game (device, renderer, no state).

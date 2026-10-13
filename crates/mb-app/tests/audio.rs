@@ -8,6 +8,10 @@
 //!
 //! Both need the user's own disc image and a GPU adapter, and skip without them.
 
+mod common;
+
+use common::find_disc;
+
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -37,18 +41,6 @@ const TICK: u16 = 164;
 const ROLL: [u16; 3] = [248, 273, 274];
 const MENU_MOVE: u16 = 214;
 const MENU_CONFIRM: u16 = 244;
-
-fn find_disc() -> Option<PathBuf> {
-    if let Some(p) = std::env::var_os("MB_DISC") {
-        return Some(PathBuf::from(p));
-    }
-    let parent = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
-    std::fs::read_dir(parent).ok()?.flatten().find_map(|entry| {
-        let name = entry.file_name().to_string_lossy().to_lowercase();
-        let image = [".rvz", ".iso", ".gcm"].iter().any(|e| name.ends_with(e));
-        (name.starts_with("super monkey ball") && image).then(|| entry.path())
-    })
-}
 
 /// A headless game at the title menu with `audio` attached, or `None` when the machine cannot run it.
 fn start(audio: &Audio) -> Option<Headless> {

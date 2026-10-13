@@ -5,6 +5,10 @@
 //! repository) and a GPU adapter (a software one is fine); without either they skip. Nothing read from the
 //! disc is written anywhere.
 
+mod common;
+
+use common::find_disc;
+
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -22,18 +26,6 @@ use mb_render::Camera;
 
 /// One GPU device at a time: the tests are independent but there is no point in fighting over the adapter.
 static GPU: Mutex<()> = Mutex::new(());
-
-fn find_disc() -> Option<PathBuf> {
-    if let Some(p) = std::env::var_os("MB_DISC") {
-        return Some(PathBuf::from(p));
-    }
-    let parent = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
-    std::fs::read_dir(parent).ok()?.flatten().find_map(|entry| {
-        let name = entry.file_name().to_string_lossy().to_lowercase();
-        let image = [".rvz", ".iso", ".gcm"].iter().any(|e| name.ends_with(e));
-        (name.starts_with("super monkey ball") && image).then(|| entry.path())
-    })
-}
 
 /// A save that the test can read back while the menu owns the other handle.
 #[derive(Clone, Default)]

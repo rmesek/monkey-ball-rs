@@ -8,24 +8,14 @@
 //! `MB_BUDGET_PRINT=1 cargo test -p mb-app --release --test mirrors -- --nocapture` prints the list as
 //! measured instead of comparing it.
 
-use std::path::PathBuf;
+mod common;
+
+use common::find_disc;
 
 use mb_app::content::{course_stage_ids, open_disc_image};
 use mb_app::mirror::{group_poses, stage_mirror, MirrorPlane, NoMirror, StageMirror};
 use mb_app::stage_scene::StageAssets;
 use mb_render::glam::{Mat4, Vec3};
-
-fn find_disc() -> Option<PathBuf> {
-    if let Some(p) = std::env::var_os("MB_DISC") {
-        return Some(PathBuf::from(p));
-    }
-    let parent = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
-    std::fs::read_dir(parent).ok()?.flatten().find_map(|entry| {
-        let name = entry.file_name().to_string_lossy().to_lowercase();
-        let image = [".rvz", ".iso", ".gcm"].iter().any(|e| name.ends_with(e));
-        (name.starts_with("super monkey ball") && image).then(|| entry.path())
-    })
-}
 
 /// A plane as text: where it is at rest and whether it rides on an anim group.
 fn describe(plane: &MirrorPlane, rest: &[Mat4]) -> String {

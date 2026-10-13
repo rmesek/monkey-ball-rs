@@ -15,7 +15,10 @@
 //! `MB_BUDGET_PRINT=1 cargo test -p mb-app --release --test budgets -- --nocapture` prints the tables as
 //! measured instead of comparing them, for the day a number is changed on purpose.
 
-use std::path::PathBuf;
+mod common;
+
+use common::find_disc;
+
 use std::sync::Mutex;
 
 use mb_app::content::{course_stage_ids, open_disc_image};
@@ -27,18 +30,6 @@ use mb_game::{Difficulty, MemoryStorage, Profile};
 use mb_render::{FrameStats, GpuCounters};
 
 static GPU: Mutex<()> = Mutex::new(());
-
-fn find_disc() -> Option<PathBuf> {
-    if let Some(p) = std::env::var_os("MB_DISC") {
-        return Some(PathBuf::from(p));
-    }
-    let parent = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
-    std::fs::read_dir(parent).ok()?.flatten().find_map(|entry| {
-        let name = entry.file_name().to_string_lossy().to_lowercase();
-        let image = [".rvz", ".iso", ".gcm"].iter().any(|e| name.ends_with(e));
-        (name.starts_with("super monkey ball") && image).then(|| entry.path())
-    })
-}
 
 /// A headless game with nothing on its stack, or `None` (with a note) when the machine cannot run it.
 fn headless() -> Option<Headless> {

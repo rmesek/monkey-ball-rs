@@ -5,8 +5,11 @@
 //! next to the repository) and a GPU adapter; without either they skip. Nothing read from the disc is
 //! written anywhere.
 
+mod common;
+
+use common::find_disc;
+
 use std::cell::RefCell;
-use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Mutex;
 
@@ -18,18 +21,6 @@ use mb_engine::Phase;
 use mb_game::{Difficulty, MemoryStorage, PlayMode, Profile, Storage};
 
 static GPU: Mutex<()> = Mutex::new(());
-
-fn find_disc() -> Option<PathBuf> {
-    if let Some(p) = std::env::var_os("MB_DISC") {
-        return Some(PathBuf::from(p));
-    }
-    let parent = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
-    std::fs::read_dir(parent).ok()?.flatten().find_map(|entry| {
-        let name = entry.file_name().to_string_lossy().to_lowercase();
-        let image = [".rvz", ".iso", ".gcm"].iter().any(|e| name.ends_with(e));
-        (name.starts_with("super monkey ball") && image).then(|| entry.path())
-    })
-}
 
 #[derive(Clone, Default)]
 struct SharedStorage(Rc<RefCell<MemoryStorage>>);
