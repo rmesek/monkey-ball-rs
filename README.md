@@ -6,8 +6,7 @@ the game in a browser as WebAssembly. It is fully offline: there is no network o
 repository contains code only. It never contains, downloads or links to game data; you play with your own
 copy of the game.
 
-This is version 0.2.0, a release candidate: it is not tagged or published until it has been tried by hand
-([CHANGELOG.md](CHANGELOG.md)).
+This is version 0.2.0 ([CHANGELOG.md](CHANGELOG.md)).
 
 ## What the game has
 

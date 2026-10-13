@@ -4,8 +4,8 @@ A Rust port of Super Monkey Ball 1 that follows WebMonkeyBall (TypeScript, "the 
 possible, fully offline. This file is the entry point: what the project is for, what works and where it
 lives, what is left, what is unverified, what was decided. Details are in the files it links to.
 
-**State: version 0.2.0, release candidate.** `Cargo.toml` says 0.2.0. The tag `v0.2.0` does not exist and
-nothing is pushed until the project owner has tried the candidate by hand and confirmed (see "Decisions").
+**State: version 0.2.0, released 2026-10-13** (tag `v0.2.0`), after the project owner tried the release
+candidate by hand and confirmed it. The rule for the next release is the same (see "Decisions").
 What each version contains: [CHANGELOG.md](../CHANGELOG.md).
 
 ## Goal
@@ -176,7 +176,8 @@ the map viewer and its free camera; SMB2 (stagedefs, courses, switches, wormhole
 Nothing below has been done; each is a statement about where the evidence stops.
 
 * **A person playing 0.2.0.** How the effects, mirrors and materials look, how it sounds, a course played to
-  its end: the owner's manual test of the release candidate is the next step.
+  its end: the project owner tried the release candidate by hand before the tag; no written record of what
+  was looked at exists.
 * **Devices and browsers.** A real phone, an Android web view, iOS, Firefox, Safari, a real gamepad. Only
   Chrome 154 on Windows 11 (ANGLE on Direct3D 11, an RTX 4080) and the Windows desktop program were run.
 * **Linux and macOS** desktop builds, and both CI workflows, have never run.

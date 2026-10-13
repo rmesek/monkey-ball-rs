@@ -2,8 +2,7 @@
 
 ## 0.2.0
 
-**Not tagged and not published yet:** this is the 0.2.0 release candidate. The tag `v0.2.0` is made only
-after the project owner has tried it by hand and confirmed.
+Released 2026-10-13, after the project owner tried the release candidate by hand and confirmed it.
 
 Parity with the reference (WebMonkeyBall) in what is drawn: phases 1 to 4 of
 [docs/PARITY_PLAN.md](docs/PARITY_PLAN.md). Both targets of 0.1.0, the desktop program and the static web

@@ -24,7 +24,7 @@ item (phase 5).
 | 2 | The small items | done | `checkpoint/p2` (`7d2a8de`) |
 | 3 | Material fidelity | done | `checkpoint/p3` (the same commit as p2) |
 | 4 | Mirror floors | done | `checkpoint/p4` (`1417840`) |
-| | Version 0.2.0: phases 1 to 4 | **release candidate; not tagged, not pushed** | `v0.2.0` only after the owner's manual test |
+| | Version 0.2.0: phases 1 to 4 | **released 2026-10-13**, after the owner's manual test | `v0.2.0` |
 | 5 | Result replays | not started | version 0.3.0, `checkpoint/p5` |
 
 ## Decisions this plan rests on
