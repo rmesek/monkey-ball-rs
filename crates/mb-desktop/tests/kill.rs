@@ -84,6 +84,9 @@ fn killing_the_program_mid_run_leaves_the_saves_and_the_game_data_intact() {
         assert_eq!(PackFile::open(&pack).unwrap().len(), size);
     }
 
+    // What versions up to 0.2.0 left here (the path of the image) is cleared away at the next start.
+    std::fs::write(dir.join("last_disc"), b"C:/somewhere/image.rvz").unwrap();
+    std::fs::write(dir.join("last_disc.a"), b"x").unwrap();
     // What an import cut short leaves behind is not taken for game data.
     std::fs::write(dir.join("game.pack.tmp"), b"MBPK half a pack").unwrap();
     let again = run(&["--exit-after", "1"]).status().unwrap();

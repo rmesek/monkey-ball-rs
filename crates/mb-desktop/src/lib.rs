@@ -144,7 +144,14 @@ fn data_dir() -> Option<PathBuf> {
 /// directory.
 fn open_storage(dir: Option<&Path>) -> Box<dyn Storage> {
     match dir {
-        Some(dir) => Box::new(SlotStorage::new(FileStorage::new(dir))),
+        Some(dir) => {
+            // Versions up to 0.2.0 remembered the path of the disc image here. Nothing reads it any more,
+            // and nothing is to lie about in this folder that the options screen does not name.
+            for old in ["last_disc", "last_disc.a", "last_disc.b"] {
+                let _ = std::fs::remove_file(dir.join(old));
+            }
+            Box::new(SlotStorage::new(FileStorage::new(dir)))
+        }
         None => Box::new(MemoryStorage::new()),
     }
 }
