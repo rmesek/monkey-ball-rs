@@ -81,7 +81,7 @@ impl Mirror {
     /// `WAVY_MIRROR_PLANE_Y`.
     pub const WAVY_PLANE_Y: f32 = 0.02;
 
-    /// A flat mirror at full opacity (stages 102 and 103).
+    /// A flat mirror at full opacity (every mirror stage but 92).
     pub fn flat(plane: Mat4) -> Self {
         Self {
             plane,

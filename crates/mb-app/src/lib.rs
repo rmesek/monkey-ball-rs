@@ -4,6 +4,7 @@
 //!   prepared before it is read) and the lists of files the game needs.
 //! * [`loading`]: the stage loading state (fetch, parse, build, with a progress screen).
 //! * [`host`] / [`tilt`]: the seam to platform features (fullscreen, removing imported data, device tilt).
+//!   A game state reaches the platform through these and through [`input`] only.
 //! * [`game`]: `Game` state trait and the state stack.
 //! * [`input`]: logical actions, axes, the steering vector and the pointer; shells only feed it.
 //! * [`menu`]: title menu, course / stage select, options and the course flow (root state).
@@ -12,7 +13,11 @@
 //! * [`audio`]: sounds, music and the backend trait (`audio_cpal`: native device output). See `docs/AUDIO.md`.
 //! * [`text`] / [`widgets`]: sprite fonts from the disc and the menu list widget.
 //! * [`stage_scene`] / [`stage_info`] / [`anim`]: assembling an SMB1 stage into renderer objects;
-//!   [`backdrop`]: what the night, storm and sunset backgrounds animate.
+//!   [`backdrop`]: what the night, storm and sunset backgrounds animate; [`mirror`]: which stages have a
+//!   mirror floor and in which plane.
+//! * [`import`]: copying the files the game uses out of a disc image into a game pack, a piece at a time.
+//! * [`ui`]: safe-area layout and the on-screen touch controls. [`gpu`]: adapter and device setup shared by
+//!   the drivers. [`perf`]: frame statistics for the `?fps=1` overlay and the browser check.
 //! * The drivers, one per target: [`app`] is the desktop window (blocking GPU setup, vsync pacing, native
 //!   gamepads, a mouse pointer) and `shell` is the browser canvas (asynchronous GPU setup, frames from
 //!   `requestAnimationFrame`, platform hooks for `mb-web`). They share everything above them: the state

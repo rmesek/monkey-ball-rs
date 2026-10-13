@@ -7,7 +7,7 @@ in the repository; these notes describe where things are and what the game reads
 | Disc folder | Files | Contents | Read by the game |
 |---|---|---|---|
 | `test/stNNN/` | 555 | per stage: `STAGENNN.lz` (stagedef), `stNNN.gma`, `stNNN.tpl`; NaomiLib stages also `stNNN_p.lz` and `stNNN.lz` | the 109 course stages |
-| `test/init/` | 35 | `common.gma/.tpl`, `common_p.lz`, `common.lz` (ball, bananas, goal, clock digits); minigame models | the four `common` files |
+| `test/init/` | 35 | `common.gma/.tpl`, `common_p.lz`, `common.lz` (ball, bananas, goal, clock digits, and the models and textures of the particles, confetti and the ball's shadow); minigame models | the four `common` files |
 | `test/bg/` | 46 | background models and textures (`bg_*.gma/.tpl`) | the backgrounds the courses use |
 | `test/bmp/` | 15 | HUD / UI texture sheets (`bmp_com.tpl`, `bmp_nml.tpl`, ...), a TPL variant | `bmp_com`, `bmp_nml` |
 | `test/snd/adp/` | 112 | music streams, DTK ADPCM (`*_int` + `*_lp` pairs, `m` = mono mixdown) | the 10 stage tracks |

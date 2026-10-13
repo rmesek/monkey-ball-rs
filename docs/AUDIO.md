@@ -183,7 +183,8 @@ On desktop the track is held as 16-bit PCM for the mixer. In the browser it neve
 is offered the disc's streams (`AudioBackend::define_music_streams`) and decodes them 1170 frames at a time
 (`mb_audio::adp::AdpDecoder`) straight into the `AudioBuffer`, so wasm memory, which cannot shrink again,
 holds one stream (at most 4.9 MB, handed over without a copy by `Content::read_once`) and a 131 KB block.
-That took the wasm memory during Beginner from 32 MB to 22 MB. The samples are the same as a whole decode
+That took the wasm memory during Beginner from 32 MB to 22 MB in 0.1.0 (19.1 MB in 0.2.0, for other
+reasons: `docs/WEB.md`, "Measurements"). The samples are the same as a whole decode
 (`decoding_in_pieces_gives_the_same_samples`), so the intro-to-loop hand-off on the audio clock is unchanged.
 During play nothing is decoded: `buffersMade` and `lastBufferAt` of `audio_debug_json` do not change.
 
@@ -237,7 +238,10 @@ ids tile `0x000..=0x367`. The main game uses `allse` and `comn` only.
 * Not played: the monkey's voices (the original adds one to most events; the reference has none), the
   softest impact tier (`0x12`, below the reference's threshold), the time-over explosion (`0x128`), the
   party-ball and goal-replay sounds, 1UP, continue / game-over lines and jingles, menu music, minigame
-  banks. The announcer's `GO` has one take (the reference alternates two of its own files).
+  banks. All of these are in the original game only: the reference plays none of them, so they are outside
+  parity and not planned (`docs/PLAN.md`, "What is left for parity"). Every call the reference's
+  `audio.ts` makes for SMB1 has its sound here ("What plays when"); its `playAnnouncerTimeBonus` is empty.
+* The announcer's `GO` has one take (the reference picks one of two files of its own at random).
 * The "FALL OUT" call is played when the fall-out starts; the original ties it to its banner sprite's
   timer, which was not traced.
 * Panning is supported by every backend but nothing pans yet (single player, as the reference).

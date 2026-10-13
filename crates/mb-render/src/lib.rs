@@ -39,8 +39,9 @@
 //! r.reserve_objects(object_count);                       // loading: the first frame creates nothing
 //! ```
 //!
-//! Mirror floors (`mirror.rs`; stages 92, 102 and 103): one more scene pass into a reduced target and
-//! one draw per mesh of the mirror models, only while a mirror is set and one of them is in view:
+//! Mirror floors (`mirror.rs`; the game sets one on 37 course stages: those whose stagedef names mirror
+//! models, and the bonus wave): one more scene pass into a reduced target, cut to the mirror models in
+//! view, and one draw per mesh of those models, only while a mirror is set and one of them is in view:
 //!
 //! ```ignore
 //! // Loading, after `clear_scene` and the objects.

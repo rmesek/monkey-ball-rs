@@ -1,5 +1,59 @@
 # Changelog
 
+## 0.2.0
+
+**Not tagged and not published yet:** this is the 0.2.0 release candidate. The tag `v0.2.0` is made only
+after the project owner has tried it by hand and confirmed.
+
+Parity with the reference (WebMonkeyBall) in what is drawn: phases 1 to 4 of
+[docs/PARITY_PLAN.md](docs/PARITY_PLAN.md). Both targets of 0.1.0, the desktop program and the static web
+site, are kept.
+
+New for a player:
+
+- **Effects:** sparks while the ball rolls fast, stars and a flash at a hard landing, confetti at the goal
+  and a sparkle around the floating ball, the ball's shadow on the stage.
+- **Backgrounds that move:** the dancers in the night windows, the fires of the storm stages, the drifting
+  clouds and haze of the sunset stages, the rippling floor of the bonus wave (stage 92).
+- **Mirror floors** on the 37 course stages that have one, and **Options -> Reflections** to switch them
+  off on a slow device. On by default on every platform; the choice is saved.
+- **Materials as the reference draws them:** world and view specular highlights, additive and other
+  blended surfaces, no highlight on the ball's inner shells.
+- **The action button** (Space, Z, a touch on the play area; Enter and gamepad A count too): hold it to
+  run the fly-in over a new stage at double speed, and to cut a fall-out short from its 60th tick.
+- **HUD:** `JUMP TO FLOOR n` and the `WARP BONUS X n` line through a green or red goal, the white flash of
+  the `GOAL` banner.
+- Fixed: on a phone held upright the two lines of the options screen's storage note were drawn at
+  different sizes.
+
+Under the hood:
+
+- **Simulation:** the particles are bit-identical to the reference in every field on every tick compared,
+  on a random stream of their own; `Sim::hash` is unchanged and the simulation never reads them.
+- **Drawing:** meshes of a model that share their state are one draw, so every stage draws fewer calls than
+  in 0.1.0 (25 517 against 38 960 over the 109 stages in the fly-in); particles cost at most 11 draws,
+  the shadow none; a mirror costs one more pass, cut to the mirror models in view.
+- **Memory:** stage loads submit their uploads in portions, so the page needs 19.1 MB of wasm memory with a
+  stage loaded where 0.1.0 needed 22 to 28 MB, mirrors included.
+- **Size:** the wasm module is 4 016 134 bytes (0.1.0: 3 877 298); the game pack is unchanged at 382 files
+  and 144 084 942 bytes, and a save written by 0.1.0 loads.
+- **Budgets as tests:** draw calls per stage, no GPU object or heap allocation during play, texture bytes,
+  heap during a load, the pack and the wasm module are recorded numbers that a test or the build holds
+  ([docs/PLAN.md](docs/PLAN.md), "Budgets"). None was raised.
+- **Tests:** 559 (0.1.0: 406); the browser test makes 97 checks (0.1.0: 60), among them memory and frame
+  time at 6x CPU throttle on WebGL2 against 0.1.0, with Reflections on and off.
+
+Different from the reference on purpose (for example stage 92's mirror without the distortion offset, the
+mirror planes of stages 103 and 74, the floor named by `JUMP TO FLOOR n`): indexed in
+[docs/PLAN.md](docs/PLAN.md), "Deliberate differences".
+
+Not in this version: the replays after a fall-out and a goal, with the goal-sequence skip and the rest of
+the confetti's life that depend on them. They are version 0.3.0.
+
+Not verified: how it looks and sounds to a person; a real phone, an Android web view, iOS, Firefox, Safari,
+a real gamepad; the Europe and Japan discs; a 60 Hz display for the frame-time limits; the WebGL2 fence
+setting outside Chrome. See "Unverified" and "Open items" in [docs/PLAN.md](docs/PLAN.md).
+
 ## 0.1.0
 
 First version: Super Monkey Ball 1 playable from the user's own disc image on two targets.
@@ -19,5 +73,4 @@ First version: Super Monkey Ball 1 playable from the user's own disc image on tw
 - **Build and checks:** `cargo xtask build-web` and `cargo xtask check`, the same on every platform, standard
   library only; browser test `deno run -A scripts/web-e2e.ts`.
 
-Not in this version, and what is unverified: see "Open items" and "Possible next features" in
-[docs/PLAN.md](docs/PLAN.md).
+What was open and unverified when it was cut is in the version of `docs/PLAN.md` at the tag `v0.1.0`.

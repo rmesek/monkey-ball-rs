@@ -1173,7 +1173,7 @@ checksum = "fc04a4c58212d57930a24bf47d3fa87485264a3a054e9c10e042eb373573ad3c"
 
 [[package]]
 name = "mb-app"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "cpal",
  "gilrs",
@@ -1196,7 +1196,7 @@ dependencies = [
 
 [[package]]
 name = "mb-assets"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "nod",
  "ruzstd",
@@ -1204,14 +1204,14 @@ dependencies = [
 
 [[package]]
 name = "mb-audio"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "mb-assets",
 ]
 
 [[package]]
 name = "mb-engine"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "mb-assets",
  "mb-stage",
@@ -1219,18 +1219,18 @@ dependencies = [
 
 [[package]]
 name = "mb-game"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "mb-gma"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "mb-assets",
 ]
 
 [[package]]
 name = "mb-render"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytemuck",
  "glam",
@@ -1243,21 +1243,21 @@ dependencies = [
 
 [[package]]
 name = "mb-stage"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "mb-assets",
 ]
 
 [[package]]
 name = "mb-tpl"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "mb-assets",
 ]
 
 [[package]]
 name = "mb-web"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "console_error_panic_hook",
  "js-sys",
@@ -3408,7 +3408,7 @@ checksum = "e450f9b2ed1dff33c94c12589a87338689467b9c4f5d8a5710bd09a847d2c8a7"
 
 [[package]]
 name = "xtask"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "xxhash-rust"

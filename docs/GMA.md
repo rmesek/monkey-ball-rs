@@ -127,23 +127,29 @@ Where this still differs from the reference:
 
 In the browser (Chrome, WebGL2, a fresh page per stage, `scripts/web-e2e.ts`) wasm memory with
 reflections on is 19.1 MB on stages 89, 76 and 21, where it was 34.3, 28.3 and 36.6 MB before these
-four and 26.1, 22.2 and 28.1 MB in 0.1.0; stage 89 with its mirror takes 9.7 ms of update and render
-at the 99th percentile under a sixfold CPU throttle, where it took 17.
+four and 26.1, 22.2 and 28.1 MB in 0.1.0; stage 89 with its mirror takes 9.8 to 10.1 ms of update and
+render at the 99th percentile under a sixfold CPU throttle, where it took 16.9 to 17.2 (`docs/WEB.md`,
+"Mirror floors in the browser", has the table).
 
 ### Mirror floors
-The capture is cut to what the mirror surfaces in view can show: their bounding boxes are projected
-through the capture's own clip matrix (`mirror::projected_box`, cut at the eye), the bounds are widened
-by two texels and cut to the picture (`capture_window`), the passes are scissored to them and only
-objects whose spheres reach into that window of the view are drawn (`window_planes`). A distorted
-mirror reads the capture anywhere and keeps the whole view. `Renderer::set_mirror_capture_whole` draws
-the whole view for tests that compare the two.
-
 `crates/mb-render/src/mirror.rs`, `mirror.wgsl`, the mirror parts of `renderer.rs`; reference `Render.ts`
 ("Mirror Capture", "Mirror Overlay") and `World.ts` `prepareToRenderMirrors`. The caller sets one
 `Mirror` per stage (`Renderer::set_mirror`: a plane as a matrix, an alpha, optionally the wavy
 distortion), flags the mirror models (`set_mirror_surface`) and takes objects out of the reflection
 (`set_in_mirror`). Without a mirror none of this exists: no target, no pass, no pipeline, and a frame has
 the draws, uploads and GPU objects it had (`tests/mirror.rs`, `without_a_mirror_a_frame_is_what_it_was`).
+Which stages have a mirror, where its plane is and what is left out of it is the game's business:
+`docs/GAMEPLAY.md`, "Mirror floors". The game uses the flat mirror on every one of its 37 stages; it sets
+no distortion on stage 92 either (the reason is there), so the wavy path below is exercised by
+`the_wavy_mirror_offsets_the_reflection_by_the_reference_formula` only.
+
+The capture is cut to what the mirror surfaces in view can show: their bounding boxes are projected
+through the capture's own clip matrix (`mirror::projected_box`, cut at the eye), the bounds are widened
+by two texels and cut to the picture (`capture_window`), the passes are scissored to them and only
+objects whose spheres reach into that window of the view are drawn (`window_planes`). A distorted
+mirror reads the capture anywhere and keeps the whole view. `Renderer::set_mirror_capture_whole` draws
+the whole view for the test that compares the two (`cutting_the_capture_to_the_mirror_changes_no_pixel`
+in `crates/mb-app/tests/gameplay.rs`).
 
 A frame in which a mirror surface is in view:
 

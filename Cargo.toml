@@ -3,12 +3,12 @@ resolver = "2"
 members = ["crates/mb-assets", "crates/mb-engine", "crates/mb-tpl", "crates/mb-gma", "crates/mb-stage", "crates/mb-audio", "crates/mb-render", "crates/mb-app", "crates/mb-web", "crates/mb-game", "xtask"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 publish = false
 
-# Third-party dependencies are declared per crate, each with a one-line reason (AGENTS.md, hard rule 5).
+# Third-party dependencies are declared per crate, each with a one-line reason (AGENTS.md, hard rule 7).
 # The stack is recorded in docs/PLAN.md: wgpu, winit, glam, bytemuck, ruzstd, web-time; cpal, rfd, gilrs and
 # pollster on the desktop; wasm-bindgen, web-sys and js-sys in the browser. Nothing that talks to a network.
 

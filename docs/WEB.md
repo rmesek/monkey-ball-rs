@@ -54,9 +54,9 @@ held to it.
 
 | | 0.1.0 | 0.2.0 |
 |---|---|---|
-| `pkg/mb_web_bg.wasm` | 3 877 298 bytes (1.39 MB gzipped) | 4 015 934 bytes (1.45 MB gzipped): +138 636, 111 364 bytes of the budget left |
+| `pkg/mb_web_bg.wasm` | 3 877 298 bytes (1.39 MB gzipped) | 4 016 134 bytes (1.45 MB gzipped): +138 836, 111 164 bytes of the budget left |
 | `pkg/mb_web.js` | 192 362 bytes | 193 611 bytes |
-| `monkey-ball.html` | 2 107 204 bytes | 2 185 974 bytes |
+| `monkey-ball.html` | 2 107 204 bytes | 2 185 866 bytes |
 
 ## Run
 
@@ -155,7 +155,7 @@ The pack holds only what the game reads, 144.1 MB of the 475 MB image (382 of 89
 | Sound effects (the two banks the main game uses) | 4.5 MB |
 | HUD and fonts | 2.0 MB |
 | `main.dol` (trig tables, sound table) | 2.0 MB |
-| Shared models (ball, bananas, goal, clock digits) | 1.2 MB |
+| Shared models (ball, bananas, goal, clock digits, particles) | 1.2 MB |
 
 Not copied: minigames, the other sound banks, unused music, previews, replay data, character models. The list
 is one function, `mb_app::content::all_files`, built from the same per-stage file list the stage loader reads

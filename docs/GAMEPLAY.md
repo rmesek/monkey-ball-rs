@@ -103,6 +103,10 @@ Different from the reference, on purpose or by necessity:
 - **Limits.** 512 streaks and 928 instances a frame; the reference has none (and the engine's pool is 1024).
 - Ported as it is: the flash is moved 0.2 along the contact direction, which points into the surface, so
   on a floor seen from above it is mostly hidden by the floor it lies on, there as here.
+- **The shadow and discarded fragments.** The reference draws the receivers a second time with its shadow
+  program, over the finished frame. Here the shadow is a term at the end of the stage shader, after the
+  alpha test, so a fragment the receiver's material discards (alpha zero: a hole in a texture) takes no
+  shadow. That is what keeps the shadow at no draw call.
 
 ### The shadow, checked
 The shadow is cast along the stage's light, which for most backgrounds comes from above, behind and to the
@@ -532,10 +536,15 @@ feature, which `cargo test` switches on by itself. A `dev` build of the program 
   and what the audio device played (stream, callbacks, peak / RMS, late callbacks).
 
 ## Not ported from the reference
-- Result replays (the reference replays the fall-out and the goal).
+- Result replays: the reference replays the fall-out and the goal, and with them come the goal-sequence
+  skip and the rest of the confetti's life. They are version 0.3.0; `docs/PLAN.md`, "What is left for
+  parity", has the list and `docs/PARITY_PLAN.md`, "Phase 5", the brief.
 - Not in the reference either (original game only): the monkey inside the ball, its voice lines and the
   sounds listed under "Known gaps" in `docs/AUDIO.md`.
-- Multiplayer, netplay, lobby, SMB2 content (out of scope by project rule).
+- Multiplayer, netplay, lobby, the replay-file player, the map viewer, SMB2 content (out of scope by
+  decision).
 
 Differences on purpose: lives are shown (the reference hides its counter), the HUD is edge-anchored instead
-of letterboxed, tall targets get a wider vertical field of view, bumpers show the simulation's squash.
+of letterboxed, tall targets get a wider vertical field of view, bumpers show the simulation's squash. The
+other deliberate differences are in the sections above ("Shadow and particles", "Backgrounds and the bonus
+wave", "Mirror floors", "Material switches", "HUD"); `docs/PLAN.md` has the index of all of them.

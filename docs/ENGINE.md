@@ -139,10 +139,12 @@ Differences from the reference, none of which a valid stage reaches: the pool li
 which the reference counts across stage loads.
 
 ## Not modelled
-SMB2 (wormholes, switches, seesaws), multiplayer, result replays (the reference starts one 30 ticks into a
-fall-out and at goal end; `Sim` just continues/finishes, as the reference does with replays switched off, so
-there is no skipping of a replay and no leaving of the goal sequence after one, and in a `Sim` the confetti is never older than the
-goal sequence, about 150 ticks of its 210 to 269), audio, course progression. The goal
+SMB2 (wormholes, switches, seesaws) and multiplayer: out of scope. Audio and course progression: other
+crates. Result replays: not yet, they are version 0.3.0 (`docs/PARITY_PLAN.md`, "Phase 5"). The reference
+starts one 30 ticks into a fall-out and at goal end; `Sim` just continues/finishes, as the reference does
+with replays switched off, so there is no skipping of a replay and no leaving of the goal sequence after
+one, and in a `Sim` the confetti is never older than the goal sequence, about 150 ticks of its 210 to 269.
+The goal
 tape anchor height uses the reference's fallback constant unless `SimConfig::goal_tape_anchor_y` is set; the
 fly-in bounds come from collision triangles unless `SimConfig::bound_sphere` is set (camera fly-in only).
 
@@ -196,7 +198,7 @@ stick scripts; 36, 77, 95, 126, 133, 151, 197 with the stick held forward; goal 
 16 retries after a fall-out; 55,000 ticks), and on one run of `effects_match_reference` over all 200 stages
 (`MB_PARITY_FX_STAGES` and `MB_PARITY_FX_FAST` = 1..200, scripts 0 to 3: 1004 runs, 1.9 million ticks, 1997
 retries). Not compared: confetti from a goal on a moving group, and anything during a result replay (not
-ported).
+ported yet).
 
 Intro fast-forward: bit-identical in every column on 7 stages (1, 2, 10, 36, 50, 77, 126) with 8 action
 scripts each, 900 ticks a run with a stick script after the intro: held from the first tick to the last of

@@ -6,6 +6,25 @@ the game in a browser as WebAssembly. It is fully offline: there is no network o
 repository contains code only. It never contains, downloads or links to game data; you play with your own
 copy of the game.
 
+This is version 0.2.0, a release candidate: it is not tagged or published until it has been tried by hand
+([CHANGELOG.md](CHANGELOG.md)).
+
+## What the game has
+
+Everything WebMonkeyBall has for Super Monkey Ball 1, except the replays after a fall-out and a goal
+(planned for 0.3.0):
+
+- Course Play (Beginner, Advanced, Expert, the Extra courses and Master) and Practice on the 109 course
+  stages, with lives, score, continues and unlocks; the same simulation as the reference, tick for tick.
+- Stages, backgrounds and the ball drawn with the game's own materials; the ball's shadow, sparks, collision
+  stars, goal confetti; the dancers in the night windows, the storm fires, the drifting sunset clouds, the
+  rippling floor of the bonus wave; mirror floors on the 37 stages that have one.
+- The HUD of the original, sound effects, the announcer and stage music, all read from your disc image.
+- Keyboard, gamepad, mouse, touch and device tilt.
+
+Not included, by decision: multiplayer, a replay-file player, a map viewer and Super Monkey Ball 2. What
+the original game has beyond the reference is listed under "Known gaps".
+
 ## What you need to play
 
 One file: a disc image of **Super Monkey Ball** for the Nintendo GameCube (2001).
@@ -54,9 +73,10 @@ options (`--pick`, `--fullscreen`, `--course <name>`, `--mute`). The executable 
 cargo xtask build-web --single
 ```
 
-The site is written to `web/dist/`: plain files with relative paths (`index.html`, a few scripts, the 3.9 MB
-WebAssembly module). `--single` adds `web/dist/monkey-ball.html` (2.1 MB), the
-whole page in one file that can be copied anywhere and opened from disk.
+The site is written to `web/dist/`: plain files with relative paths (`index.html`, a few scripts, the 4.0 MB
+WebAssembly module). `--single` adds `web/dist/monkey-ball.html` (2.2 MB), the
+whole page in one file that can be copied anywhere and opened from disk. The build fails if the module
+grows past its size budget ([docs/WEB.md](docs/WEB.md), "Build").
 
 Serve the folder with any static file server and open it:
 
@@ -101,11 +121,18 @@ moment; an interrupted import leaves nothing behind.
 | Menus | arrows or WASD, Enter | stick or d-pad (desktop), A | tap a row, drag to scroll |
 | Back | Esc | B | Back button, or the browser's back gesture |
 | Pause | Esc or P | Start | on-screen pause button |
+| Action (hold) | Space or Z (Enter counts too) | A | hold the play area away from the stick and buttons |
 | Fullscreen | F11 or Alt+Enter (desktop) | | Options -> Fullscreen (browser) |
 
 The mouse works in menus (click rows, wheel scrolls). On a phone, Options -> Controls switches to steering by
 tilting the device; the on-screen stick then gives way to a recentre button (the crosshair above pause)
 that makes the way you hold the phone now the level position.
+
+Holding the action runs the camera's fly-in over a new stage at double speed, and cuts the wait after a
+fall-out short (from one second in).
+
+Options -> Reflections switches the mirror floors off and on. They are on by default; on the stages that
+have one they cost up to twice the drawing, so a slow device may want them off. The choice is saved.
 
 ## Tests
 
@@ -115,7 +142,7 @@ cargo xtask check
 
 runs the quality gates: `cargo fmt --all -- --check`, `cargo clippy` for the workspace, for the desktop
 program as shipped and for the browser build (`wasm32-unknown-unknown`), all with `-D warnings`, and
-`cargo test --workspace --release`.
+`cargo test --workspace --release` (559 tests with the disc image).
 
 Many tests read the real game. They look for your disc image in the `MB_DISC` environment variable, or for a
 file named `Super Monkey Ball*.rvz` (or `.iso`, `.gcm`) in the directory that contains this repository, and
@@ -128,7 +155,17 @@ deno run -A scripts/web-e2e.ts
 ```
 
 It needs `web/dist` (build it first with `cargo xtask build-web --single`), Chrome, Python 3 and the
-disc image, and says what is missing otherwise.
+disc image, and says what is missing otherwise. It makes 97 checks and takes about eight minutes: the
+import and storage, play, sound, saves (one written by 0.1.0 among them), the drawing on WebGL2 and WebGPU,
+touch, tilt, and what the page does in browsers that lack something ([docs/WEB.md](docs/WEB.md),
+"Checking it").
+
+Some of the tests are budgets. They hold measured numbers so that the game does not get heavier by
+accident: draw calls per stage, no GPU object or heap allocation made during play
+(`crates/mb-app/tests/budgets.rs`, `crates/mb-engine/tests/effects.rs`), memory while a stage loads
+(`crates/mb-app/tests/memory.rs`), the size of the copied game data (`crates/mb-app/tests/pack.rs`), the
+size of the WebAssembly module (`cargo xtask build-web`), and in the browser test the page's memory and
+frame time against version 0.1.0. The numbers are in [docs/PLAN.md](docs/PLAN.md), "Budgets".
 
 ## Project layout
 
@@ -139,39 +176,53 @@ disc image, and says what is missing otherwise.
 | `crates/mb-tpl` | texture container parser and GX texture decoders |
 | `crates/mb-gma` | GMA and NaomiLib model parsers, GX display lists |
 | `crates/mb-audio` | music (DTK ADPCM) and sound effect (MusyX) decoders, software mixer |
-| `crates/mb-engine` | deterministic simulation: physics, collision, stage objects, camera |
+| `crates/mb-engine` | deterministic simulation: physics, collision, stage objects, camera, particles |
 | `crates/mb-game` | courses, lives, score, unlocks, settings, crash-safe saves |
-| `crates/mb-render` | renderer on wgpu (GX material emulation); no windowing |
-| `crates/mb-app` | the game above all that: menus, loading, play, HUD, input, audio; the desktop program and the browser driver |
+| `crates/mb-render` | renderer on wgpu: GX material emulation, instanced particles, the ball's shadow, mirror floors; no windowing |
+| `crates/mb-app` | the game above all that: menus, loading, play, HUD, scene assembly (backgrounds, particles, mirrors), input, audio; the desktop program and the browser driver |
 | `crates/mb-web` | the browser target: import worker side, game data and saves in the browser, Web Audio |
-| `xtask` | the build tool behind `cargo xtask`: `build-web` and `check` (standard library only, the same command on every platform) |
+| `xtask` | the build tool behind `cargo xtask`: `build-web` (with the size budget of the module) and `check` (standard library only, the same command on every platform) |
 | `web/` | the page: `index.html`, `main.js`, `worker.js`, `guard.js`, service worker, manifest, icons |
-| `scripts/` | `web-e2e.ts`, the browser test |
+| `scripts/` | `web-e2e.ts`, the browser test (Deno, drives Chrome) |
 | `docs/` | see below |
 
 ## Documentation
 
 | | |
 |---|---|
-| [docs/PLAN.md](docs/PLAN.md) | current state, open items, recorded decisions, possible next features |
-| [docs/PARITY_PLAN.md](docs/PARITY_PLAN.md) | the plan for reaching parity with the reference: phases, budgets, checkpoints |
+| [docs/PLAN.md](docs/PLAN.md) | start here: the goal, what works and where, what is left for parity, budgets, open items, recorded decisions |
+| [docs/PARITY_PLAN.md](docs/PARITY_PLAN.md) | the plan for reaching parity with the reference: phases, limits, checkpoints, and the brief for the result replays |
 | [CHANGELOG.md](CHANGELOG.md) | what each version contains |
 | [docs/WEB.md](docs/WEB.md) | the web site: build, hosting, storage model, browser requirements, measurements |
 | [docs/ANDROID_WEBVIEW.md](docs/ANDROID_WEBVIEW.md) | putting the site inside an Android app |
-| [docs/GAMEPLAY.md](docs/GAMEPLAY.md) | states, HUD, menus, controls, what is not ported |
-| [docs/ENGINE.md](docs/ENGINE.md) | the simulation and its parity tests against the reference |
+| [docs/GAMEPLAY.md](docs/GAMEPLAY.md) | states, scene, particles, backgrounds, mirror floors, HUD, menus, controls |
+| [docs/ENGINE.md](docs/ENGINE.md) | the simulation, its particles and its parity tests against the reference |
 | [docs/AUDIO.md](docs/AUDIO.md) | sound: formats, backends, what plays when |
-| [docs/DISC_CONTENT.md](docs/DISC_CONTENT.md), [STAGEDEF.md](docs/STAGEDEF.md), [GMA.md](docs/GMA.md), [TPL.md](docs/TPL.md) | what is on the disc and the file formats |
+| [docs/DISC_CONTENT.md](docs/DISC_CONTENT.md), [STAGEDEF.md](docs/STAGEDEF.md), [GMA.md](docs/GMA.md), [TPL.md](docs/TPL.md) | what is on the disc and the file formats; GMA.md also has how the renderer draws materials and mirrors |
 | [docs/REFERENCE_NOTES.md](docs/REFERENCE_NOTES.md) | notes on the reference project |
 | [AGENTS.md](AGENTS.md) | rules and workflow for contributors and AI agents |
 
-## Known gaps against the original
+## Known gaps
 
-Not there yet: the monkey inside the ball and its voices, the ball's shadow, goal confetti and other
-effects, result replays, a few sounds (softest impacts, the time-over explosion, jingles, menu music), mirror
-floors and per-background effects, the minigames, and Super Monkey Ball 2. The Europe and Japan discs are
-accepted but untested, and nothing has been run on a real phone. The full lists are in
-[docs/GAMEPLAY.md](docs/GAMEPLAY.md) and [docs/AUDIO.md](docs/AUDIO.md).
+**Left to match the reference (WebMonkeyBall):**
+
+- The replays shown after a fall-out and after a goal, and what depends on them: skipping the end of the
+  goal sequence, and the confetti falling for its whole life. Planned for version 0.3.0.
+
+**In the original game but not in the reference, and not planned:**
+
+- The monkey inside the ball and its voices.
+- A few sounds: the softest impacts, the time-over explosion, 1UP, the continue and game-over lines, jingles
+  and menu music.
+- The warp bonus is shown but not added to the score.
+- The minigames.
+
+**Not verified:** nobody has yet played this version by hand or listened to it; nothing has been run on a
+real phone, in an Android web view, on iOS, in Firefox or Safari, or with a real gamepad; the Europe and
+Japan discs are accepted but untested; the Linux and macOS programs have never been built.
+
+Where the port differs from the reference on purpose, and the full lists: [docs/PLAN.md](docs/PLAN.md),
+"What is left for parity".
 
 ## Credits
 
