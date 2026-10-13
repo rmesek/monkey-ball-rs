@@ -201,7 +201,6 @@ pub struct Menu {
     report: PlayReport,
     notice: Option<String>,
     autostart: Option<Autostart>,
-    allow_quit: bool,
     /// Texture count before the UI textures were uploaded (to free them when the menu itself is left).
     texture_base: usize,
     audio: Audio,
@@ -230,8 +229,6 @@ impl Menu {
             report: PlayReport::new(),
             notice: None,
             autostart: None,
-            // A page is left through the browser, not from a menu entry.
-            allow_quit: cfg!(not(target_arch = "wasm32")),
             texture_base: 0,
             audio: Audio::silent(),
             shared: StageShared::default(),
@@ -457,7 +454,7 @@ impl Menu {
         match &self.screen {
             Screen::Title => {
                 let mut rows = vec![row("COURSE PLAY"), row("PRACTICE"), row("OPTIONS")];
-                if self.allow_quit {
+                if host::caps().quit {
                     rows.push(row("QUIT"));
                 }
                 rows
@@ -881,7 +878,7 @@ impl Menu {
     fn back(&mut self) -> Transition {
         match self.screen.clone() {
             Screen::Title => {
-                if self.allow_quit {
+                if host::caps().quit {
                     return Transition::Quit;
                 }
             }
@@ -1238,6 +1235,7 @@ mod tests {
             remove_data: true,
             fullscreen: true,
             tilt: true,
+            quit: false,
         });
         host::set_info(vec!["Game data: 137 MB in this browser".into()]);
         let labels: Vec<String> = m.rows().into_iter().map(|r| r.label).collect();
@@ -1264,6 +1262,15 @@ mod tests {
         );
         m.activate(8);
         assert!(host::drain().contains(&host::Command::RemoveGameData));
+        // The title offers "Quit" only where the platform lets the game end itself.
+        m.go(Screen::Title, 0);
+        let quit = |m: &Menu| m.rows().iter().any(|r| r.label == "QUIT");
+        assert!(!quit(&m));
+        host::set_caps(host::Caps {
+            quit: true,
+            ..host::Caps::default()
+        });
+        assert!(quit(&m));
         host::set_caps(host::Caps::default());
         host::set_info(Vec::new());
     }

@@ -260,6 +260,8 @@ mod web {
             remove_data,
             fullscreen,
             tilt,
+            // A page is left through the browser, not from a menu entry.
+            quit: false,
         });
     }
 

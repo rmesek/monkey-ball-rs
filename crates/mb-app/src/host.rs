@@ -8,7 +8,8 @@
 
 use std::cell::{Cell, RefCell};
 
-/// What the platform offers. All false on desktop and in tests.
+/// What the platform offers. Each driver says so before the game starts; all false until then (and in
+/// tests that do not set them).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Caps {
     /// The game data was imported into on-device storage and can be removed again.
@@ -16,6 +17,9 @@ pub struct Caps {
     pub fullscreen: bool,
     /// The device reports its orientation, so tilt can steer.
     pub tilt: bool,
+    /// The game can end itself, so the title offers "Quit". False where the platform closes the game (a
+    /// browser tab, a phone's app switcher).
+    pub quit: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -35,7 +39,7 @@ pub enum Command {
 
 thread_local! {
     static CAPS: Cell<Caps> = const {
-        Cell::new(Caps { remove_data: false, fullscreen: false, tilt: false })
+        Cell::new(Caps { remove_data: false, fullscreen: false, tilt: false, quit: false })
     };
     static INFO: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
     static FULLSCREEN: Cell<bool> = const { Cell::new(false) };

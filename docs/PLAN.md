@@ -101,7 +101,7 @@ Each is a statement about where the evidence stops.
 | Continue rule | "Continue resets the score and keeps the bananas", game over, five continues and the 1UP per 100 bananas come from memory of the original, not from a source. |
 | Largest music track | About 54 MB of float samples in the browser (computed, not measured). |
 | Pack version | `mb_assets::gamepack::VERSION` must be raised when the list of copied files changes; `tests/pack.rs` fails when the count or the bytes change, which is the reminder. |
-| CI workflows | `ci.yml` (manual) runs the gates; `release.yml` attaches executables and the site archive when a release is published. Neither has ever run. |
+| CI workflows | `ci.yml` (manual) runs the gates; `release.yml` attaches executables and the site archive when a release is published. Neither has ever run. Decided 2026-10-13: both stay manual, nothing runs on a push or a pull request. |
 | `rust-version` | 1.88 is what clippy's MSRV lint accepts; only the current stable toolchain has built the code. |
 | 32-bit overflow fixes in the parsers | Made by inspection; only wasm32 exercises them, on valid data. |
 

@@ -245,6 +245,11 @@ fn resolve_content(args: &Args, dir: Option<&Path>) -> Result<Content, String> {
 }
 
 fn run() -> Result<(), String> {
+    // A desktop program ends itself: the title offers "Quit".
+    mb_app::host::set_caps(mb_app::host::Caps {
+        quit: true,
+        ..mb_app::host::caps()
+    });
     let args = match parse_args(std::env::args().skip(1)) {
         Ok(a) => a,
         Err(e) => {
