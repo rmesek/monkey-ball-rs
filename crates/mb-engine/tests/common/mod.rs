@@ -46,6 +46,14 @@ pub fn load_stage(disc: &DiscPack, id: u32) -> Stage {
     parse_stagedef_smb1(&data).unwrap_or_else(|e| panic!("stage {id}: {e}"))
 }
 
+/// [`load_stage`] for an id that may not be on the disc or may not be a stage the game can start.
+pub fn try_load_stage(disc: &DiscPack, id: u32) -> Option<Stage> {
+    let raw = disc
+        .fetch(&format!("test/st{id:03}/STAGE{id:03}.lz"))
+        .ok()?;
+    parse_stagedef_smb1(&lzss::decompress(&raw).ok()?).ok()
+}
+
 /// Read `main.dol` from the disc image (it lives outside the file system table).
 pub fn read_main_dol() -> Option<Vec<u8>> {
     open_disc()?.main_dol().ok()
