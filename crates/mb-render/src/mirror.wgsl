@@ -44,11 +44,8 @@ struct Object {
 struct MirrorParams {
     // The displayed world (after the stage tilt) -> clip space of the capture.
     clip: mat4x4<f32>,
-    // x: mirror alpha, y: 1 = wavy
+    // x: mirror alpha
     params: vec4<f32>,
-    // Rows of the indirect matrix of the wavy mirror.
-    ind0: vec4<f32>,
-    ind1: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> scene: Scene;
@@ -56,7 +53,6 @@ struct MirrorParams {
 @group(2) @binding(0) var<uniform> mirror: MirrorParams;
 @group(2) @binding(1) var capture_tex: texture_2d<f32>;
 @group(2) @binding(2) var samp: sampler;
-@group(2) @binding(3) var grad_tex: texture_2d<f32>;
 
 // The layout of `Vertex`; the texture coordinates are not used.
 struct VsIn {
@@ -68,8 +64,7 @@ struct VsIn {
 struct VsOut {
     @builtin(position) clip: vec4<f32>,
     @location(0) mirror_clip: vec4<f32>,
-    @location(1) grad_uv: vec2<f32>,
-    @location(2) alpha: f32,
+    @location(1) alpha: f32,
 };
 
 struct Waved {
@@ -112,52 +107,21 @@ fn vs_main(in: VsIn) -> VsOut {
         w = wave(in.position, in.normal);
     }
     var world = object.model * vec4<f32>(w.pos, 1.0);
-    var n = (object.normal_mat * vec4<f32>(w.normal, 0.0)).xyz;
     if (object.params.y > 0.5) {
         world = scene.tilt * world;
-        n = (scene.tilt * vec4<f32>(n, 0.0)).xyz;
     }
     let view_pos = scene.view * world;
     out.clip = scene.proj * view_pos;
 
-    if (mirror.params.y > 0.5) {
-        // The reference draws the wavy overlay as the flat floor, which lies in the mirror's plane: there
-        // the capture's clip position is the fragment's own with x turned round. The waved surface drawn
-        // here is not in the plane, so that relation is used directly.
-        out.mirror_clip = vec4<f32>(-out.clip.x, out.clip.y, out.clip.z, out.clip.w);
-    } else {
-        out.mirror_clip = mirror.clip * world;
-    }
-
-    // `createMirrorDistortProgram`: the gradient is addressed with x and z of the view-space normal.
-    var nv = (scene.view * vec4<f32>(n, 0.0)).xyz;
-    let nl = length(nv);
-    if (nl > 1e-6) {
-        nv = nv / nl;
-    } else {
-        nv = vec3<f32>(0.0);
-    }
-    out.grad_uv = nv.xz * 0.5 + vec2<f32>(0.5);
+    out.mirror_clip = mirror.clip * world;
     out.alpha = in.color.a;
     return out;
-}
-
-// `IndMask(255 * v, 0xF8) - 128`.
-fn ind(v: f32) -> f32 {
-    return f32(u32(floor(clamp(v, 0.0, 1.0) * 255.0 + 0.5)) & 0xF8u) - 128.0;
 }
 
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // As the reference: coordinates with v up the screen.
-    var uv = clamp(in.mirror_clip.xy / in.mirror_clip.w * 0.5 + vec2<f32>(0.5), vec2<f32>(0.0), vec2<f32>(1.0));
-    if (mirror.params.y > 0.5) {
-        let g = textureSampleLevel(grad_tex, samp, clamp(in.grad_uv, vec2<f32>(0.0), vec2<f32>(1.0)), 0.0);
-        // The reference reads `.abg` of a distortion target whose alpha is always one.
-        let c = vec3<f32>(ind(1.0), ind(g.b), ind(g.g));
-        let offset = vec2<f32>(dot(mirror.ind0.xyz, c), dot(mirror.ind1.xyz, c)) * (1.0 / 256.0);
-        uv = clamp(uv + offset, vec2<f32>(0.0), vec2<f32>(1.0));
-    }
+    let uv = clamp(in.mirror_clip.xy / in.mirror_clip.w * 0.5 + vec2<f32>(0.5), vec2<f32>(0.0), vec2<f32>(1.0));
     // The capture is a render target: its first row is the top of the picture.
     let tex = textureSampleLevel(capture_tex, samp, vec2<f32>(uv.x, 1.0 - uv.y), 0.0);
     return vec4<f32>(tex.rgb, mirror.params.x * in.alpha);

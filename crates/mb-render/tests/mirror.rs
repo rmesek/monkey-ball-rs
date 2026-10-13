@@ -9,8 +9,8 @@
 use mb_gma::CullMode;
 use mb_render::glam::{Mat4, Vec3};
 use mb_render::{
-    BlendMode, Camera, Distortion, DrawOrder, GpuCounters, InstanceStyle, Layer, Mirror, ModelId,
-    ObjectId, OffscreenTarget, Quad, Renderer, WaveParams,
+    BlendMode, Camera, DrawOrder, GpuCounters, InstanceStyle, Layer, Mirror, ModelId, ObjectId,
+    OffscreenTarget, Quad, Renderer, WaveParams,
 };
 
 const SIZE: u32 = 64;
@@ -739,78 +739,10 @@ fn the_mirror_tilts_with_the_stage() {
     tilt_on(wgpu::Backends::all());
 }
 
-// ---- the wavy mirror ----------------------------------------------------------------------------------
-
-/// `gb_grad` stood in for by two texels: blue 88 on the left, 168 on the right.
-fn grad(r: &mut Renderer) -> mb_render::TextureId {
-    r.upload_rgba(2, 1, &[10, 40, 88, 255, 240, 200, 168, 255])
-}
+// ---- the mirror of a waved floor ----------------------------------------------------------------------------------
 
 fn wavy_on(backends: wgpu::Backends) {
-    // The floor's normal as the camera sees it picks the texel: the camera only pitches, so a normal
-    // along +x or -x addresses the right or the left end of the gradient.
-    for (normal_x, shift_x) in [(1.0, 8i32), (-1.0, -8)] {
-        let Some(mut s) = Scene::new(backends) else {
-            return;
-        };
-        let model = floor_model(&mut s.r, [normal_x, 0.0, 0.0], 255);
-        let floor = s.r.add_object(model, Layer::World, Mat4::IDENTITY);
-        let red = square(&mut s.r, 1.0, RED);
-        s.r.add_object(red, Layer::World, at(0.0, 2.0, 0.0));
-        let green = square(&mut s.r, 1.0, GREEN);
-        s.r.add_object(green, Layer::World, at(-3.5, 3.5, -2.0));
-        let grad = grad(&mut s.r);
-        // The offset the shader must apply, from the reference's formula on the texel addressed.
-        let blue = if normal_x > 0.0 { 168.0 } else { 88.0 };
-        let offset = Distortion::reference(grad).offset([0.0, 0.0, blue / 255.0]);
-        assert_eq!(offset, [shift_x as f32 / SIZE as f32, 18.0 / SIZE as f32]);
-
-        // Which pixels are floor.
-        let plain = s.render();
-        s.r.set_mirror_surface(floor, true);
-        s.r.set_mirror(Some(Mirror::flat(Mat4::IDENTITY)));
-        let flat = s.render();
-        s.r.set_mirror(Some(Mirror {
-            alpha: 1.0,
-            ..Mirror::wavy(Mat4::IDENTITY, grad)
-        }));
-        let wavy = s.render();
-        assert_eq!(
-            (s.r.stats.mirror_draws, s.r.stats.mirror_surface_draws),
-            (3, 1),
-            "one pass and one draw, as the flat mirror"
-        );
-
-        // A fragment shows the capture `offset` away: 0.125 of 64 pixels sideways (the capture is
-        // turned round in x) and 0.28125 of them up, which is the flat mirror's pixel 8 to the side
-        // and 18 above.
-        let size = SIZE as i32;
-        let is_floor = |x: i32, y: i32| near(&plain.get(x as usize, y as usize), FLOOR, 2.0);
-        let (mut compared, mut reflected) = (0, 0);
-        for y in 0..size {
-            for x in 0..size {
-                let (fx, fy) = (x - shift_x, y - 18);
-                if fx < 0 || fx >= size || fy < 0 || !is_floor(x, y) || !is_floor(fx, fy) {
-                    continue;
-                }
-                let (a, b) = (
-                    wavy.get(x as usize, y as usize),
-                    flat.get(fx as usize, fy as usize),
-                );
-                assert!(
-                    (0..3).all(|c| a[c].abs_diff(b[c]) <= 2),
-                    "normal {normal_x}: pixel {x},{y} is {a:?}, the flat mirror at {fx},{fy} is {b:?}"
-                );
-                compared += 1;
-                reflected += (!near(&a, CLEAR, 2.0)) as usize;
-            }
-        }
-        assert!(compared > 500, "{compared} floor pixels compared");
-        assert!(reflected > 30, "{reflected} of them show a reflection");
-        assert_ne!(wavy.px, flat.px);
-    }
-
-    // The reference's wavy mirror on a floor that waves: the overlay follows the waved surface (no
+    // The mirror of the bonus wave, on a floor that waves: the overlay follows the waved surface (no
     // floor shows through at full alpha) and is blended at 0x60 / 0xff.
     let Some(mut s) = Scene::new(backends) else {
         return;
@@ -830,19 +762,18 @@ fn wavy_on(backends: wgpu::Backends) {
     let plain = s.render();
     let floor_pixels = plain.count(FLOOR, 2.0);
     assert!(floor_pixels > 600, "{floor_pixels}");
-    let grad = grad(&mut s.r);
     let plane = at(0.0, Mirror::WAVY_PLANE_Y, 0.0);
-    s.r.set_mirror(Some(Mirror {
-        alpha: 1.0,
-        ..Mirror::wavy(plane, grad)
-    }));
+    s.r.set_mirror(Some(Mirror::flat(plane)));
     let frame = s.render();
     assert_eq!(
         frame.count(FLOOR, 40.0),
         0,
         "the overlay hides the waved floor"
     );
-    s.r.set_mirror(Some(Mirror::wavy(plane, grad)));
+    s.r.set_mirror(Some(Mirror {
+        plane,
+        alpha: Mirror::WAVY_ALPHA,
+    }));
     let frame = s.render();
     let expect = mix(FLOOR, CLEAR, Mirror::WAVY_ALPHA);
     assert_eq!(
@@ -858,16 +789,10 @@ fn wavy_on(backends: wgpu::Backends) {
         assert_eq!(s.r.stats.mirror_surface_draws, 1);
     }
     assert_eq!(s.r.counters(), before);
-
-    // A gradient that is gone takes the mirror with it instead of leaving a dangling id.
-    s.r.truncate_textures(1);
-    assert!(s.r.mirror().is_none());
-    assert_eq!(s.r.mirror_bytes(), 0);
-    s.render();
 }
 
 #[test]
-fn the_wavy_mirror_offsets_the_reflection_by_the_reference_formula() {
+fn the_mirror_of_a_waved_floor_follows_the_wave() {
     let _gpu = GPU.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     wavy_on(wgpu::Backends::all());
 }

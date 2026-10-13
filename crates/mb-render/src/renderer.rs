@@ -1606,13 +1606,6 @@ impl Renderer {
             self.shadow_mask = None;
             self.rebuild_scene_groups();
         }
-        // A mirror whose gradient is gone goes with it.
-        let count = self.textures.len();
-        let stale = |m: &MirrorState| (m.mirror.distortion).is_some_and(|d| d.grad.0 >= count);
-        if self.mirror.as_ref().is_some_and(stale) {
-            self.mirror = None;
-            self.mirror_active = false;
-        }
     }
 
     // ---- sprites -----------------------------------------------------------------------------------
@@ -2128,21 +2121,16 @@ impl Renderer {
                 (a, b) => a.or(b),
             };
         }
-        // A distorted mirror looks the capture up beside the fragment, anywhere in it.
-        if m.mirror.distortion.is_some() || self.mirror_whole {
+        if self.mirror_whole {
             window = window.map(|_| [-1.0, -1.0, 1.0, 1.0]);
         }
         let Some((window, scissor)) = window.and_then(|w| mirror::capture_window(w, size)) else {
             return (uploaded, None);
         };
         m.scissor = scissor;
-        let d = m.mirror.distortion;
-        let row = |r: Option<[f32; 3]>| r.map_or([0.0; 4], |[x, y, z]| [x, y, z, 0.0]);
         let u = MirrorUniform {
             clip: clip[1].to_cols_array_2d(),
-            params: [m.mirror.alpha, d.is_some() as u32 as f32, 0.0, 0.0],
-            ind0: row(d.map(|d| d.ind0)),
-            ind1: row(d.map(|d| d.ind1)),
+            params: [m.mirror.alpha, 0.0, 0.0, 0.0],
         };
         if m.uniform_data != Some(u) {
             self.queue
@@ -2572,10 +2560,6 @@ impl Renderer {
         self.counters.textures += 2;
         self.counters.bind_groups += 1;
         let target = MirrorTarget::new(&self.device, want, self.target_format, DEPTH_FORMAT);
-        let grad = (m.mirror.distortion)
-            .map(|d| d.grad)
-            .filter(|t| t.0 < self.textures.len())
-            .unwrap_or(self.white);
         m.group = Some(self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("mirror"),
             layout: &gpu.layout,
@@ -2591,10 +2575,6 @@ impl Renderer {
                 wgpu::BindGroupEntry {
                     binding: 2,
                     resource: wgpu::BindingResource::Sampler(&sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: wgpu::BindingResource::TextureView(&self.textures[grad.0].view),
                 },
             ],
         }));

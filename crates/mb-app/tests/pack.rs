@@ -717,8 +717,6 @@ fn mirror_floors_load_from_the_pack() {
             }
             let set = h.renderer().mirror().copied();
             assert_eq!(set.is_some(), expect.is_some(), "stage {stage}");
-            // No mirror is distorted: the wave's reads no texture for it.
-            assert!(set.is_none_or(|m| m.distortion.is_none()));
             // Through the fly-in and into play, drawing now and then.
             let mut mirrored = 0;
             for frame in 0..420 {

@@ -45,7 +45,7 @@
 //!
 //! ```ignore
 //! // Loading, after `clear_scene` and the objects.
-//! r.set_mirror(Some(Mirror::flat(Mat4::IDENTITY)));      // or Mirror::wavy(plane, gb_grad_texture)
+//! r.set_mirror(Some(Mirror::flat(Mat4::IDENTITY)));
 //! r.set_mirror_surface(mirror_model_object, true);      // or set_mirror_surface_only: reflection alone
 //! r.set_in_mirror(bg_object_with_flag_bit_7, false);
 //! // Every frame, for a mirror that moves.
@@ -74,7 +74,7 @@ pub use effects::{BlendMode, DrawOrder, InstanceBatchId, InstanceStyle, Quad, Sh
 pub use glam;
 pub use lighting::Lighting;
 pub use material::SamplerKey;
-pub use mirror::{Distortion, Mirror};
+pub use mirror::Mirror;
 pub use offscreen::{OffscreenTarget, rgba_to_ppm};
 pub use renderer::{
     DEPTH_FORMAT, FrameStats, GpuCounters, GpuTexture, Layer, LoadStats, ModelId, ObjectId,

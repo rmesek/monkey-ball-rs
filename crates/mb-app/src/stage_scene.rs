@@ -876,7 +876,6 @@ impl StageScene {
                 r.set_mirror(Some(Mirror {
                     plane: plane.at(|_| Mat4::IDENTITY),
                     alpha: Mirror::WAVY_ALPHA,
-                    distortion: None,
                 }));
                 r.set_mirror_surface(floor, true);
                 vec![SceneMirrorLevel {

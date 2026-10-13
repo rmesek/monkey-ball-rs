@@ -1438,10 +1438,10 @@ fn mirror_floors_lie_in_the_plane_of_their_mirror_models() {
                 assert_eq!(surfaces, scene.wave_objects);
                 let at = Mat4::from_translation(Vec3::new(0.0, 0.02, 0.0));
                 assert_eq!(mirror.levels[0].plane, MirrorPlane::Fixed(at));
-                assert_eq!((set.alpha, set.distortion), (96.0 / 255.0, None));
+                assert_eq!(set.alpha, 96.0 / 255.0);
             } else {
                 assert_eq!(mirror.kind, MirrorKind::Flat, "stage {stage}");
-                assert_eq!((set.alpha, set.distortion), (1.0, None));
+                assert_eq!(set.alpha, 1.0);
                 assert_eq!(on.contains(&0), !matches!(stage, 103 | 113));
             }
             assert_eq!(mirror.levels[0].plane.moves(), rides, "stage {stage}");

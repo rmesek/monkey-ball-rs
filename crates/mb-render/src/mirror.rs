@@ -3,65 +3,13 @@
 //! into a reduced target, and the mirror models are drawn again over the opaque geometry with a program
 //! that looks that picture up at each fragment's place on the screen.
 //!
-//! This module holds what the caller says ([`Mirror`], [`Distortion`]), the maths (reflection, the plane
+//! This module holds what the caller says ([`Mirror`]), the maths (reflection, the plane
 //! as an oblique near plane) and the GPU objects; `renderer.rs` runs the passes.
 
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec2, Vec3, Vec4};
 
 use crate::gpu_types::Vertex;
-use crate::renderer::TextureId;
-
-/// The wavy mirror's distortion (`createMirrorWavyProgram`): the reflection is looked up beside each
-/// fragment, by an amount read from a gradient texture addressed with the surface normal. The reference
-/// draws the waved floor into a 256 x 256 target with that texture and reads the target back at the
-/// fragment's place on the screen; here the mirror surface itself is drawn waved, so the texel under a
-/// fragment is its own and one fetch in the overlay's shader replaces the target and its pass.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Distortion {
-    /// `gb_grad` of `common.gma` (its first texture layer). The reference falls back to a white texel
-    /// when the model is missing ([`crate::Renderer::white_texture`]).
-    pub grad: TextureId,
-    /// Rows of the GX indirect matrix, applied to `(alpha, blue, green) * 255`, masked to five bits and
-    /// less 128, then divided by 256: `u` and `v` of the offset, `v` up the screen.
-    pub ind0: [f32; 3],
-    pub ind1: [f32; 3],
-}
-
-impl Distortion {
-    /// `(0, 1.6, 0)` and `(1.2, 0, 0)` of `Render.ts`, halved until the larger is below one.
-    pub const IND0: [f32; 3] = [0.0, 0.8, 0.0];
-    pub const IND1: [f32; 3] = [0.6, 0.0, 0.0];
-
-    /// The reference's distortion with `grad`.
-    pub fn reference(grad: TextureId) -> Self {
-        Self {
-            grad,
-            ind0: Self::IND0,
-            ind1: Self::IND1,
-        }
-    }
-
-    /// `IndMask(255 * v, 0xF8) - 128` of the reference's fragment shader.
-    pub fn quantise(v: f32) -> f32 {
-        ((v.clamp(0.0, 1.0) * 255.0 + 0.5).floor() as u32 & 0xF8) as f32 - 128.0
-    }
-
-    /// What the overlay's shader adds to the mirror coordinates (`v` up the screen, in fractions of the
-    /// picture) for a texel `rgb` of the gradient. The reference reads `.abg` of its distortion target,
-    /// whose alpha is always one, so the first component is constant and red is not used.
-    pub fn offset(&self, rgb: [f32; 3]) -> [f32; 2] {
-        let c = Vec3::new(
-            Self::quantise(1.0),
-            Self::quantise(rgb[2]),
-            Self::quantise(rgb[1]),
-        );
-        [
-            Vec3::from(self.ind0).dot(c) / 256.0,
-            Vec3::from(self.ind1).dot(c) / 256.0,
-        ]
-    }
-}
 
 /// A mirror floor: see [`crate::Renderer::set_mirror`].
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -71,32 +19,17 @@ pub struct Mirror {
     pub plane: Mat4,
     /// `mirrorAlpha`: the reflection's opacity over the mirror surface, times the surface's vertex alpha.
     pub alpha: f32,
-    /// The wavy mirror of stage 92; `None` for a flat one.
-    pub distortion: Option<Distortion>,
 }
 
 impl Mirror {
-    /// `WAVY_MIRROR_ALPHA`.
+    /// `WAVY_MIRROR_ALPHA`: the opacity of the reflection on the bonus wave's floor (stage 92).
     pub const WAVY_ALPHA: f32 = 96.0 / 255.0;
-    /// `WAVY_MIRROR_PLANE_Y`.
+    /// `WAVY_MIRROR_PLANE_Y`: the height of that mirror's plane.
     pub const WAVY_PLANE_Y: f32 = 0.02;
 
     /// A flat mirror at full opacity (every mirror stage but 92).
     pub fn flat(plane: Mat4) -> Self {
-        Self {
-            plane,
-            alpha: 1.0,
-            distortion: None,
-        }
-    }
-
-    /// The wavy mirror of stage 92 with the reference's opacity and distortion.
-    pub fn wavy(plane: Mat4, grad: TextureId) -> Self {
-        Self {
-            plane,
-            alpha: Self::WAVY_ALPHA,
-            distortion: Some(Distortion::reference(grad)),
-        }
+        Self { plane, alpha: 1.0 }
     }
 }
 
@@ -303,10 +236,8 @@ pub(crate) fn window_planes(clip: &Mat4, window: [f32; 4]) -> [Vec4; 6] {
 pub(crate) struct MirrorUniform {
     /// The displayed world (after the stage tilt) -> clip space of the capture.
     pub clip: [[f32; 4]; 4],
-    /// x: mirror alpha, y: 1 = wavy.
+    /// x: mirror alpha.
     pub params: [f32; 4],
-    pub ind0: [f32; 4],
-    pub ind1: [f32; 4],
 }
 
 /// What every mirror shares, made the first time one is set.
@@ -357,7 +288,6 @@ impl MirrorGpu {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
-                texture(3),
             ],
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -698,40 +628,8 @@ mod tests {
     }
 
     #[test]
-    fn distortion_follows_the_reference_shader() {
-        // `Render.ts`: halve (0, 1.6, 0) and (1.2, 0, 0) until the larger entry is below one.
-        let (mut a, mut b) = (1.6f32, 1.2f32);
-        while a.abs().max(b.abs()) >= 1.0 {
-            a *= 0.5;
-            b *= 0.5;
-        }
-        assert_eq!(Distortion::IND0, [0.0, a, 0.0]);
-        assert_eq!(Distortion::IND1, [b, 0.0, 0.0]);
-
-        // `float(int(255 * v) & 0xF8) - 128`.
-        assert_eq!(Distortion::quantise(1.0), 120.0);
-        assert_eq!(Distortion::quantise(0.0), -128.0);
-        assert_eq!(Distortion::quantise(128.0 / 255.0), 0.0);
-        assert_eq!(Distortion::quantise(135.0 / 255.0), 0.0);
-        assert_eq!(Distortion::quantise(136.0 / 255.0), 8.0);
-        assert_eq!(Distortion::quantise(7.0), 120.0);
-
-        let d = Distortion::reference(TextureId(0));
-        // u follows blue; v is the constant the distortion target's alpha of one gives.
-        assert_eq!(d.offset([0.3, 0.9, 168.0 / 255.0]), [0.125, 0.28125]);
-        assert_eq!(d.offset([1.0, 0.0, 88.0 / 255.0]), [-0.125, 0.28125]);
-        assert_eq!(d.offset([0.0, 0.0, 0.0]), [-0.4, 0.28125]);
-        // Other matrices reach green.
-        let g = Distortion {
-            ind1: [0.0, 0.0, 0.5],
-            ..d
-        };
-        assert_eq!(g.offset([0.0, 1.0, 0.5]), [0.0, 0.5 * 120.0 / 256.0]);
-
+    fn the_wave_floor_reflects_at_the_reference_opacity() {
         assert_eq!(Mirror::WAVY_ALPHA, 0x60 as f32 / 0xff as f32);
-        let wavy = Mirror::wavy(Mat4::IDENTITY, TextureId(3));
-        assert_eq!(wavy.alpha, Mirror::WAVY_ALPHA);
-        assert_eq!(wavy.distortion, Some(Distortion::reference(TextureId(3))));
         assert_eq!(Mirror::flat(Mat4::IDENTITY).alpha, 1.0);
     }
 
@@ -756,6 +654,6 @@ mod tests {
         ] {
             assert_eq!(item(main, head), item(mirror, head), "{head}");
         }
-        assert_eq!(std::mem::size_of::<MirrorUniform>(), 64 + 16 * 3);
+        assert_eq!(std::mem::size_of::<MirrorUniform>(), 64 + 16);
     }
 }
