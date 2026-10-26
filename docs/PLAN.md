@@ -93,7 +93,6 @@ Each is a statement about where the evidence stops.
 
 | Item | State |
 |---|---|
-| Licence | `Cargo.toml` declares `MIT OR Apache-2.0`; there is no `LICENSE` file, and the reference this code was ported from carries no licence statement. For the owner to settle before publishing more widely. |
 | The review findings | [ARCHITECTURE.md](ARCHITECTURE.md), "Review": the places where the code is harder to change than it should be. The two winit drivers became one (`mb-driver`), and the platform's state is carried in `GameCtx`; the rest are not acted on. |
 | Tilt without readings | If the device never delivers sensor readings there is no stick to fall back on until the player switches Options -> Controls back. |
 | Phones | Nothing ran on a real phone. The file chooser asks for `application/octet-stream`; a file manager that reports the image under another type greys it out, hence the "show all files" button. |
@@ -132,3 +131,9 @@ Each is a statement about where the evidence stops.
 - **Strictly offline.** No networking crates; the page requests nothing but its own files.
 - **Scope** is closed (see "Goal"). The instant replays of the reference were dropped on 2026-10-13.
 - **Rust edition 2024.**
+- **Licence: `MIT OR Apache-2.0`** (`LICENSE-MIT`, `LICENSE-APACHE`), decided 2026-10-26 for the public
+  repository: the owner asked for the licence that leaves the least liability for the code. Both disclaim
+  every warranty and liability; Apache-2.0 adds an explicit limitation of liability and a patent licence;
+  the pair is what Rust crates use, so the Android app can take the crates under either. WebMonkeyBall,
+  from which the code was ported, carries no licence statement; the README says the licence covers this
+  repository's own work only.

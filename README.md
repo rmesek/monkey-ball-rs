@@ -168,5 +168,8 @@ library only. Android is the next target and not started: [docs/ARCHITECTURE.md]
 Original game: Amusement Vision. SMB1 decompilation: camthesaxman. Web port (WebMonkeyBall): TwilightPB.
 Renderer: ComplexPlane. Community tools and resources: SMB Custom Level Community.
 
-The code in this repository is declared `MIT OR Apache-2.0` in `Cargo.toml`. The game itself is not part of
-it and is not covered.
+The code in this repository is licensed under either of [LICENSE-MIT](LICENSE-MIT) or
+[LICENSE-APACHE](LICENSE-APACHE) (Apache License 2.0), at your option. Both come without any warranty, and
+neither makes the authors liable for what the code does. The licence covers this repository's own work: it
+began as a port of WebMonkeyBall, which carries no licence statement, and it grants nothing over the game,
+its data or its trademarks, none of which are part of it.
