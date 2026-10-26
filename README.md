@@ -1,8 +1,11 @@
 # monkey-ball-rs
 
-Super Monkey Ball (Nintendo GameCube, 2001) in Rust, for the desktop and the web browser. Fully offline:
-there is no network or multiplayer code. This repository contains code only; you play with your own copy of
-the game.
+Super Monkey Ball (Nintendo GameCube, 2001) in Rust, for the desktop and the web browser, and as a library
+for an app on another platform. Fully offline: there is no network or multiplayer code. This repository
+contains code only; you play with your own copy of the game.
+
+This is a fan project. It is not affiliated with or endorsed by SEGA or Nintendo. "Super Monkey Ball" is a
+trademark of SEGA, and "Nintendo GameCube" one of Nintendo.
 
 It began as a port of the TypeScript project WebMonkeyBall and plays everything that project plays for
 Super Monkey Ball 1: the 109 course stages, Course Play and Practice, with the game's own models, effects,
@@ -145,13 +148,29 @@ What to know:
 
 | | |
 |---|---|
-| Everywhere | [wgpu](https://wgpu.rs) (graphics: Vulkan, Metal, DirectX 12, OpenGL ES, WebGPU, WebGL2), `glam`, `bytemuck`, `ruzstd` (RVZ images) |
-| Desktop | `winit` (window), `cpal` (sound), `gilrs` (gamepads), `rfd` (file dialog) |
-| Browser | `winit`, `wasm-bindgen`, `web-sys`, `js-sys` |
+| Everywhere | [wgpu](https://wgpu.rs) (graphics: Vulkan, Metal, DirectX 12, OpenGL ES, WebGPU, WebGL2), `winit` (window and events), `glam`, `bytemuck`, `ruzstd` (RVZ images) |
+| Native targets | `cpal` (sound), `pollster` |
+| Desktop | `gilrs` (gamepads), `rfd` (file dialog) |
+| Browser | `wasm-bindgen`, `web-sys`, `js-sys` |
 
 Nothing that talks to a network. The file formats, the simulation and the rules of the game use the standard
-library only. Android is the next target and not started: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md),
-"Adding Android".
+library only.
+
+## Android
+
+The Android app is written in its own repository, `monkey-ball-android`, on top of version 1.0.0 of this
+one. It can show the game in two ways, and this repository gives it both:
+
+- **In a WebView:** the built `target/site`, unchanged; [docs/ANDROID_WEBVIEW.md](docs/ANDROID_WEBVIEW.md)
+  says how to host it.
+- **Natively, through Vulkan or OpenGL ES:** the crates above as a library (see "Using the game from another
+  project"). The driver (`mb-driver`) runs the event loop and keeps the GPU device when Android takes the
+  window away; the game has touch controls, a back button, tilt steering from whatever sensor the app reads,
+  sound through `cpal`, saves in a folder, and an import screen that copies the game data out of the disc
+  image the player picks. What the app writes is listed in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md),
+  "Adding Android".
+
+Nothing in this repository has run on a phone yet.
 
 ## Where to read on
 
