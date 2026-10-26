@@ -72,6 +72,11 @@ cargo xtask build-web
 deno run -A scripts/web-e2e.ts
 ```
 
+The Android gate compiles the game library only: it needs the target's standard library, which
+`rust-toolchain.toml` installs, and no NDK. It does not compile `mb-driver` or link a library for Android;
+that needs the Android NDK (winit's Android backend compiles C), which the development machine does not
+have, so it is the Android app's own build that checks it.
+
 The tests need the disc image to mean anything. The browser test needs it too, plus Deno, Chrome and
 Python 3; it takes about eight minutes. Rust edition 2024.
 

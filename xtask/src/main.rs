@@ -222,9 +222,10 @@ fn ci() -> Result<(), String> {
             "-D",
             "warnings",
         ],
-        // The game library and everything under it for a native Android target: no app is built from
-        // it yet, but nothing shared may stop compiling there (docs/ARCHITECTURE.md). Needs only the
-        // target's standard library (rust-toolchain.toml), no NDK.
+        // The game library and everything under it for a native Android target: the app is built in its
+        // own repository, and nothing shared may stop compiling there (docs/ARCHITECTURE.md). Needs only
+        // the target's standard library (rust-toolchain.toml), no NDK. The driver and a linked library
+        // are not checked: winit's Android backend compiles C and the link needs the NDK.
         &[
             "clippy",
             "-p",
