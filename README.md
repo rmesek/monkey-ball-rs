@@ -42,7 +42,8 @@ in every shell on Windows, Linux and macOS.
 cargo run --release
 ```
 
-The first start asks for the disc image in a file dialog. Options go after `--`:
+The first start asks for the disc image in a file dialog and shows the import in the window. Options go
+after `--`:
 
 | | |
 |---|---|
@@ -108,6 +109,37 @@ the `MB_DISC` environment variable, or for `Super Monkey Ball*.rvz` (`.iso`, `.g
 contains this repository, and skip without it. The browser test, `deno run -A scripts/web-e2e.ts`, drives
 the built site in Chrome and needs [Deno](https://deno.com), Chrome and Python 3; nothing else in the
 project uses any of the three.
+
+## Using the game from another project
+
+The game is a library, and an app on another platform (the Android app, `monkey-ball-android`) uses this
+repository as a git submodule at a tagged version and depends on its crates by path:
+
+```toml
+[dependencies]
+# The game: states, assets, the seams (input, host, content, storage).
+mb-app = { path = "monkey-ball-rs/crates/mb-app" }
+# The event loop, the GPU surface and the frame; your platform implements `mb_driver::Platform`.
+mb-driver = { path = "monkey-ball-rs/crates/mb-driver" }
+# The disc reader, for an image the platform opens itself (`FileStream::from(file)`).
+mb-assets = { path = "monkey-ball-rs/crates/mb-assets" }
+# The same winit as the driver (`mb_driver::winit` names it too), with the backend your platform needs,
+# for example `android-native-activity`.
+winit = { version = "0.30", features = ["android-native-activity"] }
+```
+
+What to know:
+
+- **Nothing else to set:** no crate has default features, and `dev` (test support) stays off.
+- **A workspace around the submodule:** if your `Cargo.toml` is a workspace whose folder contains the
+  submodule, add it to `exclude = ["monkey-ball-rs"]`. Otherwise cargo takes these crates for members of
+  your workspace, and they find no `workspace.package` there for their version and edition.
+- **Your profiles apply, not this repository's:** build the game with `--release`, or give your `dev`
+  profile `opt-level = 1` and `[profile.dev.package."*"] opt-level = 3` as here; an unoptimised build is too
+  slow to play.
+- **Toolchain:** edition 2024; `rust-version` says 1.88, but only the current stable toolchain has built it.
+- **What to write, and where it is done already:** [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), "The six
+  things a platform supplies" and "Adding Android"; `crates/mb-desktop` is a complete example.
 
 ## What it is built on
 
