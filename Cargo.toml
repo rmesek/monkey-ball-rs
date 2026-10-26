@@ -17,7 +17,7 @@ members = [
 default-members = ["crates/mb-desktop"]
 
 [workspace.package]
-version = "0.3.0"
+version = "1.0.0"
 edition = "2024"
 # The lowest release clippy's MSRV lint accepts for the standard library calls in use. Only the stable
 # toolchain of rust-toolchain.toml has built the code.

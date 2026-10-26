@@ -1,5 +1,50 @@
 # Changelog
 
+## 1.0.0
+
+Release candidate of 2026-10-26, not yet released: it is tagged once the project owner has tried it by hand
+and confirmed it.
+
+The version the Android app (`monkey-ball-android`, a repository of its own) is built on. The game plays as
+in 0.3.0; what changed makes it a stable base for another platform and fit to publish.
+
+For a player:
+
+- **The desktop shows the import in its window**: the first start (or `--pick`) copies the game data with a
+  progress bar, says what went wrong with a way to choose another image, and then opens the title menu.
+  It used to happen before the window opened, with progress on the terminal only.
+- **The desktop pauses** the stage when the window is hidden or minimised, and lets go of held keys; a
+  still menu or the pause screen is no longer drawn again every frame; a lost graphics device ends the
+  program with a message instead of a frozen picture. (The browser did all of this already.)
+
+For an app built on the crates:
+
+- **One driver for every platform, `mb-driver`:** the winit event loop, the GPU surface, the frame, and
+  keys, mouse and touch. A platform implements `mb_driver::Platform` and calls `mb_driver::run` (or `spawn`
+  in the browser). The desktop and the browser are two such platforms; the browser's driver
+  (`mb-web/src/shell.rs`) and the desktop's own event loop are gone. The driver keeps the GPU device, the
+  renderer and the game when the platform takes the surface away (`suspended`, which Android sends
+  whenever the app leaves the screen) and makes a new surface at `resumed`.
+- **The platform's state travels with the frame:** capabilities, info lines, the fullscreen state and the
+  commands are one `mb_app::host::Host` in every `GameCtx` and in `Platform::poll_input`, no longer
+  thread-locals. Nothing in the game is global, so an event that arrives on another thread cannot go
+  astray.
+- **An import screen inside the game** (`mb_app::import_screen`), for any native platform: it asks the
+  platform for an image (`Command::PickImage`), copies it on a thread of its own and starts the game on the
+  finished pack. `import::write_pack_file` copies an image that is already open; `import_to_file` is gone.
+- **Using the crates from another repository** is described in the README and was checked from outside
+  the workspace.
+- `mb-app` needs `pollster` only for its test driver.
+
+For the repository:
+
+- **Licence files:** `LICENSE-MIT` and `LICENSE-APACHE`; the code is `MIT OR Apache-2.0`, as `Cargo.toml`
+  declared.
+- **README** says that the project is not affiliated with or endorsed by SEGA or Nintendo, and what it
+  offers the Android app.
+- The Android gate still compiles the game library only: building the driver and linking for Android needs
+  the NDK, which the development machine does not have (AGENTS.md).
+
 ## 0.3.0
 
 Released 2026-10-14, after the project owner tried the release candidate by hand and confirmed it.

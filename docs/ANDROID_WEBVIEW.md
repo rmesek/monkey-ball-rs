@@ -2,9 +2,9 @@
 
 The static site built into `target/site/` is the whole game for the browser. An Android app can show the same
 files in a `WebView`. This note is for whoever writes that app. Nothing in this repository builds an APK,
-and **nothing here was run on Android**: there is no Android SDK or device on the machine this was written
-on. (A native Android build of the Rust crates, without a web view, is a later target of the project and
-a different thing; `docs/ARCHITECTURE.md` says what it needs and compares the two.) Each statement below is marked
+and **nothing here was run on Android**: no device or emulator was used. (The native way, the Rust crates
+without a web view, is the other way the Android app can run the game; `docs/ARCHITECTURE.md`, "Adding
+Android", says what it needs and compares the two.) Each statement below is marked
 
 * **[checked]**: verified here, in desktop Chrome 154, by `scripts/web-e2e.ts` or by reading the code;
 * **[platform]**: from the Android and Chromium documentation as remembered, to be confirmed on a device.
@@ -178,7 +178,7 @@ stopping silently (**[checked]** by simulating engines that lack a feature). Wha
 The version numbers in this table are from the browsers' documentation, not from tests.
 **[platform]** WebView updates through the Play Store on Android 5 and later, but the last version for
 Android 5 is 95, so the practical floor is Android 6 (API 23), whose WebView stops at 106: enough to play
-and, with the awaited calls, to store. Only Chrome 154 was run here.
+and, with the awaited calls, to store. Only desktop Chrome (154 and 155) was run here.
 
 ## Memory, for small devices
 

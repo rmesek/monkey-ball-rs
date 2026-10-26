@@ -257,7 +257,7 @@ page (main.js + wasm)
 
 ## Browser requirements
 
-**Chrome or Android System WebView 97, Safari 16, Firefox 79, or newer.** Only Chrome 154 on Windows was
+**Chrome or Android System WebView 97, Safari 16, Firefox 79, or newer.** Only Chrome 154 and 155 on Windows were
 run; the other numbers are derived from what the build uses and the browsers' documentation.
 
 | Needed for | Feature | Chrome / WebView | Safari | Firefox |

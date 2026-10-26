@@ -6,9 +6,9 @@ The state of the project (what works, what is open) is in [PLAN.md](PLAN.md).
 ## The shape
 
 ```
- one crate per platform    mb-desktop                    mb-web + web/               (later) Android
+ one crate per platform    mb-desktop                    mb-web + web/               the Android app
                            window, gamepads,             canvas, import worker,
-                           file dialog, command line     page storage, Web Audio
+                           file dialog, command line     page storage, Web Audio     (own repository)
                                  │                              │                          │
                                  └────────── the six things a platform supplies ───────────┘
  one driver                mb-driver   winit event loop, GPU surface and its life cycle, frame, touch
@@ -32,7 +32,7 @@ browser API; nothing below `mb-driver` names a window or an event loop.
 | copy the 382 files the game uses into one pack, atomically | `mb-assets/src/gamepack.rs`, `mb-app/src/import.rs` | 700 | header written last; every file has a checksum |
 | show the import on a native platform, the copying on a thread of its own | `mb-app/src/import_screen.rs` | 370 | the image is the platform's to pick and open; its own fonts draw the screen |
 | know which files those are | `mb-app/src/content.rs` (the file lists) | 730 | the only place a disc path is spelled |
-| keep the pack: a file (desktop, later Android), the browser's private file system | `mb-desktop/src/lib.rs`, `mb-web/src/lib.rs`, `web/worker.js` | | the platform's part |
+| keep the pack: a file (desktop, Android), the browser's private file system | `mb-desktop/src/lib.rs`, `mb-web/src/lib.rs`, `web/worker.js` | | the platform's part |
 | **2. Play the game** | | | |
 | parse stages, textures, models, sound | `mb-stage`, `mb-tpl`, `mb-gma`, `mb-audio` | 6 500 | no dependencies; hostile input never panics |
 | simulate: physics, collision, stage objects, camera, particles | `mb-engine` | 8 000 | deterministic; held by recorded hashes |
@@ -42,6 +42,7 @@ browser API; nothing below `mb-driver` names a window or an event loop.
 | build a stage into a scene and animate it | `mb-app/src/{stage_scene,play_scene,particles,backdrop,mirror,anim,stage_info}.rs` | 4 400 | |
 | decide what plays when, mix it | `mb-app/src/audio.rs`, `audio_cpal.rs` (native output) | 2 000 | the browser mixes in Web Audio (`mb-web/src/audio.rs`) |
 | take input: keys, stick, pointer, touch, tilt | `mb-app/src/{input,ui,tilt}.rs` | 1 200 | states read actions and axes, never a device |
+| run it in a window: event loop, surface and its life cycle, frame pacing, window input | `mb-driver` | 890 | one driver for every platform; the platform's part is the `Platform` trait |
 | **3. Survive a sudden exit** | | | |
 | saves in two checksummed slots, written when they happen | `mb-game/src/{storage,progress}.rs` | 1 100 | a kill leaves the previous save or the new one |
 | an import that is all there or not there | `import::write_pack_file` (temp file, rename); a marker file in the browser | | |
@@ -55,7 +56,7 @@ browser API; nothing below `mb-driver` names a window or an event loop.
 | the built site in a real browser | `scripts/web-e2e.ts` | 910 | Deno and Chrome; the only test of the page |
 
 Third-party code: `wgpu`, `glam`, `bytemuck`, `web-time`, `ruzstd` in the shared crates; `cpal` and
-`pollster` on native targets; `winit` in the two platform crates; `rfd` and `gilrs` on the desktop;
+`pollster` on native targets; `winit` in the driver and the platform crates; `rfd` and `gilrs` on the desktop;
 `wasm-bindgen`, `web-sys`, `js-sys` in the browser. The build tool links `wasm-bindgen-cli-support`.
 
 ## The six things a platform supplies
@@ -71,7 +72,7 @@ the driver its event loop, its `Content` and the first state; both existing ones
 | 3 | a place for saves, a `Storage` | `mb_game::{SlotStorage, FileStorage}` | files in the data folder | private file system or `localStorage` |
 | 4 | sound output, an `AudioBackend` | `mb_app::audio` | `audio_cpal` (works on any native target) | Web Audio |
 | 5 | input | `mb_app::input::InputState`, `ui::TouchControls`, `tilt::TiltSteering` | keyboard, mouse, `gilrs` pads, touch | keyboard, mouse, Gamepad API, touch, device orientation, the back gesture |
-| 6 | what only the platform can do | `mb_app::host::Host`, in every `GameCtx` and in `Platform::poll_input`: capabilities and info in, commands out (`RemoveGameData`, `SetFullscreen`, `Tilt`, `CalibrateTilt`) | remove data | remove data, fullscreen, tilt |
+| 6 | what only the platform can do | `mb_app::host::Host`, in every `GameCtx` and in `Platform::poll_input`: capabilities and info in, commands out (`RemoveGameData`, `SetFullscreen`, `Tilt`, `CalibrateTilt`, `PickImage`, `GameDataReady`) | remove data, pick an image | remove data, fullscreen, tilt |
 
 The driver does the rest once per frame: build a `GameCtx`, call `GameStack::update` and
 `InputState::end_frame`, draw with the top state's camera, present. It keeps the device and the renderer
@@ -82,7 +83,8 @@ the last, and ends the run with a message when the device is lost.
 Rules that keep this true:
 
 * Code for one platform lives in that platform's crate. No `cfg(target_os)` in shared code; the
-  `cfg(target_arch = "wasm32")` there separates "may block" from "must await" and nothing else.
+  `cfg(target_arch = "wasm32")` there separates "may block" from "must await", and in `mb-driver` also
+  what the browser does differently (the surface it keeps, the animation frame that paces it).
 * What a platform cannot do is a `host::Caps` flag the menus read, never a `cfg` in a state.
 * `cargo xtask ci` compiles `mb-app` and everything under it for `aarch64-linux-android`, so shared code
   cannot quietly become desktop-only. It is a compile check; nothing has run on a phone.
@@ -146,16 +148,16 @@ the game's thread and hands it the `Host` there, so what a Java callback reports
 
 ## Review: where the code is harder to change than it should be
 
-Findings of a read-through, not yet acted on. None is a fault a player sees.
+Findings of a read-through that are not acted on yet (the two drivers, the global platform state and the import before the window were, for 1.0.0). None is a fault a player sees.
 
 | Finding | Where | What would fix it |
 |---|---|---|
 | One file holds uploads, mesh merging, objects, sorting, culling, mirror passes and the frame | `mb-render/src/renderer.rs` (2 950 lines) | split by concern; no behaviour change |
 | One state is the title, the course flow, stage select and the options screen | `mb-app/src/menu.rs` (1 400 lines) | options into a state of its own |
 | The options screen is addressed by row number | `mb-app/src/menu.rs` and its tests, `mb-app/tests/gameplay.rs`, tap positions in `scripts/web-e2e.ts` | rows found by name in tests; removing three options for 0.3.0 meant edits in all three |
-| The browser crate has no Rust tests (2 500 lines) | `mb-web` | only `scripts/web-e2e.ts` covers it, which needs the disc image and Chrome; unit tests for what does not touch the page |
+| The browser crate and the driver have no Rust tests of their own (1 900 and 890 lines) | `mb-web`, `mb-driver` | `scripts/web-e2e.ts` covers the browser and the driver there, the kill test and timed runs the driver on the desktop; the surface made again at `resumed` has not run anywhere |
 | The engine's trig tables are installed once per process | `mb-engine/src/tables.rs`, `Content::install_trig_tables` | fine for one game per run; a pack of another region imported without a restart keeps the first one's tables |
 | Frame statistics for the browser test ship in the product | `mb-app/src/perf.rs`, `mb-web` | kept so the test measures the real build |
 | Calls on the renderer that only tests use; a material flag no file on the disc sets | `set_mirror_capture_whole`, `set_mirror_scale`, `set_color_mul`, `set_tex_matrix`; `LayerInfo::uv_scroll` | remove with their tests |
 | Some budget constants are still named after version 0.1.0 | `mb-app/tests/memory.rs`, `scripts/web-e2e.ts` | rename; the numbers are the budgets |
-| The shared game library depends on `cpal` and `pollster` | `mb-app/Cargo.toml` | a small native-support crate; kept together because Android will want both |
+| The shared game library depends on `cpal` (native sound) | `mb-app/Cargo.toml` | a small native-support crate; kept together because Android wants it too (`pollster` is only for the windowless test driver now) |
