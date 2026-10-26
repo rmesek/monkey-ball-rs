@@ -11,6 +11,7 @@ The state of the project (what works, what is open) is in [PLAN.md](PLAN.md).
                            file dialog, command line     page storage, Web Audio
                                  │                              │                          │
                                  └────────── the six things a platform supplies ───────────┘
+ one driver                mb-driver   winit event loop, GPU surface and its life cycle, frame, touch
  the same on every         mb-app      the game: menu, loading, play, HUD, scenes, and the seams
  platform                  mb-render   drawing on wgpu; takes a device and a target, knows no window
                            mb-engine   the 60 Hz simulation          mb-game   courses, score, saves
@@ -19,8 +20,8 @@ The state of the project (what works, what is open) is in [PLAN.md](PLAN.md).
  tooling                   xtask (builds the site, runs the gates)   scripts/web-e2e.ts (browser test)
 ```
 
-Dependencies point downwards only. Nothing below the platform crates names a window, an event loop or an
-operating system.
+Dependencies point downwards only. Nothing below the platform crates names an operating system or a
+browser API; nothing below `mb-driver` names a window or an event loop.
 
 ## Which part is needed for what
 
@@ -58,20 +59,24 @@ Third-party code: `wgpu`, `glam`, `bytemuck`, `web-time`, `ruzstd` in the shared
 
 ## The six things a platform supplies
 
-A platform crate is the only code that knows its platform. Both existing ones do exactly this
-(`crates/mb-desktop/src/{lib,app}.rs`, `crates/mb-web/src/{lib,shell}.rs`).
+A platform crate is the only code that knows its platform. It implements `mb_driver::Platform` and hands
+the driver its event loop, its `Content` and the first state; both existing ones do exactly this
+(`crates/mb-desktop/src/{lib,app}.rs`, `crates/mb-web/src/lib.rs`).
 
 | # | Supplies | Through | Desktop | Browser |
 |---|---|---|---|---|
-| 1 | a surface and a GPU device | `mb_app::gpu`, `mb_render::Renderer::new` | winit window, blocking setup, vsync | winit canvas, awaited setup, WebGPU or WebGL2 |
+| 1 | a window | `Platform::window_attributes`; the driver makes surface, device and renderer | a sized window, fullscreen | the page's canvas, WebGPU or WebGL2 |
 | 2 | the game's files, as a `Content` | `import::import_to_file` + `content::open_pack_file`, or `Content::deferred` where storage is asynchronous | pack file in the data folder | pack in the private file system, prepared per state |
 | 3 | a place for saves, a `Storage` | `mb_game::{SlotStorage, FileStorage}` | files in the data folder | private file system or `localStorage` |
 | 4 | sound output, an `AudioBackend` | `mb_app::audio` | `audio_cpal` (works on any native target) | Web Audio |
 | 5 | input | `mb_app::input::InputState`, `ui::TouchControls`, `tilt::TiltSteering` | keyboard, mouse, `gilrs` pads, touch | keyboard, mouse, Gamepad API, touch, device orientation, the back gesture |
 | 6 | what only the platform can do | `mb_app::host`: capabilities in, commands out (`RemoveGameData`, `SetFullscreen`, `Tilt`, `CalibrateTilt`) | remove data | remove data, fullscreen, tilt |
 
-Then once per frame: build a `GameCtx`, call `GameStack::update` and `InputState::end_frame`, draw with the
-top state's camera.
+The driver does the rest once per frame: build a `GameCtx`, call `GameStack::update` and
+`InputState::end_frame`, draw with the top state's camera, present. It keeps the device and the renderer
+when the platform takes the surface away (`suspended`) and makes a new surface at `resumed`; it pauses the
+stage and lets go of held input when the window is hidden, draws nothing for a frame that would look like
+the last, and ends the run with a message when the device is lost.
 
 Rules that keep this true:
 
@@ -88,11 +93,11 @@ Nothing is started. What exists and what is missing:
 | | In a WebView | Native (Vulkan, GLES as fallback) |
 |---|---|---|
 | What it is | the built `target/site` shown by a small host app | a new crate `mb-android` beside `mb-desktop` |
-| Rust changes | none | the driver only |
+| Rust changes | none | a `Platform` of `mb-driver` and an entry point |
 | Game data | the page's import, as in a browser | `import_to_file` into the app's files directory, from a file descriptor the document picker hands over (`content::open_disc_stream` reads one) |
 | Saves | page storage | `FileStorage::new(<files directory>)` |
 | Sound | Web Audio | `audio_cpal` (compiles for Android; never heard) |
-| Touch, keys | as in the browser | the same winit code the desktop driver has |
+| Touch, keys | as in the browser | the driver's, as on the desktop and in the browser |
 | Tilt (gyro) | `deviceorientation`, already there | the sensor through the NDK into `TiltSteering::sample`; the seam is ready, the source is missing |
 | Gamepads | Gamepad API | missing: `gilrs` has no Android backend |
 | Guide | [ANDROID_WEBVIEW.md](ANDROID_WEBVIEW.md) | this table |
@@ -109,17 +114,12 @@ directory, and the code for it is the code the desktop already runs.
 
 What will cost the most in a native port, in order:
 
-1. **The surface life cycle.** Android destroys the surface whenever the app leaves the screen. Both
-   drivers create window, device and renderer together, once. The renderer already takes its target per
-   frame and survives a resize; what is missing is a driver that keeps device and renderer and makes the
-   surface again.
-2. **Two winit drivers, soon three.** `app.rs` and `shell.rs` share their structure and differ in pacing,
-   GPU setup and devices. An Android driver is closer to `shell.rs` (safe-area insets, back button,
-   pause when hidden, redraw only when something changed). Decide before writing the third whether all
-   three become one driver with a per-platform trait, as `shell.rs` already has.
-3. **The file picker** is Java; only a file descriptor crosses into Rust.
-4. **Phone GPUs** were never measured: the budgets come from desktop Chrome with a CPU throttle.
-5. **Determinism on ARM** is expected and unverified; `mb-engine/tests/golden.rs` is where a difference
+1. **The surface life cycle** is the driver's: it drops the surface at `suspended` and makes a new one at
+   `resumed`, keeping device, renderer and states. The desktop and the browser never take the surface
+   away, so this path has not run.
+2. **The file picker** is Java; only a file descriptor crosses into Rust.
+3. **Phone GPUs** were never measured: the budgets come from desktop Chrome with a CPU throttle.
+4. **Determinism on ARM** is expected and unverified; `mb-engine/tests/golden.rs` is where a difference
    would show.
 
 Nothing in the shared crates has to change for a native port; 42 500 of the 46 000 lines are shared. What a
@@ -128,7 +128,7 @@ port has to write, by size:
 | Size | What | Why it is that size |
 |---|---|---|
 | none | formats, simulation, rules, renderer, states, HUD, touch controls and layout, pack, saves, mixer, tilt maths | the renderer asks for no GPU feature and is written against the WebGL2 limits, so Vulkan and OpenGL ES 3 both fit; storage and content take a directory and a stream |
-| small | entry point and event loop; the data directory; capabilities (`host::Caps`); back button as `Cancel`; dropping the surface on suspend and making it again on resume | each is a few calls into what exists; device and renderer are kept across a new surface |
+| small | entry point and event loop; the data directory; capabilities (`host::Caps`); a `Platform` | each is a few calls into what exists; the back button already arrives as `Cancel` |
 | medium | the first-run screen (picker in Java, progress while `Importer::step` runs off the main thread); the tilt sensor; gamepads; packaging | there is no import screen inside the game (the desktop prints to the terminal, the browser uses its page); the sensor reports a vector, `TiltSteering::sample` takes the W3C angles; `gilrs` has no Android backend |
 | unknown until on a device | phone GPU speed, `cpal` output, ARM determinism | never run |
 
@@ -146,7 +146,6 @@ Findings of a read-through, not yet acted on. None is a fault a player sees.
 | One file holds uploads, mesh merging, objects, sorting, culling, mirror passes and the frame | `mb-render/src/renderer.rs` (2 950 lines) | split by concern; no behaviour change |
 | One state is the title, the course flow, stage select and the options screen | `mb-app/src/menu.rs` (1 400 lines) | options into a state of its own |
 | The platform seam is global state: capabilities, info lines and the command queue are thread-locals | `mb-app/src/host.rs` | carry them in `GameCtx`; tests then need no resetting |
-| Two drivers repeat touch routing, frame set-up and surface errors, and the general one (it uses no browser API and has the per-platform trait) lives in the browser crate. The desktop's lacks what that one has: a lost device, pausing when the player looks away, not redrawing a still picture | `mb-desktop/src/app.rs`, `mb-web/src/shell.rs` | move `shell.rs` where both can use it and make the desktop a `Platform`; the first step of a native Android port ("Adding Android", 2) |
 | The options screen is addressed by row number | `mb-app/src/menu.rs` and its tests, `mb-app/tests/gameplay.rs`, tap positions in `scripts/web-e2e.ts` | rows found by name in tests; removing three options for 0.3.0 meant edits in all three |
 | The browser crate has no Rust tests (2 500 lines) | `mb-web` | only `scripts/web-e2e.ts` covers it, which needs the disc image and Chrome; unit tests for what does not touch the page |
 | The engine's trig tables are installed once per process | `mb-engine/src/tables.rs`, `Content::install_trig_tables` | fine for one game per run; a pack of another region imported without a restart keeps the first one's tables |

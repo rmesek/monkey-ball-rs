@@ -1,6 +1,6 @@
-//! What every platform driver does the same way when it sets the GPU up: the instance, the limits to ask
-//! for, the surface format, and the blocking adapter / device request of the native drivers and of the
-//! windowless test driver (the browser driver awaits the same requests in `mb-web`'s `shell.rs`).
+//! What every driver does the same way when it sets the GPU up: the instance, the limits to ask for, the
+//! surface format; and the blocking adapter / device request of the windowless test driver (the window's
+//! driver, `mb-driver`, makes the same requests for a surface).
 
 pub struct Gpu {
     pub instance: wgpu::Instance,
@@ -17,7 +17,7 @@ impl Gpu {
     }
 }
 
-/// The instance both drivers and the windowless one create, on `backends` (`None`: all there are).
+/// The instance the driver and the windowless one create, on `backends` (`None`: all there are).
 ///
 /// On the OpenGL backend (WebGL2 in the browser) submitted work counts as done when it is submitted
 /// (`GlFenceBehavior::AutoFinish`). `wgpu` keeps what a submission used until its fence is signalled:
@@ -50,7 +50,7 @@ pub fn required_limits(adapter: &wgpu::Adapter) -> wgpu::Limits {
 
 /// Request an adapter and device. With `compatible_surface` the adapter can present to it; without one
 /// (headless) a software adapter is accepted as a fallback so screenshots work on machines without a GPU.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "dev", not(target_arch = "wasm32")))]
 pub fn request_gpu(
     instance: wgpu::Instance,
     compatible_surface: Option<&wgpu::Surface<'_>>,

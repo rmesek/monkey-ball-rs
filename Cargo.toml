@@ -7,6 +7,8 @@ members = [
     "crates/mb-engine", "crates/mb-game",
     # Drawing (wgpu) and the game itself: the same on every platform.
     "crates/mb-render", "crates/mb-app",
+    # The winit driver every platform runs on.
+    "crates/mb-driver",
     # One crate per platform.
     "crates/mb-desktop", "crates/mb-web",
     "xtask",
@@ -25,7 +27,7 @@ publish = false
 
 # Third-party dependencies are declared per crate, each with a one-line reason (AGENTS.md, hard rule 7).
 # The stack is recorded in docs/PLAN.md and docs/ARCHITECTURE.md: wgpu, glam, bytemuck, ruzstd, web-time
-# everywhere; winit in the platform crates; cpal and pollster on native targets; rfd and gilrs on the desktop;
+# everywhere; winit in the driver and the platform crates; cpal and pollster on native targets; rfd and gilrs on the desktop;
 # wasm-bindgen, web-sys and js-sys in the browser. Nothing that talks to a network.
 
 # Browser bundle (`cargo xtask build-web` builds mb-web with `--profile web`). Whole-program optimisation

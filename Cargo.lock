@@ -1064,9 +1064,21 @@ dependencies = [
  "mb-app",
  "mb-assets",
  "mb-desktop",
+ "mb-driver",
  "mb-game",
- "mb-render",
  "rfd",
+ "winit",
+]
+
+[[package]]
+name = "mb-driver"
+version = "0.3.0"
+dependencies = [
+ "mb-app",
+ "mb-render",
+ "pollster",
+ "wasm-bindgen-futures",
+ "web-time",
  "wgpu",
  "winit",
 ]
@@ -1125,11 +1137,10 @@ dependencies = [
  "js-sys",
  "mb-app",
  "mb-assets",
- "mb-render",
+ "mb-driver",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
- "web-time",
  "wgpu",
  "winit",
 ]

@@ -12,7 +12,7 @@ publish.workspace = true
 # integration tests run on, and test doubles (`DeferredPack`, `RecordingBackend`). Off in every product
 # build; on for this crate's own tests through the dev-dependency below, and for the desktop program's
 # developer options through `mb-desktop`'s `dev` feature.
-dev = []
+dev = ["dep:pollster"]
 # `input::action_for_key`: the keyboard bindings in terms of winit's key codes, for drivers built on winit.
 # Nothing else in this crate knows about a window.
 winit = ["dep:winit"]
@@ -33,13 +33,13 @@ wgpu = "30"
 # Camera/transform maths shared with mb-render's public API.
 glam = "0.30"
 # std::time::Instant panics on wasm32; web-time is a drop-in that re-exports std off the web (load and frame
-# timings, the browser driver's clock).
+# timings).
 web-time = "1"
 
 # Native targets (desktop now, a native Android or iOS app later); the browser has Web Audio and awaits.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-# Blocks on the async wgpu adapter/device requests (`gpu::request_gpu`; the browser driver awaits them).
-pollster = "0.4"
+# The windowless driver (`dev` only) blocks on the async wgpu adapter/device requests (`gpu::request_gpu`).
+pollster = { version = "0.4", optional = true }
 # Audio device output stream (WASAPI / CoreAudio / ALSA; AAudio on Android): pulls PCM from mb-audio's mixer.
 cpal = "0.16"
 

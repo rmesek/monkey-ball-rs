@@ -1,0 +1,28 @@
+[package]
+name = "mb-driver"
+description = "The driver every platform crate runs on: the winit event loop, the GPU surface and its life cycle, the frame, touch and pointer routing. A platform supplies what only it knows through the Platform trait"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+# The game; `winit` switches on its keyboard bindings for winit's key codes.
+mb-app = { path = "../mb-app", features = ["winit"] }
+mb-render = { path = "../mb-render" }
+# Window + input event loop on every platform (decision recorded in docs/PLAN.md). 0.30 is the latest stable
+# release (0.31 is still beta). An Android app adds one of its `android-*-activity` features itself.
+winit = "0.30"
+# Same wgpu version as mb-render so Device/Queue/Surface types are shared.
+wgpu = "30"
+# std::time::Instant panics on wasm32; web-time is a drop-in that re-exports std off the web (the frame clock).
+web-time = "1"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# Blocks on the async adapter / device requests where blocking is allowed (the browser awaits them).
+pollster = "0.4"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# Runs the awaited GPU setup on the page's event loop.
+wasm-bindgen-futures = "0.4"

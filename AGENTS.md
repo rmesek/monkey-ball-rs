@@ -46,8 +46,9 @@ or any other target, unless the owner asks.
   result, an option change), never at exit. A write cut short loses nothing older.
 - **The user can see and erase what is stored:** the options screen says what is kept and offers "Remove
   game data" and "Erase save data".
-- **Platform code lives in a platform crate** (`mb-desktop`, `mb-web`). `mb-app` and everything under it
-  know no window, event loop or operating system, and must keep compiling for Android.
+- **Platform code lives in a platform crate** (`mb-desktop`, `mb-web`), each a `Platform` of the one
+  driver, `mb-driver`, which knows winit and wgpu but no operating system or browser API. `mb-app` and
+  everything under it know no window, event loop or operating system, and must keep compiling for Android.
 - **States reach the platform only through the seams:** `mb_app::input` for input, `mb_app::host` for
   capabilities and commands, `mb_app::content` for files, `mb_game::Storage` for saves.
 - **Effects never write into the simulation.** Particles use their own random stream and are outside
@@ -93,12 +94,13 @@ What the tests hold, and how to change it:
 | courses, score, settings, saves | `mb-game` |
 | how something is drawn | `mb-render` (knows nothing of stages, rules or windows) |
 | what is on screen or heard, and when | `mb-app` (reads the simulation, never writes back) |
+| the event loop, the surface, frame pacing, window input events | `mb-driver`, for every platform at once |
 | a window, a device, a file dialog, page storage | `mb-desktop` or `mb-web`; what the game needs from it becomes a seam in `mb-app` |
 
 - A loader that reads a new file adds it to the file lists in `mb-app/src/content.rs` and raises
   `mb_assets::gamepack::VERSION`; `tests/pack.rs` fails otherwise.
-- A change to frame pacing, pausing, resizing or input events is made in both drivers
-  (`mb-desktop/src/app.rs`, `mb-web/src/shell.rs`).
+- Frame pacing, pausing, resizing, the surface's life cycle and window input events are the driver's
+  (`mb-driver`), once for every platform; what differs per platform is a `Platform` hook.
 - Developer and test support stays behind the `dev` feature and out of the product.
 
 ## Working

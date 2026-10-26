@@ -15,9 +15,6 @@
 /// Web Audio backend of the game's audio system (`mb_app::audio`).
 #[cfg(target_arch = "wasm32")]
 mod audio;
-/// The browser driver: the canvas, its event loop and the frame.
-#[cfg(target_arch = "wasm32")]
-mod shell;
 
 #[cfg(target_arch = "wasm32")]
 mod web {
@@ -26,7 +23,6 @@ mod web {
     use std::io;
     use std::rc::Rc;
 
-    use crate::shell::{self, Platform};
     use js_sys::{Array, Function, Uint8Array};
     use mb_app::content::{Content, DeferredSource, Fetch, boot_files};
     use mb_app::host;
@@ -36,6 +32,7 @@ mod web {
     use mb_app::ui::Insets;
     use mb_assets::disc::{DiscStream, ImageKind, SNIFF_LEN};
     use mb_assets::gamepack::{Crc32, HEADER_LEN, Header, PackIndex};
+    use mb_driver::Platform;
     use wasm_bindgen::JsCast;
     use wasm_bindgen::prelude::*;
     use wasm_bindgen_futures::JsFuture;
@@ -771,7 +768,7 @@ mod web {
         PREPARED.with(|c| *c.borrow_mut() = Some(content.clone()));
         let event_loop = winit::event_loop::EventLoop::new()
             .map_err(|e| JsValue::from_str(&format!("event loop: {e}")))?;
-        shell::run(
+        mb_driver::spawn(
             event_loop,
             WebPlatform::new(force_webgl),
             content,
@@ -779,8 +776,8 @@ mod web {
                 Box::new(mb_app::mb_game::SlotStorage::new(WebStorage::new())),
                 crate::audio::create(),
             ),
-        )
-        .map_err(|e| JsValue::from_str(&e))
+        );
+        Ok(())
     }
 
     // -----------------------------------------------------------------------------------------------------
@@ -939,7 +936,7 @@ mod web {
     }
 
     // -----------------------------------------------------------------------------------------------------
-    // The platform the shared shell runs on.
+    // The platform the shared driver runs on.
 
     /// The left stick.
     const PAD_AXES: [Axis; 2] = [Axis::MoveX, Axis::MoveY];
@@ -1159,7 +1156,7 @@ mod web {
             wgpu::PowerPreference::LowPower
         }
 
-        fn web_backends(&mut self) -> wgpu::Backends {
+        fn backends(&mut self) -> wgpu::Backends {
             if self.force_webgl {
                 wgpu::Backends::GL
             } else {
@@ -1172,24 +1169,28 @@ mod web {
             web_sys::console::log_1(&JsValue::from_str(&format!("graphics: {gpu}")));
         }
 
-        fn on_nav_depth(&mut self, depth: u32) {
+        fn after_update(&mut self, _window: &Window, top: &dyn mb_app::game::Game) {
             // The page keeps its history entry in step; it is told when "somewhere to go back to" starts
             // or ends, so nothing has to poll.
+            let depth = top.nav_depth();
             let before = NAV_DEPTH.with(|d| d.replace(depth));
             if (before > 0) != (depth > 0) {
                 call_page("mbNav", &[JsValue::from_bool(depth > 0)]);
             }
+            // The status line is built only while an automated check asks for it.
+            STATUS.with(|s| {
+                let mut s = s.borrow_mut();
+                if s.0 {
+                    *s = (false, top.status());
+                }
+            });
         }
 
-        fn wants_status(&mut self) -> bool {
-            STATUS.with(|s| s.borrow().0)
+        fn restart_hint(&self) -> &'static str {
+            "Reload the page to continue"
         }
 
-        fn on_status(&mut self, status: String) {
-            STATUS.with(|s| *s.borrow_mut() = (false, status));
-        }
-
-        /// Called once per presented frame, which also makes it the frame counter.
+        /// Called once per frame, which also makes it the frame counter.
         fn poll_input(&mut self, input: &mut InputState) {
             self.frames = self.frames.wrapping_add(1);
             FRAMES.with(|f| f.set(self.frames));
@@ -1225,10 +1226,6 @@ mod web {
                     input.set_action(action, buttons[i]);
                 }
             }
-        }
-
-        fn run_local(&mut self, fut: std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>) {
-            wasm_bindgen_futures::spawn_local(fut);
         }
 
         fn on_frame(&mut self, sample: &mb_app::perf::FrameSample) {

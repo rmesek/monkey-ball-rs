@@ -1,6 +1,6 @@
 [package]
 name = "mb-web"
-description = "The browser target (wasm32): disc import, on-device game data and saves, Web Audio, the page's hooks for the browser driver"
+description = "The browser target (wasm32): disc import, on-device game data and saves, Web Audio, the page's side of the shared driver"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,11 +11,11 @@ publish.workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-# The game; `winit` switches on its keyboard bindings for winit's key codes.
-mb-app = { path = "../mb-app", features = ["winit"] }
+mb-app = { path = "../mb-app" }
 mb-assets = { path = "../mb-assets" }
-mb-render = { path = "../mb-render" }
-# The canvas as a window and its event loop (`src/shell.rs`); the same version as the desktop driver.
+# The event loop, the surface and the frame; this crate is its `Platform`.
+mb-driver = { path = "../mb-driver" }
+# The canvas as the driver's window (`WindowAttributesExtWebSys`); the driver's version.
 winit = "0.30"
 # Same wgpu version as mb-render so the types are shared; `webgl` adds the WebGL2 backend.
 wgpu = { version = "30", features = ["webgl"] }
@@ -37,7 +37,5 @@ web-sys = { version = "0.3", features = [
     "AudioScheduledSourceNode", "AudioNode", "AudioParam", "AudioDestinationNode", "GainNode",
     "StereoPannerNode", "AnalyserNode", "EventTarget",
 ] }
-# The driver's clock: std::time::Instant panics on wasm32.
-web-time = "1"
 # Panics become console.error messages instead of "unreachable executed".
 console_error_panic_hook = "0.1"

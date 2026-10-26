@@ -404,9 +404,9 @@ Gameplay reads exactly one thing: `InputState::tilt() -> (x right, y forward)`, 
 Its sources, in priority order like the reference's `getStick`: the `TiltX`/`TiltY` axes (device tilt, fed by
 the browser target through `tilt::TiltSteering`), the `MoveX`/`MoveY` axes (gamepad or touch stick), then
 keys (unramped, as in the reference; the world tilt itself eases). `PlayState` applies the stick curve and
-`quantize_input`. A new input device only has to write actions and axes into `InputState` from its driver
-(`mb-desktop`'s `app.rs`, the `Platform` hooks of `mb-web`'s `shell.rs`); nothing in the game states
-changes. The pointer API (`set_pointer`, `set_pointer_down`, `add_scroll`) is documented at the top of
+`quantize_input`. A new input device only has to write actions and axes into `InputState` from its
+platform (`Platform::poll_input` of `mb-driver`, which `mb-desktop` and `mb-web` implement); nothing in the
+game states changes. The pointer API (`set_pointer`, `set_pointer_down`, `add_scroll`) is documented at the top of
 `input.rs`; `ui::TouchControls` feeds it for touches.
 
 ## HUD (`hud.rs`, `text.rs`)
