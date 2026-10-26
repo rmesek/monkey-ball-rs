@@ -28,7 +28,7 @@ use mb_render::Camera;
 
 use crate::audio::{Audio, Sfx};
 use crate::game::{Game, GameCtx, Transition};
-use crate::host;
+use crate::host::{Command, Host};
 use crate::input::Action;
 use crate::loading::{LoadOutcome, StageLoad, StageShared};
 use crate::play::PlayState;
@@ -139,7 +139,7 @@ fn next_volume(percent: u8) -> u8 {
 
 const MAIN_COURSES: [Difficulty; 7] = Difficulty::ALL;
 
-/// The rows of the options screen. Which ones exist depends on the platform ([`host::caps`]).
+/// The rows of the options screen. Which ones exist depends on the platform (`Host::caps`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum OptionRow {
     UnlockAll,
@@ -215,6 +215,9 @@ pub struct Menu {
     reveal: bool,
     /// A destructive options row was chosen once; choosing the same row again does it.
     confirm: Option<OptionRow>,
+    /// The menu's copy of the platform's `Host`, brought up to date at the start of each frame and handed
+    /// back at its end, so rows and actions are worked out (and tested) without a frame.
+    host: Host,
 }
 
 impl Menu {
@@ -236,6 +239,7 @@ impl Menu {
             back_tap: Tap::default(),
             reveal: true,
             confirm: None,
+            host: Host::default(),
         }
     }
 
@@ -245,16 +249,15 @@ impl Menu {
     }
 
     /// Tell the platform how the player wants to steer.
-    fn apply_controls(&self) {
+    fn apply_controls(&mut self) {
         let s = &self.profile.settings;
-        host::post(host::Command::Tilt {
-            enabled: host::caps().tilt && s.control_mode == ControlMode::Tilt,
-            range_deg: f32::from(s.tilt_range_deg),
-        });
+        let enabled = self.host.caps.tilt && s.control_mode == ControlMode::Tilt;
+        let range_deg = f32::from(s.tilt_range_deg);
+        self.host.post(Command::Tilt { enabled, range_deg });
     }
 
     fn option_rows(&self) -> Vec<OptionRow> {
-        let caps = host::caps();
+        let caps = self.host.caps;
         let mut rows = vec![
             OptionRow::UnlockAll,
             OptionRow::StickCurve,
@@ -419,7 +422,7 @@ impl Menu {
             }
             Screen::StageSelect(_) => vec![("PICK A STAGE".into(), INFO_COLOR)],
             // What is kept on this device and where, so it can be found and removed.
-            Screen::Options => host::info()
+            Screen::Options => (self.host.info)
                 .iter()
                 .flat_map(|line| wrap(&line.to_uppercase(), INFO_WIDTH, 2))
                 .map(|line| (line, INFO_COLOR))
@@ -454,7 +457,7 @@ impl Menu {
         match &self.screen {
             Screen::Title => {
                 let mut rows = vec![row("COURSE PLAY"), row("PRACTICE"), row("OPTIONS")];
-                if host::caps().quit {
+                if self.host.caps.quit {
                     rows.push(row("QUIT"));
                 }
                 rows
@@ -516,7 +519,7 @@ impl Menu {
                             row_with("TILT RANGE", format!("{} DEG", s.tilt_range_deg), true)
                         }
                         OptionRow::Fullscreen => {
-                            row_with("FULLSCREEN", on_off(host::is_fullscreen()), true)
+                            row_with("FULLSCREEN", on_off(self.host.fullscreen), true)
                         }
                         OptionRow::Reflections => {
                             row_with("REFLECTIONS", on_off(s.reflections), true)
@@ -780,7 +783,7 @@ impl Menu {
                         return Transition::None;
                     }
                     match r {
-                        OptionRow::RemoveData => host::post(host::Command::RemoveGameData),
+                        OptionRow::RemoveData => self.host.post(Command::RemoveGameData),
                         _ => {
                             let erased = (self.storage.remove(mb_game::progress::PROFILE_KEY))
                                 .and(self.storage.remove(mb_game::progress::BACKUP_KEY));
@@ -821,7 +824,8 @@ impl Menu {
                         }
                     }
                     Some(OptionRow::Fullscreen) => {
-                        host::post(host::Command::SetFullscreen(!host::is_fullscreen()));
+                        let on = !self.host.fullscreen;
+                        self.host.post(Command::SetFullscreen(on));
                         return Transition::None;
                     }
                     // Read when a stage is built (`loading.rs`); no stage is loaded while the options
@@ -878,7 +882,7 @@ impl Menu {
     fn back(&mut self) -> Transition {
         match self.screen.clone() {
             Screen::Title => {
-                if host::caps().quit {
+                if self.host.caps.quit {
                     return Transition::Quit;
                 }
             }
@@ -1024,6 +1028,7 @@ impl Game for Menu {
     }
 
     fn on_enter(&mut self, ctx: &mut GameCtx) -> Result<(), String> {
+        self.host.mirror(ctx.host);
         if self.ui.is_none() {
             // Before any stage, so stage teardown never touches the UI textures.
             self.texture_base = ctx.renderer.texture_count();
@@ -1040,6 +1045,7 @@ impl Game for Menu {
             .ensure_sfx(&mut |path| ctx.content.read(path), dol.as_deref());
         self.apply_volumes();
         self.apply_controls();
+        self.host.hand_over(ctx.host);
         // The start-up files are parsed and decoded now; where they were fetched into memory, free it.
         ctx.content.release(&crate::content::boot_files());
         Ok(())
@@ -1058,6 +1064,32 @@ impl Game for Menu {
     }
 
     fn update(&mut self, ctx: &mut GameCtx) -> Transition {
+        self.host.mirror(ctx.host);
+        let transition = self.frame(ctx);
+        self.host.hand_over(ctx.host);
+        transition
+    }
+
+    fn camera(&self) -> Camera {
+        Camera::look_at(Vec3::new(0.0, 0.0, 10.0), Vec3::ZERO, Vec3::Y)
+    }
+
+    fn status(&self) -> String {
+        format!("menu: {}", self.screen_name())
+    }
+
+    fn nav_depth(&self) -> u32 {
+        self.has_back() as u32
+    }
+
+    fn notice(&self) -> Option<String> {
+        self.notice.clone()
+    }
+}
+
+impl Menu {
+    /// One frame of [`Game::update`], on the menu's copy of the host.
+    fn frame(&mut self, ctx: &mut GameCtx) -> Transition {
         ctx.input.request_virtual_controls(false);
         ctx.renderer.clear_color = BACKGROUND;
 
@@ -1121,27 +1153,12 @@ impl Game for Menu {
         self.audio.flush();
         Transition::None
     }
-
-    fn camera(&self) -> Camera {
-        Camera::look_at(Vec3::new(0.0, 0.0, 10.0), Vec3::ZERO, Vec3::Y)
-    }
-
-    fn status(&self) -> String {
-        format!("menu: {}", self.screen_name())
-    }
-
-    fn nav_depth(&self) -> u32 {
-        self.has_back() as u32
-    }
-
-    fn notice(&self) -> Option<String> {
-        self.notice.clone()
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::host::Caps;
     use mb_game::{GoalType, MemoryStorage, StageOutcome};
 
     fn menu() -> Menu {
@@ -1231,13 +1248,13 @@ mod tests {
     fn platform_rows_and_storage_info_follow_the_host() {
         let mut m = menu();
         m.go(Screen::Options, 0);
-        host::set_caps(host::Caps {
+        m.host.caps = Caps {
             remove_data: true,
             fullscreen: true,
             tilt: true,
             quit: false,
-        });
-        host::set_info(vec!["Game data: 137 MB in this browser".into()]);
+        };
+        m.host.info = vec!["Game data: 137 MB in this browser".into()];
         let labels: Vec<String> = m.rows().into_iter().map(|r| r.label).collect();
         assert_eq!(
             labels[4..],
@@ -1256,23 +1273,21 @@ mod tests {
         assert_eq!(m.rows()[5].label, "TILT RANGE");
         m.activate(8);
         assert!(
-            host::drain()
+            (m.host.drain())
                 .iter()
-                .all(|c| !matches!(c, host::Command::RemoveGameData))
+                .all(|c| !matches!(c, Command::RemoveGameData))
         );
         m.activate(8);
-        assert!(host::drain().contains(&host::Command::RemoveGameData));
+        assert!(m.host.drain().contains(&Command::RemoveGameData));
         // The title offers "Quit" only where the platform lets the game end itself.
         m.go(Screen::Title, 0);
         let quit = |m: &Menu| m.rows().iter().any(|r| r.label == "QUIT");
         assert!(!quit(&m));
-        host::set_caps(host::Caps {
+        m.host.caps = Caps {
             quit: true,
-            ..host::Caps::default()
-        });
+            ..Caps::default()
+        };
         assert!(quit(&m));
-        host::set_caps(host::Caps::default());
-        host::set_info(Vec::new());
     }
 
     /// Reflections are on until the row is chosen, and the choice is saved with the profile, reaches
@@ -1314,15 +1329,14 @@ mod tests {
         assert_eq!(detail(&again).as_deref(), Some("ON"));
         assert!(Profile::load(again.storage.as_mut()).0.settings.reflections);
         // The platform rows come before it, so the row a browser test counts down to stays where it is.
-        host::set_caps(host::Caps {
+        again.host.caps = Caps {
             tilt: true,
             fullscreen: true,
-            ..host::Caps::default()
-        });
+            ..Caps::default()
+        };
         let rows = again.option_rows();
         assert_eq!(rows[4], OptionRow::Controls);
         assert_eq!(index(&again), Some(6));
-        host::set_caps(host::Caps::default());
     }
 
     /// The flow without a renderer: results are applied to the run exactly as when a stage pops.

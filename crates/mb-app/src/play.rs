@@ -22,6 +22,7 @@ use mb_render::Camera;
 
 use crate::audio::{Audio, Sfx, StageSounds};
 use crate::game::{Game, GameCtx, PlayView, Transition};
+use crate::host::{Caps, Command, Host};
 use crate::hud::{Hud, HudFrame};
 use crate::input::{Action, InputState};
 use crate::play_scene::{PlayScene, lerp_s16};
@@ -309,7 +310,7 @@ impl PlayState {
     }
 
     /// Start the stage again in place (practice retry): same scene, fresh simulation, short intro.
-    fn restart(&mut self) {
+    fn restart(&mut self, host: &mut Host) {
         let cfg = self.sim_config(true);
         let Some(scene) = &mut self.scene else {
             return;
@@ -319,7 +320,7 @@ impl PlayState {
         scene.reset_pose();
         scene.sync(&sim);
         self.cameras = [CameraPose::of(&sim.camera); 2];
-        crate::host::post(crate::host::Command::CalibrateTilt);
+        host.post(Command::CalibrateTilt);
         // Nothing of the old attempt keeps sounding; the music plays on.
         self.audio.stop_sounds();
         self.sounds = Some(StageSounds::new(&sim, true, &self.audio));
@@ -395,8 +396,8 @@ impl PlayState {
     }
 
     /// Steering is by the device's tilt: the player chose it and the device reports its orientation.
-    fn tilt_steering(&self) -> bool {
-        self.request.settings.control_mode == ControlMode::Tilt && crate::host::caps().tilt
+    fn tilt_steering(&self, caps: Caps) -> bool {
+        self.request.settings.control_mode == ControlMode::Tilt && caps.tilt
     }
 
     fn draw_touch_controls(p: &mut Painter, layout: &Layout, input: &InputState) {
@@ -476,7 +477,7 @@ impl Game for PlayState {
         self.audio
             .stage_music(self.request.bg, &mut |path| ctx.content.read(path));
         // The pose the device is held in now is "level" for tilt steering.
-        crate::host::post(crate::host::Command::CalibrateTilt);
+        ctx.host.post(Command::CalibrateTilt);
         self.sounds = Some(StageSounds::new(&sim, self.request.retry, &self.audio));
         self.sim = Some(sim);
         Ok(())
@@ -520,10 +521,10 @@ impl Game for PlayState {
             }
         }
         ctx.input.request_virtual_controls(self.pause.is_none());
-        let tilt = self.tilt_steering();
+        let tilt = self.tilt_steering(ctx.host.caps);
         ctx.input.request_tilt_steering(tilt);
         if tilt && self.pause.is_none() && ctx.input.pressed(Action::Recenter) {
-            crate::host::post(crate::host::Command::CalibrateTilt);
+            ctx.host.post(Command::CalibrateTilt);
         }
         let retry_available = self.retry_available();
         // `getButtonsBitmask`: the action button, once it is really the player's (see `primary_armed`).
@@ -576,7 +577,7 @@ impl Game for PlayState {
                 // The list never returns a disabled row; the guard keeps the rule in one visible place.
                 Some(PAUSE_RETRY) if !retry_available => {}
                 Some(PAUSE_RETRY) => match self.request.mode {
-                    PlayMode::Practice => self.restart(),
+                    PlayMode::Practice => self.restart(ctx.host),
                     // In course play giving the stage up costs a life, like falling out.
                     PlayMode::Course => {
                         let bananas = self
@@ -611,7 +612,7 @@ impl Game for PlayState {
                 sim.step_with_buttons(stick, buttons);
                 if was_intro && sim.phase != Phase::Intro {
                     // GO: control starts now, so the pose held at this moment is level.
-                    crate::host::post(crate::host::Command::CalibrateTilt);
+                    ctx.host.post(Command::CalibrateTilt);
                 }
                 self.ticks += 1;
                 if let Some(sounds) = self.sounds.as_mut() {

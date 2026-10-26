@@ -5,6 +5,7 @@
 use mb_render::{Camera, Renderer};
 
 use crate::content::Content;
+use crate::host::Host;
 use crate::input::InputState;
 use crate::ui::Layout;
 
@@ -16,6 +17,8 @@ pub struct GameCtx<'a> {
     pub input: &'a InputState,
     pub renderer: &'a mut Renderer,
     pub content: &'a Content,
+    /// What the platform offers and knows, and the commands for it.
+    pub host: &'a mut Host,
     /// Render target size in pixels.
     pub size: (u32, u32),
     /// Safe area and scale of the target (`Layout::new(size, insets, window scale factor)`).
@@ -166,6 +169,7 @@ impl GameStack {
             input: &muted,
             renderer: &mut *ctx.renderer,
             content: ctx.content,
+            host: &mut *ctx.host,
             size: ctx.size,
             layout: ctx.layout,
         };

@@ -8,6 +8,7 @@ use crate::autopilot::Autopilot;
 use crate::content::Content;
 use crate::game::{Game, GameCtx, GameStack};
 use crate::gpu::request_gpu;
+use crate::host::Host;
 use crate::input::{Action, Axis, InputState};
 use crate::ui::{Insets, Layout};
 
@@ -20,6 +21,8 @@ pub struct Headless {
     renderer: Renderer,
     target: OffscreenTarget,
     pub input: InputState,
+    /// What the platform offers and knows; tests set it and read the commands posted on it.
+    pub host: Host,
     stack: GameStack,
     size: (u32, u32),
     time: f64,
@@ -51,6 +54,7 @@ impl Headless {
             renderer,
             target,
             input: InputState::new(),
+            host: Host::default(),
             stack: GameStack::new(),
             size,
             time: 0.0,
@@ -74,6 +78,7 @@ impl Headless {
             input: &self.input,
             renderer: &mut self.renderer,
             content: &self.content,
+            host: &mut self.host,
             size: self.size,
             layout: Layout::new(self.size, Insets::default(), 1.0),
         };
@@ -104,6 +109,7 @@ impl Headless {
             input: &self.input,
             renderer: &mut self.renderer,
             content: &self.content,
+            host: &mut self.host,
             size: self.size,
             layout: Layout::new(self.size, Insets::default(), 1.0),
         };
@@ -193,6 +199,7 @@ impl Headless {
             input: &self.input,
             renderer: &mut self.renderer,
             content: &self.content,
+            host: &mut self.host,
             size: self.size,
             layout: Layout::new(self.size, Insets::default(), 1.0),
         };

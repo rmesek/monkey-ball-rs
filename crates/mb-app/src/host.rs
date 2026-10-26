@@ -1,15 +1,15 @@
-//! The seam between game states and the platform shell for the few things only the platform can do:
-//! leaving or entering fullscreen, deleting the imported game data, switching device tilt on; and for what
-//! only the platform knows: where the game's data and saves are kept ([`info`]).
+//! The seam between game states and the platform for the few things only the platform can do: leaving or
+//! entering fullscreen, deleting the imported game data, switching device tilt on; and for what only the
+//! platform knows: what it offers ([`Caps`]) and where the game's data and saves are kept ([`Host::info`]).
 //!
-//! States never see the platform. They read what it offers ([`caps`], set once by the shell before the game
-//! starts) and post [`Command`]s; the shell drains them once per frame ([`drain`]) and reports back the
-//! little state the menus show ([`set_fullscreen`]). Everything is per thread, like the game itself.
+//! The driver owns one [`Host`] and hands it to the states in every `GameCtx` and to the platform once per
+//! frame, on the game's thread. States read what the platform offers and [`Host::post`] commands; the
+//! platform carries them out ([`Host::drain`]) and reports back the little state the menus show
+//! ([`Host::fullscreen`]). Nothing is global: what arrives on another thread (a callback of the operating
+//! system) reaches the platform first and the `Host` at the next frame.
 
-use std::cell::{Cell, RefCell};
-
-/// What the platform offers. Each driver says so before the game starts; all false until then (and in
-/// tests that do not set them).
+/// What the platform offers. Each says so before the game starts; all false by default (and in tests that
+/// do not set them).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Caps {
     /// The game data was imported into on-device storage and can be removed again.
@@ -37,56 +37,54 @@ pub enum Command {
     CalibrateTilt,
 }
 
-thread_local! {
-    static CAPS: Cell<Caps> = const {
-        Cell::new(Caps { remove_data: false, fullscreen: false, tilt: false, quit: false })
-    };
-    static INFO: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
-    static FULLSCREEN: Cell<bool> = const { Cell::new(false) };
-    static QUEUE: RefCell<Vec<Command>> = const { RefCell::new(Vec::new()) };
+/// What the platform offers and knows, and what the states asked of it since the last frame.
+#[derive(Clone, Debug, Default)]
+pub struct Host {
+    /// Set by the platform before the game starts.
+    pub caps: Caps,
+    /// What is kept on this device and where (game data, saves), one short line each. The options screen
+    /// shows it, so the player knows what takes up space and can remove it.
+    pub info: Vec<String>,
+    /// The platform is in fullscreen now.
+    pub fullscreen: bool,
+    queue: Vec<Command>,
 }
 
-/// Shell: say what this platform can do (before the first frame).
-pub fn set_caps(caps: Caps) {
-    CAPS.with(|c| c.set(caps));
-}
+impl Host {
+    pub fn new(caps: Caps, info: Vec<String>) -> Self {
+        Self {
+            caps,
+            info,
+            ..Self::default()
+        }
+    }
 
-pub fn caps() -> Caps {
-    CAPS.with(Cell::get)
-}
+    /// State: ask the platform to do something. A command replaces an older one of the same kind, so the
+    /// queue stays small where nothing drains it.
+    pub fn post(&mut self, command: Command) {
+        let kind = std::mem::discriminant(&command);
+        self.queue.retain(|c| std::mem::discriminant(c) != kind);
+        self.queue.push(command);
+    }
 
-/// Shell: what is kept on this device and where (game data, saves), one short line each. The options
-/// screen shows it, so the player knows what takes up space and can remove it.
-pub fn set_info(lines: Vec<String>) {
-    INFO.with(|i| *i.borrow_mut() = lines);
-}
+    /// Platform: take what was posted since the last call.
+    pub fn drain(&mut self) -> Vec<Command> {
+        std::mem::take(&mut self.queue)
+    }
 
-pub fn info() -> Vec<String> {
-    INFO.with(|i| i.borrow().clone())
-}
+    /// A state's own copy: take what the platform offers and knows from `from` (at the start of a frame).
+    pub fn mirror(&mut self, from: &Host) {
+        self.caps = from.caps;
+        self.info.clone_from(&from.info);
+        self.fullscreen = from.fullscreen;
+    }
 
-/// Shell: the page is (not) fullscreen now.
-pub fn set_fullscreen(on: bool) {
-    FULLSCREEN.with(|f| f.set(on));
-}
-
-pub fn is_fullscreen() -> bool {
-    FULLSCREEN.with(Cell::get)
-}
-
-/// State: ask the platform to do something. Without a shell that drains the queue nothing happens (and
-/// the queue stays small: commands replace an older one of the same kind).
-pub fn post(command: Command) {
-    QUEUE.with(|q| {
-        let mut q = q.borrow_mut();
-        q.retain(|c| std::mem::discriminant(c) != std::mem::discriminant(&command));
-        q.push(command);
-    });
-}
-
-/// Shell: take what was posted since the last call.
-pub fn drain() -> Vec<Command> {
-    QUEUE.with(|q| std::mem::take(&mut *q.borrow_mut()))
+    /// A state's own copy: hand what was posted on it to the real one (at the end of a frame).
+    pub fn hand_over(&mut self, to: &mut Host) {
+        for command in self.queue.drain(..) {
+            to.post(command);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -95,23 +93,15 @@ mod tests {
 
     #[test]
     fn commands_queue_once_per_kind_and_drain() {
-        assert_eq!(caps(), Caps::default());
-        post(Command::SetFullscreen(true));
-        post(Command::CalibrateTilt);
-        post(Command::SetFullscreen(false));
+        let mut host = Host::default();
+        assert_eq!(host.caps, Caps::default());
+        host.post(Command::SetFullscreen(true));
+        host.post(Command::CalibrateTilt);
+        host.post(Command::SetFullscreen(false));
         assert_eq!(
-            drain(),
+            host.drain(),
             [Command::CalibrateTilt, Command::SetFullscreen(false)]
         );
-        assert!(drain().is_empty());
-        set_caps(Caps {
-            fullscreen: true,
-            ..Caps::default()
-        });
-        assert!(caps().fullscreen && !caps().tilt);
-        set_caps(Caps::default());
-        set_fullscreen(true);
-        assert!(is_fullscreen());
-        set_fullscreen(false);
+        assert!(host.drain().is_empty());
     }
 }

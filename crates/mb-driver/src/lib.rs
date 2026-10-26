@@ -35,6 +35,7 @@ use winit::window::{Window, WindowAttributes, WindowId};
 use mb_app::content::Content;
 use mb_app::game::{Game, GameCtx, GameStack};
 use mb_app::gpu::{Gpu, pick_surface_format, required_limits};
+use mb_app::host::Host;
 use mb_app::input::{Action, InputState, action_for_key};
 use mb_app::perf::FrameSample;
 use mb_app::ui::{Insets, Layout, TouchControls, TouchPhase};
@@ -59,9 +60,9 @@ pub trait Platform: 'static {
         Insets::default()
     }
     /// Once per frame before the game is updated: input that does not come as a window event (gamepads,
-    /// device tilt, a system "back" gesture), and what game states asked of the platform
-    /// (`mb_app::host::drain`).
-    fn poll_input(&mut self, _input: &mut InputState) {}
+    /// device tilt, a system "back" gesture); what game states asked of the platform ([`Host::drain`]) and
+    /// what changed on the platform's side (`host.fullscreen`, `host.info`).
+    fn poll_input(&mut self, _input: &mut InputState, _host: &mut Host) {}
     /// Once per frame after the game was updated, with the state now on top (its `nav_depth` for a system
     /// back gesture, its `status` for a title or an automated check, its `name`).
     fn after_update(&mut self, _window: &Window, _top: &dyn Game) {}
@@ -151,6 +152,7 @@ const HIDDEN_POLL: Duration = Duration::from_millis(100);
 struct Shell<P: Platform> {
     platform: P,
     content: Content,
+    host: Host,
     initial: Option<Box<dyn Game>>,
     stack: GameStack,
     input: InputState,
@@ -256,11 +258,12 @@ async fn init_gpu(
 }
 
 impl<P: Platform> Shell<P> {
-    fn new(platform: P, content: Content, initial: Box<dyn Game>) -> Self {
+    fn new(platform: P, host: Host, content: Content, initial: Box<dyn Game>) -> Self {
         let now = Instant::now();
         Self {
             platform,
             content,
+            host,
             initial: Some(initial),
             stack: GameStack::new(),
             input: InputState::new(),
@@ -495,6 +498,7 @@ impl<P: Platform> Shell<P> {
                 input: &self.input,
                 renderer: &mut live.renderer,
                 content: &self.content,
+                host: &mut self.host,
                 size,
                 layout,
             };
@@ -537,7 +541,7 @@ impl<P: Platform> Shell<P> {
         if self.platform.render_scale_changed() {
             self.resize_surface();
         }
-        self.platform.poll_input(&mut self.input);
+        self.platform.poll_input(&mut self.input, &mut self.host);
         if self.platform.wants_exit() {
             event_loop.exit();
             return false;
@@ -572,6 +576,7 @@ impl<P: Platform> Shell<P> {
             input: &self.input,
             renderer: &mut live.renderer,
             content: &self.content,
+            host: &mut self.host,
             size,
             layout,
         };
@@ -836,6 +841,7 @@ impl<P: Platform> ApplicationHandler for Shell<P> {
             input: &self.input,
             renderer: &mut live.renderer,
             content: &self.content,
+            host: &mut self.host,
             size,
             layout,
         };
@@ -844,16 +850,18 @@ impl<P: Platform> ApplicationHandler for Shell<P> {
 }
 
 /// Run `initial` on `content` until the player or the platform ends it, then hand the platform back.
-/// `event_loop` is the platform's (an Android app builds it with its `AndroidApp`). A fatal error has been
-/// shown through [`Platform::on_error`] and is returned as well.
+/// `event_loop` is the platform's (an Android app builds it with its `AndroidApp`); `host` says what the
+/// platform offers before the first state starts. A fatal error has been shown through
+/// [`Platform::on_error`] and is returned as well.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn run<P: Platform>(
     event_loop: EventLoop<()>,
     platform: P,
+    host: Host,
     content: Content,
     initial: Box<dyn Game>,
 ) -> Result<P, String> {
-    let mut shell = Shell::new(platform, content, initial);
+    let mut shell = Shell::new(platform, host, content, initial);
     event_loop
         .run_app(&mut shell)
         .map_err(|e| format!("event loop: {e}"))?;
@@ -869,9 +877,10 @@ pub fn run<P: Platform>(
 pub fn spawn<P: Platform>(
     event_loop: EventLoop<()>,
     platform: P,
+    host: Host,
     content: Content,
     initial: Box<dyn Game>,
 ) {
     use winit::platform::web::EventLoopExtWebSys;
-    event_loop.spawn_app(Shell::new(platform, content, initial));
+    event_loop.spawn_app(Shell::new(platform, host, content, initial));
 }

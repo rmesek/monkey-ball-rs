@@ -5,6 +5,7 @@
 use std::time::{Duration, Instant};
 
 use mb_app::game::Game;
+use mb_app::host::{Command, Host};
 use mb_app::input::{Action, Axis, InputState};
 use mb_app::perf::FrameSample;
 use mb_driver::Platform;
@@ -190,12 +191,12 @@ impl Platform for Desktop {
         false
     }
 
-    fn poll_input(&mut self, input: &mut InputState) {
+    fn poll_input(&mut self, input: &mut InputState, host: &mut Host) {
         if let Some(pads) = &mut self.gamepads {
             pads.poll(input);
         }
         // What the states asked of the platform. Fullscreen is a key here and tilt does not exist.
-        if (mb_app::host::drain()).contains(&mb_app::host::Command::RemoveGameData) {
+        if host.drain().contains(&Command::RemoveGameData) {
             self.stats.remove_game_data = true;
             self.exit = true;
         }
@@ -273,6 +274,7 @@ impl Desktop {
 
 /// Open a window and run `initial` until the user quits. Returns the pacing of the frames of play.
 pub fn run_windowed(
+    host: Host,
     content: mb_app::content::Content,
     initial: Box<dyn Game>,
     options: WindowOptions,
@@ -290,7 +292,7 @@ pub fn run_windowed(
         last_title: now,
         title_frames: 0,
     };
-    Ok(mb_driver::run(event_loop, desktop, content, initial)?.finish_stats())
+    Ok(mb_driver::run(event_loop, desktop, host, content, initial)?.finish_stats())
 }
 
 #[cfg(test)]

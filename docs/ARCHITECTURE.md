@@ -70,7 +70,7 @@ the driver its event loop, its `Content` and the first state; both existing ones
 | 3 | a place for saves, a `Storage` | `mb_game::{SlotStorage, FileStorage}` | files in the data folder | private file system or `localStorage` |
 | 4 | sound output, an `AudioBackend` | `mb_app::audio` | `audio_cpal` (works on any native target) | Web Audio |
 | 5 | input | `mb_app::input::InputState`, `ui::TouchControls`, `tilt::TiltSteering` | keyboard, mouse, `gilrs` pads, touch | keyboard, mouse, Gamepad API, touch, device orientation, the back gesture |
-| 6 | what only the platform can do | `mb_app::host`: capabilities in, commands out (`RemoveGameData`, `SetFullscreen`, `Tilt`, `CalibrateTilt`) | remove data | remove data, fullscreen, tilt |
+| 6 | what only the platform can do | `mb_app::host::Host`, in every `GameCtx` and in `Platform::poll_input`: capabilities and info in, commands out (`RemoveGameData`, `SetFullscreen`, `Tilt`, `CalibrateTilt`) | remove data | remove data, fullscreen, tilt |
 
 The driver does the rest once per frame: build a `GameCtx`, call `GameStack::update` and
 `InputState::end_frame`, draw with the top state's camera, present. It keeps the device and the renderer
@@ -132,10 +132,11 @@ port has to write, by size:
 | medium | the first-run screen (picker in Java, progress while `Importer::step` runs off the main thread); the tilt sensor; gamepads; packaging | there is no import screen inside the game (the desktop prints to the terminal, the browser uses its page); the sensor reports a vector, `TiltSteering::sample` takes the W3C angles; `gilrs` has no Android backend |
 | unknown until on a device | phone GPU speed, `cpal` output, ARM determinism | never run |
 
-Three traps for whoever writes it: `host` keeps capabilities and commands per thread, so they must be set and
-drained on the game's thread, never from a Java callback; the engine's trig tables are installed once per
-process, and an Android process outlives its activity; the Android compile check in the gates covers `mb-app`
-without its `winit` feature.
+Two traps for whoever writes it: the engine's trig tables are installed once per process, and an Android
+process outlives its activity; the Android compile check in the gates covers `mb-app` without its `winit`
+feature. Threads are no trap: the driver calls every `Platform` hook on the game's thread and hands it the
+`Host` there, so what a Java callback reports goes to the platform first (a channel, an atomic) and into the
+`Host` at the next `poll_input`; nothing in the game is global.
 
 ## Review: where the code is harder to change than it should be
 
@@ -145,7 +146,6 @@ Findings of a read-through, not yet acted on. None is a fault a player sees.
 |---|---|---|
 | One file holds uploads, mesh merging, objects, sorting, culling, mirror passes and the frame | `mb-render/src/renderer.rs` (2 950 lines) | split by concern; no behaviour change |
 | One state is the title, the course flow, stage select and the options screen | `mb-app/src/menu.rs` (1 400 lines) | options into a state of its own |
-| The platform seam is global state: capabilities, info lines and the command queue are thread-locals | `mb-app/src/host.rs` | carry them in `GameCtx`; tests then need no resetting |
 | The options screen is addressed by row number | `mb-app/src/menu.rs` and its tests, `mb-app/tests/gameplay.rs`, tap positions in `scripts/web-e2e.ts` | rows found by name in tests; removing three options for 0.3.0 meant edits in all three |
 | The browser crate has no Rust tests (2 500 lines) | `mb-web` | only `scripts/web-e2e.ts` covers it, which needs the disc image and Chrome; unit tests for what does not touch the page |
 | The engine's trig tables are installed once per process | `mb-engine/src/tables.rs`, `Content::install_trig_tables` | fine for one game per run; a pack of another region imported without a restart keeps the first one's tables |

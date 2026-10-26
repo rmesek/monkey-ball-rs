@@ -25,7 +25,7 @@ mod web {
 
     use js_sys::{Array, Function, Uint8Array};
     use mb_app::content::{Content, DeferredSource, Fetch, boot_files};
-    use mb_app::host;
+    use mb_app::host::{self, Host};
     use mb_app::import::Importer;
     use mb_app::input::{Action, Axis, InputState};
     use mb_app::tilt::TiltSteering;
@@ -67,6 +67,9 @@ mod web {
         static TILT: RefCell<TiltSteering> = RefCell::new(TiltSteering::default());
         /// Prepared game files held in memory right now, in bytes (for `mbStats`).
         static PREPARED: RefCell<Option<Content>> = const { RefCell::new(None) };
+        /// What the page says the platform offers and knows (it may say so at any time); the game's `Host`
+        /// takes it over at the next frame.
+        static PAGE_HOST: RefCell<Host> = RefCell::new(Host::default());
     }
 
     fn js_err(e: impl std::fmt::Display) -> JsValue {
@@ -253,19 +256,21 @@ mod web {
     /// What the page can do for the game: remove the imported data, go fullscreen, report device tilt.
     #[wasm_bindgen]
     pub fn set_caps(remove_data: bool, fullscreen: bool, tilt: bool) {
-        host::set_caps(host::Caps {
-            remove_data,
-            fullscreen,
-            tilt,
-            // A page is left through the browser, not from a menu entry.
-            quit: false,
+        PAGE_HOST.with(|h| {
+            h.borrow_mut().caps = host::Caps {
+                remove_data,
+                fullscreen,
+                tilt,
+                // A page is left through the browser, not from a menu entry.
+                quit: false,
+            }
         });
     }
 
     /// The page entered or left fullscreen.
     #[wasm_bindgen]
     pub fn set_fullscreen_state(on: bool) {
-        host::set_fullscreen(on);
+        PAGE_HOST.with(|h| h.borrow_mut().fullscreen = on);
     }
 
     /// Not zero while the game has somewhere to go "back" to (a sub-menu, a stage): the page keeps one
@@ -771,6 +776,7 @@ mod web {
         mb_driver::spawn(
             event_loop,
             WebPlatform::new(force_webgl),
+            PAGE_HOST.with(|h| h.borrow().clone()),
             content,
             mb_app::initial_game_with_audio(
                 Box::new(mb_app::mb_game::SlotStorage::new(WebStorage::new())),
@@ -832,7 +838,7 @@ mod web {
     /// What the options screen says about data kept on this device (set by the page, which knows).
     #[wasm_bindgen]
     pub fn set_storage_info(lines: Vec<String>) {
-        host::set_info(lines);
+        PAGE_HOST.with(|h| h.borrow_mut().info = lines);
     }
 
     /// The browser side of the save store. Values arrive already crash-safe (`SlotStorage` wraps this: two
@@ -1072,8 +1078,9 @@ mod web {
 
         /// What game states asked of the page since the last frame (`mb_app::host`). The page's side is
         /// `window.mbHost(command, argument)` in `web/main.js`.
-        fn run_host_commands() {
-            for command in host::drain() {
+        fn run_host_commands(host: &mut Host) {
+            PAGE_HOST.with(|h| host.mirror(&h.borrow()));
+            for command in host.drain() {
                 match command {
                     host::Command::RemoveGameData => {
                         call_page("mbHost", &[JsValue::from_str("remove-data")]);
@@ -1191,10 +1198,10 @@ mod web {
         }
 
         /// Called once per frame, which also makes it the frame counter.
-        fn poll_input(&mut self, input: &mut InputState) {
+        fn poll_input(&mut self, input: &mut InputState, host: &mut Host) {
             self.frames = self.frames.wrapping_add(1);
             FRAMES.with(|f| f.set(self.frames));
-            Self::run_host_commands();
+            Self::run_host_commands(host);
             TILT.with(|t| t.borrow().apply(input));
             // A "back" gesture is one press of Cancel. It is not a key: the on-screen controls stay.
             if self.back_held {

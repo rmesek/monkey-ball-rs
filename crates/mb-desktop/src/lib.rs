@@ -13,6 +13,7 @@ pub mod app;
 use app::WindowOptions;
 use mb_app::audio::Audio;
 use mb_app::content::{Content, open_disc_image, open_pack_file};
+use mb_app::host::{Caps, Host};
 use mb_app::import::import_to_file;
 use mb_app::menu::{Autostart, Menu};
 use mb_assets::disc::FileStream;
@@ -198,8 +199,9 @@ fn stored_pack(pack: &Path) -> Option<(Content, String, u64)> {
 /// Find the game content. With a data directory: the stored pack; else the image named on the command
 /// line or picked in a dialog is imported first (the dialog comes back after an image that could not be
 /// used). An image named again whose pack is already there is not copied twice. Without a data
-/// directory the image is read where it is, for this run.
-fn resolve_content(args: &Args, dir: Option<&Path>) -> Result<Content, String> {
+/// directory the image is read where it is, for this run. What is kept, and that it can be removed, goes
+/// into `host`.
+fn resolve_content(args: &Args, dir: Option<&Path>, host: &mut Host) -> Result<Content, String> {
     let Some(dir) = dir else {
         let path = (args.source.clone().or_else(pick_disc)).ok_or("no disc image selected")?;
         return open_disc_image(&path).map_err(|e| format!("{}: {e}", path.display()));
@@ -239,23 +241,23 @@ fn resolve_content(args: &Args, dir: Option<&Path>) -> Result<Content, String> {
         }
     };
     // The options screen shows what is kept and where, and offers to remove it.
-    mb_app::host::set_info(vec![
+    host.info = vec![
         format!("Game data: {} MB", len >> 20),
         format!("Kept with the saves in {}", dir.display()),
-    ]);
-    mb_app::host::set_caps(mb_app::host::Caps {
-        remove_data: true,
-        ..mb_app::host::caps()
-    });
+    ];
+    host.caps.remove_data = true;
     Ok(content)
 }
 
 fn run() -> Result<(), String> {
     // A desktop program ends itself: the title offers "Quit".
-    mb_app::host::set_caps(mb_app::host::Caps {
-        quit: true,
-        ..mb_app::host::caps()
-    });
+    let mut host = Host::new(
+        Caps {
+            quit: true,
+            ..Caps::default()
+        },
+        Vec::new(),
+    );
     let args = match parse_args(std::env::args().skip(1)) {
         Ok(a) => a,
         Err(e) => {
@@ -268,7 +270,7 @@ fn run() -> Result<(), String> {
     };
     let dir = data_dir();
     let storage = open_storage(dir.as_deref());
-    let content = resolve_content(&args, dir.as_deref())?;
+    let content = resolve_content(&args, dir.as_deref(), &mut host)?;
 
     // The device stream opens here; without a device the game simply runs silent.
     let audio = (!args.mute).then(|| Audio::new(Box::new(mb_app::audio_cpal::CpalBackend::new())));
@@ -286,7 +288,7 @@ fn run() -> Result<(), String> {
         fullscreen: args.fullscreen,
         audio: audio.clone(),
     };
-    let stats = app::run_windowed(content, Box::new(menu), options)?;
+    let stats = app::run_windowed(host, content, Box::new(menu), options)?;
     if stats.remove_game_data {
         // Options -> Remove game data: the window is closed and the pack no longer open.
         if let Some(dir) = &dir {

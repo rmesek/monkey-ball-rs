@@ -1854,7 +1854,7 @@ fn the_storage_note_of_the_options_screen_is_one_size_on_a_phone() {
     h.shutdown();
     h.resize((412, 915));
     let note = "Game data: 144 MB in this browser (the browser may clear it)";
-    mb_app::host::set_info(vec![note.into()]);
+    h.host.info = vec![note.into()];
     h.push(Box::new(Menu::new(Box::new(storage.clone()))))
         .unwrap();
     h.step(FRAME).unwrap();
@@ -1863,7 +1863,6 @@ fn the_storage_note_of_the_options_screen_is_one_size_on_a_phone() {
     h.tap(Action::Confirm).unwrap();
     assert_eq!(h.status(), "menu: options");
     let rgba = shot(&mut h, "options_storage_note_412x915");
-    mb_app::host::set_info(Vec::new());
     let (w, height) = (412usize, 915usize);
     assert_eq!(rgba.len(), w * height * 4);
     // The note is the only pale blue text above the list; the title is yellow.
