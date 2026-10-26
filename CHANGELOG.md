@@ -2,8 +2,7 @@
 
 ## 1.0.0
 
-Release candidate of 2026-10-26, not yet released: it is tagged once the project owner has tried it by hand
-and confirmed it.
+Released 2026-10-26, after the project owner tried the release candidate by hand and confirmed it.
 
 The version the Android app (`monkey-ball-android`, a repository of its own) is built on. The game plays as
 in 0.3.0; what changed makes it a stable base for another platform and fit to publish.

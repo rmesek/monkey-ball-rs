@@ -3,10 +3,10 @@
 What the project is for, what works, what nobody has checked, what is open and what was decided. How the
 code is put together is in [ARCHITECTURE.md](ARCHITECTURE.md).
 
-**Version 1.0.0**, release candidate of 2026-10-26: all gates pass, not tagged until the owner has tried it
-by hand. It is the version the Android app (`monkey-ball-android`, a repository of its own that takes this
-one as a submodule) is built on ([ARCHITECTURE.md](ARCHITECTURE.md), "Adding Android"). What each version
-contains: [CHANGELOG.md](../CHANGELOG.md).
+**Version 1.0.0**, released on 2026-10-26 after the owner tried it by hand. It is the version the Android
+app (`monkey-ball-android`, a repository of its own that takes this one as a submodule) is built on
+([ARCHITECTURE.md](ARCHITECTURE.md), "Adding Android"). What each version contains:
+[CHANGELOG.md](../CHANGELOG.md).
 
 ## Goal
 
