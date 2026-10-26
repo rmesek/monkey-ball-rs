@@ -30,6 +30,7 @@ browser API; nothing below `mb-driver` names a window or an event loop.
 | **1. Read the disc image and keep the game's files on the device** | | | |
 | read RVZ / ISO / GCM, find files in it | `mb-assets/src/{disc,rvz,lzss}.rs` | 1 800 | only third-party piece: `ruzstd` (Zstandard) |
 | copy the 382 files the game uses into one pack, atomically | `mb-assets/src/gamepack.rs`, `mb-app/src/import.rs` | 700 | header written last; every file has a checksum |
+| show the import on a native platform, the copying on a thread of its own | `mb-app/src/import_screen.rs` | 370 | the image is the platform's to pick and open; its own fonts draw the screen |
 | know which files those are | `mb-app/src/content.rs` (the file lists) | 730 | the only place a disc path is spelled |
 | keep the pack: a file (desktop, later Android), the browser's private file system | `mb-desktop/src/lib.rs`, `mb-web/src/lib.rs`, `web/worker.js` | | the platform's part |
 | **2. Play the game** | | | |
@@ -43,7 +44,7 @@ browser API; nothing below `mb-driver` names a window or an event loop.
 | take input: keys, stick, pointer, touch, tilt | `mb-app/src/{input,ui,tilt}.rs` | 1 200 | states read actions and axes, never a device |
 | **3. Survive a sudden exit** | | | |
 | saves in two checksummed slots, written when they happen | `mb-game/src/{storage,progress}.rs` | 1 100 | a kill leaves the previous save or the new one |
-| an import that is all there or not there | `import::import_to_file` (temp file, rename); a marker file in the browser | | |
+| an import that is all there or not there | `import::write_pack_file` (temp file, rename); a marker file in the browser | | |
 | **4. Not get worse unnoticed** | | | |
 | recorded hashes: the simulation of every stage, every parsed file, the disc reader | `tests/golden.rs` in `mb-engine`, `mb-stage`, `mb-tpl`, `mb-gma`; `mb-assets/tests/disc.rs` | 550 | |
 | the real states on an offscreen target, by scripted input | `mb-app/tests/{gameplay,pack,pause,rules,mirrors,audio}.rs` on `mb-app/src/headless.rs` | 4 000 | needs the `dev` feature, which the tests switch on |
@@ -66,7 +67,7 @@ the driver its event loop, its `Content` and the first state; both existing ones
 | # | Supplies | Through | Desktop | Browser |
 |---|---|---|---|---|
 | 1 | a window | `Platform::window_attributes`; the driver makes surface, device and renderer | a sized window, fullscreen | the page's canvas, WebGPU or WebGL2 |
-| 2 | the game's files, as a `Content` | `import::import_to_file` + `content::open_pack_file`, or `Content::deferred` where storage is asynchronous | pack file in the data folder | pack in the private file system, prepared per state |
+| 2 | the game's files, as a `Content` | `content::open_pack_file`, or the import screen (`import_screen::ImportScreen` on a `content::LatePack`) when there is no pack yet, or `Content::deferred` where storage is asynchronous | pack file in the data folder, imported on the game's import screen | pack in the private file system, imported by the page, prepared per state |
 | 3 | a place for saves, a `Storage` | `mb_game::{SlotStorage, FileStorage}` | files in the data folder | private file system or `localStorage` |
 | 4 | sound output, an `AudioBackend` | `mb_app::audio` | `audio_cpal` (works on any native target) | Web Audio |
 | 5 | input | `mb_app::input::InputState`, `ui::TouchControls`, `tilt::TiltSteering` | keyboard, mouse, `gilrs` pads, touch | keyboard, mouse, Gamepad API, touch, device orientation, the back gesture |
@@ -88,55 +89,60 @@ Rules that keep this true:
 
 ## Adding Android
 
-Nothing is started. What exists and what is missing:
+The Android app lives in a repository of its own (`monkey-ball-android`) and takes this one as a git
+submodule at a tagged version; none of its code is here, and nothing here has run on a phone. What the
+crates give it, in both ways the app can run the game:
 
 | | In a WebView | Native (Vulkan, GLES as fallback) |
 |---|---|---|
-| What it is | the built `target/site` shown by a small host app | a new crate `mb-android` beside `mb-desktop` |
-| Rust changes | none | a `Platform` of `mb-driver` and an entry point |
-| Game data | the page's import, as in a browser | `import_to_file` into the app's files directory, from a file descriptor the document picker hands over (`content::open_disc_stream` reads one) |
-| Saves | page storage | `FileStorage::new(<files directory>)` |
-| Sound | Web Audio | `audio_cpal` (compiles for Android; never heard) |
-| Touch, keys | as in the browser | the driver's, as on the desktop and in the browser |
-| Tilt (gyro) | `deviceorientation`, already there | the sensor through the NDK into `TiltSteering::sample`; the seam is ready, the source is missing |
+| What it is | the built `target/site` shown by a small host app | a `cdylib` crate in the app's repository: a `Platform` of `mb-driver` |
+| Rust to write | none | the entry point, the `Platform`, the data directory |
+| Game data | the page's import, as in a browser | `ImportScreen` copies the image into `game.pack` in the app's files directory, from the file descriptor the document picker hands over (`FileStream::from(File)`, `Importer::open`) |
+| Saves | page storage | `SlotStorage::new(FileStorage::new(<files directory>))` |
+| Sound | Web Audio | `audio_cpal` (AAudio; compiles for Android, never heard) |
+| Touch, back button | as in the browser | the driver's; the back button arrives as `Cancel` |
+| Leaving the screen | the page's | the driver's: a new surface at `resumed`, device, renderer and states kept |
+| Tilt (gyro) | `deviceorientation`, already there | the sensor through the NDK into `TiltSteering`; the seam is ready, the source is missing |
 | Gamepads | Gamepad API | missing: `gilrs` has no Android backend |
-| Guide | [ANDROID_WEBVIEW.md](ANDROID_WEBVIEW.md) | this table |
+| Guide | [ANDROID_WEBVIEW.md](ANDROID_WEBVIEW.md) | the steps below |
 
-**Where a native app keeps the game.** The image is needed once, at first setup. The document picker
-hands the app a file descriptor for the file the user chose; `import_to_file` copies the 145 MB the game
-uses out of it into `game.pack` in the app's internal files directory, where the saves go too. From then on
-the app opens that pack and never asks for the image, which the user may delete. Internal storage belongs
-to the app: it needs no permission, no other app can read it, and it lasts until the user clears the app's
-data or uninstalls it, which is exactly when the game should ask again. No permission on the original
-file has to be kept. The pack should be left out of the system's cloud backup (it is far over the size
-limit and can be imported again); the saves can stay in. This is the desktop's model with another
-directory, and the code for it is the code the desktop already runs.
+**A native app, step by step.** Not compiled here (there is no Android NDK on the machine this was
+written on); each step names the code that already does the same on the desktop.
 
-What will cost the most in a native port, in order:
+1. Depend on `mb-driver`, `mb-app` and `mb-assets` by path, and on `winit` with its
+   `android-native-activity` feature ([README](../README.md), "Using the game from another project").
+2. In `android_main(app)`, build the event loop with `EventLoop::builder().with_android_app(app)`; the data
+   directory is `app.internal_data_path()`.
+3. Say what the platform offers in a `Host`: `remove_data`, not `quit` (the system closes apps), and the
+   info lines that name where the data is kept.
+4. With a complete `game.pack` (`content::open_pack_file`), run `mb_driver::run` on it with the title menu.
+   Without one, run it on a `LatePack` with an `ImportScreen` in front of the menu: `start` in
+   `mb-desktop/src/lib.rs`.
+5. In `Platform::poll_input`, on `Command::PickImage` start the document picker (Java). The picked file's
+   descriptor comes back on another thread: send it through a channel, and at the next `poll_input` open
+   it with `Importer::open` and offer it to the `ImageSlot`, or say why it cannot be used (a toast) and
+   start the picker again. On `Command::RemoveGameData`, end the run and delete the pack once it is closed,
+   as the desktop does.
+6. In `Platform::on_visible(false)`, suspend the `Audio`.
 
-1. **The surface life cycle** is the driver's: it drops the surface at `suspended` and makes a new one at
-   `resumed`, keeping device, renderer and states. The desktop and the browser never take the surface
-   away, so this path has not run.
-2. **The file picker** is Java; only a file descriptor crosses into Rust.
-3. **Phone GPUs** were never measured: the budgets come from desktop Chrome with a CPU throttle.
-4. **Determinism on ARM** is expected and unverified; `mb-engine/tests/golden.rs` is where a difference
-   would show.
+**Where a native app keeps the game.** The image is needed once, at first setup. The import screen copies
+the 145 MB the game uses out of it into `game.pack` in the app's internal files directory, where the saves
+go too. From then on the app opens that pack and never asks for the image, which the user may delete.
+Internal storage belongs to the app: it needs no permission, no other app can read it, and it lasts until
+the user clears the app's data or uninstalls it, which is exactly when the game should ask again. No
+permission on the original file has to be kept. The pack should be left out of the system's cloud backup
+(it is far over the size limit and can be imported again); the saves can stay in. This is the desktop's
+model with another directory, and the code for it is the code the desktop already runs.
 
-Nothing in the shared crates has to change for a native port; 42 500 of the 46 000 lines are shared. What a
-port has to write, by size:
-
-| Size | What | Why it is that size |
-|---|---|---|
-| none | formats, simulation, rules, renderer, states, HUD, touch controls and layout, pack, saves, mixer, tilt maths | the renderer asks for no GPU feature and is written against the WebGL2 limits, so Vulkan and OpenGL ES 3 both fit; storage and content take a directory and a stream |
-| small | entry point and event loop; the data directory; capabilities (`host::Caps`); a `Platform` | each is a few calls into what exists; the back button already arrives as `Cancel` |
-| medium | the first-run screen (picker in Java, progress while `Importer::step` runs off the main thread); the tilt sensor; gamepads; packaging | there is no import screen inside the game (the desktop prints to the terminal, the browser uses its page); the sensor reports a vector, `TiltSteering::sample` takes the W3C angles; `gilrs` has no Android backend |
-| unknown until on a device | phone GPU speed, `cpal` output, ARM determinism | never run |
+What nobody knows until it runs on a phone: the surface made again at `resumed` (no platform here takes
+the surface away), the speed of phone GPUs (the budgets come from desktop Chrome with a CPU throttle),
+`cpal`'s output, and determinism on ARM (`mb-engine/tests/golden.rs` is where a difference would show).
 
 Two traps for whoever writes it: the engine's trig tables are installed once per process, and an Android
-process outlives its activity; the Android compile check in the gates covers `mb-app` without its `winit`
-feature. Threads are no trap: the driver calls every `Platform` hook on the game's thread and hands it the
-`Host` there, so what a Java callback reports goes to the platform first (a channel, an atomic) and into the
-`Host` at the next `poll_input`; nothing in the game is global.
+process outlives its activity; the Android check in the gates compiles `mb-app` only, because `winit`'s
+Android backend and the link need the NDK. Threads are no trap: the driver calls every `Platform` hook on
+the game's thread and hands it the `Host` there, so what a Java callback reports goes to the platform first
+(a channel, an atomic) and into the `Host` at the next `poll_input`; nothing in the game is global.
 
 ## Review: where the code is harder to change than it should be
 
@@ -149,7 +155,6 @@ Findings of a read-through, not yet acted on. None is a fault a player sees.
 | The options screen is addressed by row number | `mb-app/src/menu.rs` and its tests, `mb-app/tests/gameplay.rs`, tap positions in `scripts/web-e2e.ts` | rows found by name in tests; removing three options for 0.3.0 meant edits in all three |
 | The browser crate has no Rust tests (2 500 lines) | `mb-web` | only `scripts/web-e2e.ts` covers it, which needs the disc image and Chrome; unit tests for what does not touch the page |
 | The engine's trig tables are installed once per process | `mb-engine/src/tables.rs`, `Content::install_trig_tables` | fine for one game per run; a pack of another region imported without a restart keeps the first one's tables |
-| The desktop import runs before the window opens; progress goes to the terminal only | `mb-desktop/src/lib.rs` | acceptable at a second or two; a loading state if it ever is not |
 | Frame statistics for the browser test ship in the product | `mb-app/src/perf.rs`, `mb-web` | kept so the test measures the real build |
 | Calls on the renderer that only tests use; a material flag no file on the disc sets | `set_mirror_capture_whole`, `set_mirror_scale`, `set_color_mul`, `set_tex_matrix`; `LayerInfo::uv_scroll` | remove with their tests |
 | Some budget constants are still named after version 0.1.0 | `mb-app/tests/memory.rs`, `scripts/web-e2e.ts` | rename; the numbers are the budgets |

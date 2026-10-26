@@ -5,6 +5,8 @@ What the player sees on top of the engine, renderer and game rules. Reference: W
 
 ## States and flow
 `mb_app::initial_game_with_audio(storage, audio)` returns the root state, `menu::Menu`. Everything runs on one `GameStack`.
+On a native platform without game data the stack starts with `import_screen::ImportScreen` instead, which
+replaces itself with the menu once the pack is complete.
 
 ```
 Menu (title -> Course Play | Practice | Options | Quit)
@@ -24,7 +26,7 @@ Menu (title -> Course Play | Practice | Options | Quit)
 - `menu.rs` owns the `Profile` (progress + settings) and writes it through the injected `mb_game::Storage`
   after every stage and every option change. Extra and Master courses and unreached practice floors show as
   `LOCKED` unless the `Unlock all stages` option is on. Options only lists settings that act: that one, the
-  stick curve (the reference's input falloff), the three volumes and the reflections (below).
+  stick curve (the reference's input falloff), the two volumes and the reflections (below).
 - `play.rs` runs `mb_engine::Sim` in fixed 60 Hz ticks from an accumulator (`ticks_for_frame`): frame times
   within 12 % of one or two ticks are snapped, at most 5 ticks run per frame, a longer stall is dropped. The
   simulation is identical at any display rate. What is drawn is a blend of the last two ticks by the

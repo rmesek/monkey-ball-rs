@@ -20,7 +20,8 @@
 //! * [`stage_scene`] / [`stage_info`] / [`anim`]: assembling an SMB1 stage into renderer objects;
 //!   [`backdrop`]: what the night, storm and sunset backgrounds animate; [`mirror`]: which stages have a
 //!   mirror floor and in which plane.
-//! * [`import`]: copying the files the game uses out of a disc image into a game pack, a piece at a time.
+//! * [`import`]: copying the files the game uses out of a disc image into a game pack, a piece at a time;
+//!   [`import_screen`]: the state that shows it on a native platform, the copying on a thread of its own.
 //! * [`ui`]: safe-area layout and the on-screen touch controls. [`gpu`]: what every driver does the same
 //!   way when it sets the GPU up. [`perf`]: frame statistics for the `?fps=1` overlay and the browser check.
 //! * Behind the `dev` feature (on for this crate's tests, off in the product): `headless` (windowless
@@ -48,6 +49,9 @@ pub mod hud;
 #[cfg(all(feature = "dev", not(target_arch = "wasm32")))]
 pub mod image;
 pub mod import;
+// Copies on a thread of its own, which the browser does not have (its page has the import screen).
+#[cfg(not(target_arch = "wasm32"))]
+pub mod import_screen;
 pub mod input;
 pub mod loading;
 pub mod menu;

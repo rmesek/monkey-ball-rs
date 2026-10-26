@@ -13,14 +13,17 @@ use std::rc::Rc;
 use std::sync::{Mutex, OnceLock};
 
 use mb_app::content::{
-    Content, DeferredPack, Prepare, StageFiles, Wanted, all_files, boot_files, course_stage_ids,
+    Content, DeferredPack, LatePack, Prepare, StageFiles, Wanted, all_files, boot_files,
+    course_stage_ids,
 };
 use mb_app::headless::{FRAME, Headless};
-use mb_app::import::{Importer, import_to_vec};
+use mb_app::host::Command;
+use mb_app::import::{Importer, import_to_vec, write_pack_file};
+use mb_app::import_screen::{DiscImage, ImageSlot, ImportScreen};
 use mb_app::input::Action;
 use mb_app::menu::Menu;
 use mb_app::stage_scene::{AssetCache, LoadTimings, StageAssets};
-use mb_assets::disc::FileStream;
+use mb_assets::disc::{DiscStream, FileStream};
 use mb_assets::gamepack::PackBytes;
 use mb_assets::pack::PackProvider;
 use mb_engine::Phase;
@@ -98,7 +101,7 @@ fn a_pack_file_reads_as_the_image_does_and_a_cut_import_leaves_none() {
     // From an open file, not a path: what a platform has that is handed a file descriptor.
     let opened = FileStream::from(std::fs::File::open(&path).unwrap());
     let mut calls = 0;
-    let len = mb_app::import::import_to_file(opened, &pack, &mut |d, t| {
+    let len = write_pack_file(Importer::open(opened).unwrap(), &pack, &mut |d, t| {
         assert!(d <= t);
         calls += 1;
     })
@@ -119,15 +122,12 @@ fn a_pack_file_reads_as_the_image_does_and_a_cut_import_leaves_none() {
     }
 
     // An import replaces the pack that is there; one that fails leaves it alone and no temp file.
-    mb_app::import::import_to_file(FileStream::open(&path).unwrap(), &pack, &mut |_, _| {})
-        .unwrap();
+    let again = Importer::open(FileStream::open(&path).unwrap()).unwrap();
+    write_pack_file(again, &pack, &mut |_, _| {}).unwrap();
     let not_a_disc = dir.join("junk.iso");
     std::fs::write(&not_a_disc, vec![0u8; 4096]).unwrap();
-    let failed = mb_app::import::import_to_file(
-        FileStream::open(&not_a_disc).unwrap(),
-        &pack,
-        &mut |_, _| {},
-    );
+    let failed = Importer::open(FileStream::open(&not_a_disc).unwrap())
+        .and_then(|i| write_pack_file(i, &pack, &mut |_, _| {}));
     assert!(failed.is_err());
     assert!(!dir.join("game.pack.tmp").exists());
     assert!(mb_app::content::open_pack_file(&pack).is_ok());
@@ -152,6 +152,105 @@ fn a_pack_file_reads_as_the_image_does_and_a_cut_import_leaves_none() {
         .count();
     assert_eq!(bad, 1, "exactly the damaged file fails its checksum");
     drop(content);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Draw `h` and, with `MB_SHOT_DIR` set, keep the picture there as `<name>.png`.
+fn shot(h: &mut Headless, name: &str) {
+    let rgba = h.render().unwrap();
+    if let Some(dir) = std::env::var_os("MB_SHOT_DIR") {
+        let dir = std::path::PathBuf::from(dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (w, height) = h.size();
+        mb_app::image::write_image(&dir.join(format!("{name}.png")), w, height, &rgba).unwrap();
+    }
+}
+
+/// Frames of `h` until its status passes `done` (the copying thread needs real time, so the frames are
+/// a millisecond apart), at most a minute. Returns every status seen on the way.
+fn run_while_copying(h: &mut Headless, done: &dyn Fn(&str) -> bool) -> Vec<String> {
+    let mut seen = Vec::new();
+    let start = std::time::Instant::now();
+    while start.elapsed().as_secs() < 60 {
+        h.step(FRAME).unwrap();
+        let status = h.status();
+        if seen.last() != Some(&status) {
+            seen.push(status.clone());
+        }
+        if done(&status) {
+            return seen;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    panic!("no end after a minute: {:?}", seen.last());
+}
+
+/// The first run of a native app: the import screen asks the platform for an image, copies it on a
+/// thread of its own while the frames go on, shows a failure with a way back to another image, and
+/// starts the game on the finished pack.
+#[test]
+fn the_import_screen_copies_beside_the_frames_fails_with_a_way_back_and_starts_the_game() {
+    let _gpu = GPU.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(path) = find_disc() else {
+        eprintln!("skipped: no disc image (set MB_DISC)");
+        return;
+    };
+    let dir = std::env::temp_dir().join(format!("mb-import-screen-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    // A file where the pack's folder should be: the first import fails once it has started.
+    let blocker = dir.join("data");
+    std::fs::write(&blocker, b"in the way").unwrap();
+    let pack = blocker.join("game.pack");
+    let open = || -> DiscImage {
+        let stream: Box<dyn DiscStream + Send> = Box::new(FileStream::open(&path).unwrap());
+        Importer::open(stream).unwrap()
+    };
+
+    let data = Rc::new(LatePack::default());
+    let content = Content::new(data.clone());
+    let mut h = match Headless::new(&content, (640, 360), false) {
+        Ok(h) => h,
+        Err(e) => {
+            eprintln!("skipped: no GPU adapter ({e})");
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        }
+    };
+    let slot = ImageSlot::default();
+    let menu = Menu::new(Box::new(MemoryStorage::new()));
+    let screen = ImportScreen::new(pack.clone(), data, slot.clone(), Box::new(menu));
+    h.push(Box::new(screen)).unwrap();
+    assert_eq!(h.host.drain(), [Command::PickImage]);
+    h.step(FRAME).unwrap();
+    assert_eq!(h.status(), "import: waiting for an image");
+
+    slot.offer(open());
+    run_while_copying(&mut h, &|s| s.starts_with("import: failed"));
+    assert!(h.top().unwrap().notice().is_some());
+    shot(&mut h, "import_failed");
+    // Back: another image is asked for.
+    std::fs::remove_file(&blocker).unwrap();
+    h.tap(Action::Confirm).unwrap();
+    assert_eq!(h.host.drain(), [Command::PickImage]);
+    assert_eq!(h.status(), "import: waiting for an image");
+
+    slot.offer(open());
+    let seen = run_while_copying(&mut h, &|s| s.starts_with("import: done"));
+    let between = seen.iter().filter(|s| s.contains(" of ")).count();
+    assert!(between > 10, "the frames went on while it copied: {seen:?}");
+    let len = std::fs::metadata(&pack).unwrap().len();
+    assert_eq!(h.host.drain(), [Command::GameDataReady { bytes: len }]);
+    assert_eq!(len, pack_bytes().unwrap().len() as u64);
+    assert!(!blocker.join("game.pack.tmp").exists());
+    shot(&mut h, "import_done");
+    // The result is shown for a moment, then the game runs on the new pack.
+    run_while_copying(&mut h, &|s| s == "menu: title");
+    assert!(
+        content.contains("test/bmp/bmp_nml.tpl") || content.contains("test/bmp/bmp_nml.tpl.lz")
+    );
+    h.shutdown();
+    drop(h);
     let _ = std::fs::remove_dir_all(&dir);
 }
 

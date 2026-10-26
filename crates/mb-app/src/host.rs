@@ -35,6 +35,13 @@ pub enum Command {
     },
     /// Take the pose the device is held in now as "level" (stage start).
     CalibrateTilt,
+    /// The import screen needs a disc image: ask the player for one and hand it over through the screen's
+    /// `ImageSlot` (native platforms).
+    PickImage,
+    /// The import screen completed the pack (`bytes` long) and the game runs on it now.
+    GameDataReady {
+        bytes: u64,
+    },
 }
 
 /// What the platform offers and knows, and what the states asked of it since the last frame.

@@ -1094,6 +1094,8 @@ mod web {
                         call_page("mbHost", &[JsValue::from_str("tilt"), enabled.into()]);
                     }
                     host::Command::CalibrateTilt => TILT.with(|t| t.borrow_mut().calibrate()),
+                    // The page has its own import screen.
+                    host::Command::PickImage | host::Command::GameDataReady { .. } => {}
                 }
             }
         }

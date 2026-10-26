@@ -3,20 +3,23 @@
 //! line, the file dialog, and where the game data and the saves are kept.
 //!
 //! The executable is called `monkey-ball`. The first time it asks for the disc image and copies the files the
-//! game uses out of it into one pack file beside the saves; from then on it starts from that pack and the
-//! image is not needed. Options are listed in [`USAGE`].
+//! game uses out of it into one pack file beside the saves, on the game's import screen; from then on it
+//! starts from that pack and the image is not needed. Options are listed in [`USAGE`].
 
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 pub mod app;
 
 use app::WindowOptions;
 use mb_app::audio::Audio;
-use mb_app::content::{Content, open_disc_image, open_pack_file};
+use mb_app::content::{Content, LatePack, open_disc_image, open_pack_file};
+use mb_app::game::Game;
 use mb_app::host::{Caps, Host};
-use mb_app::import::import_to_file;
+use mb_app::import::Importer;
+use mb_app::import_screen::{DiscImage, ImageSlot, ImportScreen};
 use mb_app::menu::{Autostart, Menu};
-use mb_assets::disc::FileStream;
+use mb_assets::disc::{DiscStream, FileStream};
 use mb_game::{Difficulty, FileStorage, MemoryStorage, SlotStorage, Storage};
 
 const USAGE: &str = "usage: monkey-ball [disc image] [options]
@@ -164,20 +167,30 @@ fn pick_disc() -> Option<PathBuf> {
         .pick_file()
 }
 
-/// Copy the files the game uses out of `image` into the pack file. Atomic: see `import_to_file`.
-fn import(image: &Path, pack: &Path) -> Result<(), String> {
-    eprintln!("importing {}", image.display());
-    let stream = FileStream::open(image).map_err(|e| format!("{}: {e}", image.display()))?;
-    let mut shown = 0;
-    import_to_file(stream, pack, &mut |done, total| {
-        let tenth = done * 10 / total.max(1);
-        if tenth > shown {
-            shown = tenth;
-            eprintln!("  {} %", tenth * 10);
+/// Open the disc image at `path` for an import; this checks that it is the game and has every file.
+fn open_image(path: &Path) -> Result<DiscImage, String> {
+    let stream: Box<dyn DiscStream + Send> =
+        Box::new(FileStream::open(path).map_err(|e| format!("{}: {e}", path.display()))?);
+    Importer::open(stream).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// Ask for a disc image in a file dialog until one can be used (each that cannot says why); `None` when
+/// the player cancels.
+fn pick_image() -> Option<DiscImage> {
+    loop {
+        let path = pick_disc()?;
+        match open_image(&path) {
+            Ok(image) => return Some(image),
+            Err(e) => {
+                eprintln!("error: {e}");
+                rfd::MessageDialog::new()
+                    .set_level(rfd::MessageLevel::Error)
+                    .set_title("Monkey Ball")
+                    .set_description(format!("{e}\n\nPlease pick another disc image."))
+                    .show();
+            }
         }
-    })
-    .map_err(|e| format!("{}: {e}", image.display()))?;
-    Ok(())
+    }
 }
 
 /// The stored pack, if it is there and complete. One that cannot be read (cut short, another format
@@ -196,57 +209,68 @@ fn stored_pack(pack: &Path) -> Option<(Content, String, u64)> {
     }
 }
 
-/// Find the game content. With a data directory: the stored pack; else the image named on the command
-/// line or picked in a dialog is imported first (the dialog comes back after an image that could not be
-/// used). An image named again whose pack is already there is not copied twice. Without a data
+/// The image to import now, opened: the one named on the command line, unless the stored pack is of the
+/// same disc (it is not copied twice); with `--pick` or without a stored pack, one picked in a dialog.
+/// `None`: play the stored pack.
+fn image_to_import(args: &Args, stored: Option<&str>) -> Result<Option<DiscImage>, String> {
+    if let Some(path) = &args.source {
+        let image = open_image(path)?;
+        return Ok((stored != Some(image.game_id())).then_some(image));
+    }
+    if !args.pick && stored.is_some() {
+        return Ok(None);
+    }
+    match pick_image() {
+        Some(image) => Ok(Some(image)),
+        // `--pick` cancelled: the stored pack stays.
+        None if stored.is_some() => Ok(None),
+        None => Err("no disc image selected".into()),
+    }
+}
+
+/// What the options screen says is kept, and where.
+fn info(dir: &Path, pack_len: Option<u64>) -> Vec<String> {
+    let mut lines: Vec<String> = (pack_len.into_iter())
+        .map(|len| format!("Game data: {} MB", len >> 20))
+        .collect();
+    lines.push(format!("Kept with the saves in {}", dir.display()));
+    lines
+}
+
+/// The game data and the first state. With a data directory: the stored pack and the title menu, or the
+/// import screen first, on the image named on the command line or picked in a dialog. Without a data
 /// directory the image is read where it is, for this run. What is kept, and that it can be removed, goes
-/// into `host`.
-fn resolve_content(args: &Args, dir: Option<&Path>, host: &mut Host) -> Result<Content, String> {
+/// into `host`; where the import screen takes images from, into `images`.
+fn start(
+    args: &Args,
+    dir: Option<&Path>,
+    menu: Box<dyn Game>,
+    host: &mut Host,
+    images: &mut Option<ImageSlot>,
+) -> Result<(Content, Box<dyn Game>), String> {
     let Some(dir) = dir else {
         let path = (args.source.clone().or_else(pick_disc)).ok_or("no disc image selected")?;
-        return open_disc_image(&path).map_err(|e| format!("{}: {e}", path.display()));
-    };
-    let pack = dir.join(PACK_FILE);
-    let mut stored = stored_pack(&pack);
-    if let Some(image) = &args.source {
-        let id = mb_assets::disc::DiscPack::open(image)
-            .map(|d| d.game_id().to_string())
-            .map_err(|e| format!("{}: {e}", image.display()))?;
-        if stored.as_ref().is_none_or(|(_, have, _)| *have != id) {
-            // Let go of the old pack before it is replaced.
-            stored = None;
-            import(image, &pack)?;
-        }
-    } else if args.pick
-        && let Some(image) = pick_disc()
-    {
-        // Let go of the old pack before it is replaced. An image that cannot be used leaves it in place.
-        stored = None;
-        if let Err(e) = import(&image, &pack) {
-            eprintln!("error: {e}");
-        }
-    }
-    let (content, _, len) = loop {
-        if let Some(found) = stored.take().or_else(|| stored_pack(&pack)) {
-            break found;
-        }
-        let image = pick_disc().ok_or("no disc image selected")?;
-        if let Err(e) = import(&image, &pack) {
-            eprintln!("error: {e}");
-            rfd::MessageDialog::new()
-                .set_level(rfd::MessageLevel::Error)
-                .set_title("Monkey Ball")
-                .set_description(format!("{e}\n\nPlease pick another disc image."))
-                .show();
-        }
+        let content = open_disc_image(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        return Ok((content, menu));
     };
     // The options screen shows what is kept and where, and offers to remove it.
-    host.info = vec![
-        format!("Game data: {} MB", len >> 20),
-        format!("Kept with the saves in {}", dir.display()),
-    ];
     host.caps.remove_data = true;
-    Ok(content)
+    let pack = dir.join(PACK_FILE);
+    let stored = stored_pack(&pack);
+    let Some(image) = image_to_import(args, stored.as_ref().map(|(_, id, _)| id.as_str()))? else {
+        let (content, _, len) = stored.ok_or("no disc image selected")?;
+        host.info = info(dir, Some(len));
+        return Ok((content, menu));
+    };
+    // Let go of the old pack before it is replaced.
+    drop(stored);
+    host.info = info(dir, None);
+    let data = Rc::new(LatePack::default());
+    let slot = ImageSlot::default();
+    slot.offer(image);
+    *images = Some(slot.clone());
+    let screen = ImportScreen::new(pack, data.clone(), slot, menu);
+    Ok((Content::new(data), Box::new(screen)))
 }
 
 fn run() -> Result<(), String> {
@@ -270,7 +294,6 @@ fn run() -> Result<(), String> {
     };
     let dir = data_dir();
     let storage = open_storage(dir.as_deref());
-    let content = resolve_content(&args, dir.as_deref(), &mut host)?;
 
     // The device stream opens here; without a device the game simply runs silent.
     let audio = (!args.mute).then(|| Audio::new(Box::new(mb_app::audio_cpal::CpalBackend::new())));
@@ -283,12 +306,21 @@ fn run() -> Result<(), String> {
         Some(audio) => menu.with_audio(audio.clone()),
         None => menu,
     };
+    let mut images = None;
+    let (content, initial) = start(
+        &args,
+        dir.as_deref(),
+        Box::new(menu),
+        &mut host,
+        &mut images,
+    )?;
     let options = WindowOptions {
         exit_after: args.exit_after,
         fullscreen: args.fullscreen,
         audio: audio.clone(),
+        images,
     };
-    let stats = app::run_windowed(host, content, Box::new(menu), options)?;
+    let stats = app::run_windowed(host, content, initial, options)?;
     if stats.remove_game_data {
         // Options -> Remove game data: the window is closed and the pack no longer open.
         if let Some(dir) = &dir {

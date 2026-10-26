@@ -95,7 +95,6 @@ Each is a statement about where the evidence stops.
 |---|---|
 | Licence | `Cargo.toml` declares `MIT OR Apache-2.0`; there is no `LICENSE` file, and the reference this code was ported from carries no licence statement. For the owner to settle before publishing more widely. |
 | The review findings | [ARCHITECTURE.md](ARCHITECTURE.md), "Review": the places where the code is harder to change than it should be. The two winit drivers became one (`mb-driver`), and the platform's state is carried in `GameCtx`; the rest are not acted on. |
-| Desktop import feedback | The import runs before the window opens and reports to the terminal only: a program started by double-click shows nothing for a second or two. |
 | Tilt without readings | If the device never delivers sensor readings there is no stick to fall back on until the player switches Options -> Controls back. |
 | Phones | Nothing ran on a real phone. The file chooser asks for `application/octet-stream`; a file manager that reports the image under another type greys it out, hence the "show all files" button. |
 | Continue rule | "Continue resets the score and keeps the bananas", game over, five continues and the 1UP per 100 bananas come from memory of the original, not from a source. |

@@ -18,6 +18,7 @@ use std::collections::HashMap;
 use std::io;
 use std::path::Path;
 use std::rc::Rc;
+use std::sync::{Mutex, PoisonError};
 
 use mb_assets::disc::{DiscStream, MAIN_DOL_PATH};
 use mb_assets::pack::{PackProvider, disc_path};
@@ -105,7 +106,7 @@ pub fn open_disc_stream(stream: Box<dyn DiscStream + Send>) -> io::Result<Conten
     Ok(Content::new(Rc::new(disc)))
 }
 
-/// Open an imported game pack kept in a file ([`crate::import::import_to_file`]) for direct reading.
+/// Open an imported game pack kept in a file ([`crate::import::write_pack_file`]) for direct reading.
 /// Returns the content, the pack's disc id and its size in bytes. An error means the file is not a
 /// complete pack this build can read: remove it and import again.
 #[cfg(not(target_arch = "wasm32"))]
@@ -113,6 +114,35 @@ pub fn open_pack_file(path: impl AsRef<Path>) -> io::Result<(Content, String, u6
     let pack = mb_assets::gamepack::PackFile::open(path)?;
     let (id, len) = (pack.game_id().to_string(), pack.len());
     Ok((Content::new(Rc::new(pack)), id, len))
+}
+
+/// Game data that arrives while the game runs: empty until [`LatePack::fill`]. A native platform without
+/// a pack yet starts the driver on `Content::new(late.clone())`; the import screen fills it once the
+/// pack is complete.
+#[derive(Default)]
+pub struct LatePack(Mutex<Option<Box<dyn PackProvider>>>);
+
+impl LatePack {
+    pub fn fill(&self, pack: Box<dyn PackProvider>) {
+        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = Some(pack);
+    }
+}
+
+impl PackProvider for LatePack {
+    fn fetch(&self, path: &str) -> io::Result<Vec<u8>> {
+        match &*self.0.lock().unwrap_or_else(PoisonError::into_inner) {
+            Some(pack) => pack.fetch(path),
+            None => Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("no game data yet: {path}"),
+            )),
+        }
+    }
+
+    fn contains(&self, path: &str) -> bool {
+        let pack = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        pack.as_ref().is_some_and(|p| p.contains(path))
+    }
 }
 
 impl Content {

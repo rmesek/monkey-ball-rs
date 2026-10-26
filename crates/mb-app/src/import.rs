@@ -4,7 +4,8 @@
 //! The importer owns no storage and no thread: the caller (the browser's import worker, a test) asks for
 //! the next piece with [`Importer::step`], writes it where the pack lives and reports progress in between.
 //! Nothing larger than one piece is ever held, whatever the size of the image or of a file in it.
-//! [`import_to_file`] is that loop for a platform with a file system (the desktop, later Android).
+//! [`write_pack_file`] is that loop for a platform with a file system (the desktop, Android); the import
+//! screen (`import_screen`) runs it on a thread of its own.
 
 use std::io;
 
@@ -128,18 +129,17 @@ impl<S: DiscStream> Importer<S> {
     }
 }
 
-/// Import the image behind `stream` into the pack file `path`, calling `progress(done, total)` in bytes
+/// Copy what `importer` has to copy into the pack file `path`, calling `progress(done, total)` in bytes
 /// between pieces. The pack is written beside `path` under another name and renamed over it when it is
 /// complete and on disk, so a program killed at any moment leaves the previous pack or none, never half
 /// of one. Returns the size of the pack.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn import_to_file<S: DiscStream>(
-    stream: S,
+pub fn write_pack_file<S: DiscStream>(
+    mut importer: Importer<S>,
     path: &std::path::Path,
     progress: &mut dyn FnMut(u64, u64),
 ) -> io::Result<u64> {
     use std::io::{Seek, SeekFrom, Write};
-    let mut importer = Importer::open(stream)?;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }

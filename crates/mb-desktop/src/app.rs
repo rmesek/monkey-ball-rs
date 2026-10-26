@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 
 use mb_app::game::Game;
 use mb_app::host::{Command, Host};
+use mb_app::import_screen::ImageSlot;
 use mb_app::input::{Action, Axis, InputState};
 use mb_app::perf::FrameSample;
 use mb_driver::Platform;
@@ -17,13 +18,16 @@ use winit::window::{Fullscreen, Window, WindowAttributes};
 /// Stick travel ignored around the centre.
 const PAD_DEADZONE: f32 = 0.15;
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Default)]
 pub struct WindowOptions {
-    /// Close the window this many seconds after the first frame, and measure frame pacing meanwhile (the developer flag `--exit-after` of a `dev` build; the kill test uses it).
+    /// Close the window this many seconds after the first frame past the import screen, and measure frame
+    /// pacing meanwhile (the developer flag `--exit-after` of a `dev` build; the kill test uses it).
     pub exit_after: Option<f32>,
     pub fullscreen: bool,
     /// The game's audio system, to silence it while the window is hidden. The game states hold clones.
     pub audio: Option<mb_app::audio::Audio>,
+    /// Where the import screen, if it runs, takes the image the player picks.
+    pub images: Option<ImageSlot>,
 }
 
 /// Frame pacing measured over the frames of play of a session.
@@ -149,7 +153,7 @@ struct Desktop {
     /// Frame times of play, kept for a timed run only (they grow with every frame).
     frame_times: Vec<f32>,
     stats: RunStats,
-    /// When the timed run started counting (the first frame).
+    /// When the timed run started counting (the first frame past the import screen).
     timed_since: Option<Instant>,
     exit: bool,
     last_title: Instant,
@@ -196,15 +200,31 @@ impl Platform for Desktop {
             pads.poll(input);
         }
         // What the states asked of the platform. Fullscreen is a key here and tilt does not exist.
-        if host.drain().contains(&Command::RemoveGameData) {
-            self.stats.remove_game_data = true;
-            self.exit = true;
+        for command in host.drain() {
+            match command {
+                Command::RemoveGameData => {
+                    self.stats.remove_game_data = true;
+                    self.exit = true;
+                }
+                // The import screen wants another image; without one there is nothing to play.
+                Command::PickImage => match (&self.options.images, crate::pick_image()) {
+                    (Some(slot), Some(image)) => slot.offer(image),
+                    _ => self.exit = true,
+                },
+                Command::GameDataReady { bytes } => {
+                    host.info
+                        .insert(0, format!("Game data: {} MB", bytes >> 20));
+                }
+                _ => {}
+            }
         }
     }
 
     fn after_update(&mut self, window: &Window, top: &dyn Game) {
         let now = Instant::now();
-        if let Some(limit) = self.options.exit_after {
+        if let Some(limit) = self.options.exit_after
+            && top.name() != "import"
+        {
             let since = *self.timed_since.get_or_insert(now);
             if (now - since).as_secs_f32() >= limit {
                 self.exit = true;

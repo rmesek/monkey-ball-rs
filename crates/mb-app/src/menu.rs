@@ -156,7 +156,7 @@ enum OptionRow {
 }
 
 /// Break `text` into lines of at most `width` characters at spaces (longer words are cut).
-fn wrap(text: &str, width: usize, max_lines: usize) -> Vec<String> {
+pub(crate) fn wrap(text: &str, width: usize, max_lines: usize) -> Vec<String> {
     let mut lines: Vec<String> = Vec::new();
     for word in text.split_whitespace() {
         let mut word = word;
